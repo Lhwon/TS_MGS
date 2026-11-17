@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+artifacts/
+src/**/*.ts
+src/**/*.tsx
+src/**/*.vue

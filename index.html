@@ -1,0 +1,30 @@
+<!--
+/**
+ * 파일명: index.html
+ * 설명: 렌더러 진입 요소와 화면 보안 정책을 제공하는 문서 진입점
+ * 작성자: 이희원
+ * 작성일자: 2026-10-20
+ */
+-->
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'self'"
+    />
+    <title>TS_MGS · Map Studio</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script
+      type="module"
+      src="/src/main.ts"
+    ></script>
+  </body>
+</html>

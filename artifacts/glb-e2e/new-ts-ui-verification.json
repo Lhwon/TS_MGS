@@ -1,0 +1,18 @@
+{
+  "imported": true,
+  "axisAndUnits": true,
+  "rotationAndScale": true,
+  "modes": true,
+  "clear": true,
+  "center": [
+    -465,
+    72.30000000000005,
+    120.00000000000001
+  ],
+  "size": [
+    60.000000000000114,
+    138.60000000000005,
+    112.50000000000003
+  ],
+  "batches": 21
+}

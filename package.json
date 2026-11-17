@@ -1,0 +1,43 @@
+{
+  "name": "ts-mgs",
+  "version": "0.6.0",
+  "private": true,
+  "description": "BEM map editor — Vue 3, TypeScript, Electron and Three.js",
+  "author": "BEM",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "check:fsd": "node scripts/check-fsd.mjs",
+    "typecheck": "npm run check:fsd && vue-tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "start": "electron .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:map3d": "node scripts/test-map3d.cjs && node scripts/test-wip-racks.cjs && node scripts/test-scene-project.cjs && node scripts/test-handling-models.cjs && node scripts/test-cargo-standard.cjs",
+    "test:handling": "node scripts/test-handling-workflow.mjs",
+    "generate:field": "node scripts/generate-field-map.cjs",
+    "test:glb": "node scripts/test-glb-workflow.mjs"
+  },
+  "dependencies": {
+    "@bem/map3d": "file:packages/map3d",
+    "@mdi/js": "^7.4.47",
+    "pinia": "^3.0.4",
+    "three": "~0.186.1",
+    "vue": "~3.5.44",
+    "vuetify": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/three": "~0.186.0",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "electron": "~44.9.1",
+    "prettier": "^3.9.10",
+    "sass": "^1.105.2",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.4",
+    "vite-plugin-vue-devtools": "^8.2.1",
+    "vue-tsc": "^3.3.13"
+  }
+}

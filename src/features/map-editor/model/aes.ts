@@ -209,6 +209,13 @@ export const makeAesData = (map: MapDocument, input: AesVehicle, source?: Legacy
   }
   const pathRows: string[] = [],
     nodeRows: string[] = []
+  const review: {
+    index: number
+    head: number
+    target: number
+    paths: number[][]
+    nodes: number[][]
+  }[] = []
   let collisionCount = 0
   for (const connection of connections) {
     const x = Math.floor(connection.pre.x / cellSize),
@@ -242,6 +249,13 @@ export const makeAesData = (map: MapDocument, input: AesVehicle, source?: Legacy
     paths[2] = [...new Set([...paths[0], ...paths[1]])]
     nodes[2] = [...new Set([...nodes[0], ...nodes[1]])]
     collisionCount += paths[2].length
+    review.push({
+      index: connection.index,
+      head: connection.head,
+      target: connection.target,
+      paths,
+      nodes,
+    })
     pathRows.push(
       [
         connection.head,
@@ -262,5 +276,6 @@ export const makeAesData = (map: MapDocument, input: AesVehicle, source?: Legacy
     content: [count, ...pathRows, count, ...nodeRows].join('\r\n') + '\r\n',
     paths: connections.length,
     collisions: collisionCount,
+    review,
   }
 }

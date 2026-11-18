@@ -401,6 +401,9 @@ const requireDrawing = async () => {
 const toolLabel = (name: string) =>
   ({
     ask_user: '사용자 확인',
+    search_mgs_training: 'MGS 교육 자료 검색',
+    port_approach: '포트 진입 경로 확인 및 설정',
+    audit_port_references: '포트 참조 점검',
     edit_selection: '선택 객체 편집',
     subdivide_paths: '노드 간격 적용',
     measure_path: '경로 거리 계산',
@@ -680,7 +683,7 @@ onBeforeUnmount(() => cancel())
   >
     <header class="d-flex align-center justify-space-between px-4 py-3 flex-shrink-0">
       <div>
-        <strong>AI 에이전트</strong>
+        <strong>AI 에이전트 <span>{{ selectedModel }}</span></strong>
         <span
           class="connection-state d-block"
           :class="{ connected }"
@@ -714,7 +717,7 @@ onBeforeUnmount(() => cancel())
       </div>
     </header>
 
-    <div class="assistant-context px-4 py-2 text-caption flex-shrink-0">
+    <!-- <div class="assistant-context px-4 py-2 text-caption flex-shrink-0">
       <span
         class="d-block text-truncate"
         :text="editor.sourceName"
@@ -732,7 +735,7 @@ onBeforeUnmount(() => cancel())
           {{ selectedModel }}
         </span>
       </div>
-    </div>
+    </div> -->
 
     <div
       ref="conversation"

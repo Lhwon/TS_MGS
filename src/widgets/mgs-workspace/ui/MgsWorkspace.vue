@@ -14,12 +14,16 @@ import {
   TeachingEditor,
   AreaEditor,
   MapOperations,
+  SelectedMapEditor,
   useEditor,
   rebuildPathControls,
+  findFeatureBoundaries,
+  makeLotDistance,
 } from '@/features/map-editor/index.ts'
 import { parseDocument } from '@/entities/map/index.ts'
 import type { Layers } from '@/entities/map/index.ts'
 import { AppIcon, TextAction } from '@/shared/ui/index.ts'
+import { downloadJson } from '@/shared/lib/files/index.ts'
 import { MGS_RIBBON } from '@/widgets/mgs-workspace/model/ribbon.ts'
 import MgsSummary from '@/widgets/mgs-workspace/ui/MgsSummary.vue'
 
@@ -104,6 +108,7 @@ watch(
   { immediate: true },
 )
 const viewCommands: Record<string, keyof Layers> = {
+  TBT_show_vhl_dir: 'vehicleHeadings',
   TBT_show_port_idx: 'portIndices',
   TBT_show_port_caption: 'portCaptions',
   TBT_show_font_style: 'fontStyle',
@@ -141,6 +146,7 @@ const viewCommands: Record<string, keyof Layers> = {
   TBT_show_lu_height: 'portHeight',
 }
 const drawingChecks = computed<Record<string, boolean>>(() => ({
+  TBT_auto_reverse_orthogonal: editor.drawingOptions.autoReverseOrthogonal,
   TBT_stop_rendering: editor.renderPaused,
   BT_force_curve: editor.curveOptions.force,
   BT_auto_straight_curve: editor.curveOptions.autoSelect,
@@ -182,10 +188,13 @@ const focusSelected = (id: number) => {
 /**
  * 선택한 노드를 원본 별도 속성창에서 편집하는 창 열기
  */
-const editNode = () => {
-  editor.operationTab = 'nodes'
-  editor.operationsOpen = true
-}
+const selectedEditor = ref<'node' | 'path' | 'port' | null>(null)
+watch(
+  () => editor.mapRevision,
+  () => {
+    selectedEditor.value = null
+  },
+)
 
 /**
  * 원본 지도와 선택 목록을 기준으로 무결성과 통계 결과를 표시하는 보고서 열기
@@ -233,6 +242,12 @@ const clearControl = (key: string, toggle = false) => {
   editor.message = '경로 제어값 적용'
 }
 const commands: Record<string, () => void> = {
+  TBT_auto_reverse_orthogonal: () => {
+    editor.drawingOptions.autoReverseOrthogonal = !editor.drawingOptions.autoReverseOrthogonal
+    editor.message = editor.drawingOptions.autoReverseOrthogonal
+      ? '자동 Reverse 켜짐 · 다음 경로 재계산에서 적용'
+      : '자동 Reverse 꺼짐'
+  },
   TBT_stop_rendering: () => {
     editor.renderPaused = !editor.renderPaused
   },
@@ -276,6 +291,20 @@ const commands: Record<string, () => void> = {
   },
   BT_node_ban_setting: () => openOperations('nodes'),
   BT_check_closer_node: () => openOperations('nearby'),
+  BT_show_ic_jc: () => {
+    const boundaries = findFeatureBoundaries(editor.document)
+    editor.selectedIds = boundaries.map((node) => node.id)
+    editor.selectedId = editor.selectedIds[0] ?? null
+    editor.message = `IC / JC 경계 후보 ${boundaries.length}개 · 지도에서 선택됨`
+  },
+  BT_make_lot_dist: () => {
+    const { rows, content } = makeLotDistance(editor.document)
+    const name = editor.sourceName.replace(/\.(jmapx|tsmgs\.json|json)$/i, '')
+    downloadJson(content, name + '_lot_closer.bem')
+    editor.message = `LOT Closer · 랙 ${rows.length}개 파일 추출`
+  },
+  BT_verify_aes_data_quick: () => openOperations('aes'),
+  BT_illegal_port: () => openOperations('port-audit'),
   BT_clear_path_index: () => {
     editor.commit((map) => Object.assign(map, rebuildPathControls(map, editor.legacySource)))
     editor.message = '경로 인덱스와 차량 유지각 재계산 완료'
@@ -423,25 +452,27 @@ const supported = (id: string) =>
   >
     <header
       v-if="!hiddenMenu"
-      class="mgs-ribbon overflow-hidden"
+      class="mgs-ribbon"
       data-testid="mgs-ribbon"
     >
-      <div
-        class="ribbon-tabs d-flex align-center"
-        role="tablist"
-        aria-label="MGS 작업 메뉴"
-      >
-        <TextAction
-          v-for="item in MGS_RIBBON"
-          :key="item.name"
-          role="tab"
-          :active="tab === item.name"
-          :data-tab="item.name"
-          @activate="tab = item.name"
+      <div class="ribbon-header">
+        <div
+          class="ribbon-tabs d-flex align-center"
+          role="tablist"
+          aria-label="MGS 작업 메뉴"
         >
-          {{ item.name }}
-        </TextAction>
-        <div class="d-flex ml-auto pr-2 ga-1 flex-shrink-0">
+          <TextAction
+            v-for="item in MGS_RIBBON"
+            :key="item.name"
+            role="tab"
+            :active="tab === item.name"
+            :data-tab="item.name"
+            @activate="tab = item.name"
+          >
+            {{ item.name }}
+          </TextAction>
+        </div>
+        <div class="ribbon-view d-flex align-center ga-1">
           <TextAction
             data-testid="open-ai"
             @activate="emit('assistant')"
@@ -468,15 +499,28 @@ const supported = (id: string) =>
           </TextAction>
         </div>
       </div>
-      <div class="ribbon-content d-flex overflow-x-auto">
-        <fieldset
+      <div
+        class="ribbon-content"
+        :key="tab"
+        role="region"
+        :aria-label="`${tab} 명령`"
+        tabindex="0"
+      >
+        <div
           v-for="(group, index) in activeTab.groups"
           :key="index"
           :class="{ 'named-group': group.name }"
-          class="ribbon-group d-flex align-center ga-1 px-2"
+          class="ribbon-group"
+          role="group"
+          :aria-label="group.name || tab"
         >
-          <legend v-if="group.name">{{ group.name }}</legend>
-          <div :class="group.name ? 'compact-buttons' : 'd-flex ga-2'">
+          <div
+            v-if="group.name"
+            class="ribbon-group-name"
+          >
+            {{ group.name }}
+          </div>
+          <div :class="group.name ? 'compact-buttons' : 'file-buttons'">
             <v-btn
               v-for="button in group.buttons"
               :key="button.id"
@@ -487,20 +531,31 @@ const supported = (id: string) =>
                   drawingChecks[button.id] ||
                   (viewCommands[button.id] && layers[viewCommands[button.id]!]),
               }"
-              :style="{ width: `${button.width}px` }"
-              :title="supported(button.id) ? button.label : `${button.label} · 원본 기능 이관 중`"
+              :aria-pressed="
+                button.toggle
+                  ? !!(
+                      drawingChecks[button.id] ||
+                      (viewCommands[button.id] && layers[viewCommands[button.id]!])
+                    )
+                  : undefined
+              "
+              :title="
+                supported(button.id)
+                  ? button.label.replace(/\s+/g, ' ')
+                  : `${button.label.replace(/\s+/g, ' ')} · 원본 기능 이관 중`
+              "
               :data-command="button.id"
               @click="execute(button.id)"
             >
               <AppIcon
                 v-if="!group.name"
                 :name="icons[button.id] ?? 'node'"
-                :size="34"
+                :size="24"
               />
-              <span>{{ button.label }}</span>
+              <span>{{ button.label.replace(/\s+/g, ' ') }}</span>
             </v-btn>
           </div>
-        </fieldset>
+        </div>
       </div>
     </header>
     <MgsSummary
@@ -660,13 +715,45 @@ const supported = (id: string) =>
         Save As
       </v-btn>
     </nav>
-    <div class="mgs-map position-relative overflow-hidden"><slot /></div>
+    <div class="mgs-map position-relative overflow-hidden">
+      <slot />
+      <div
+        v-if="layers.edges || layers.ports"
+        class="map-key d-flex align-center ga-3"
+        aria-label="지도 범례"
+      >
+        <span
+          v-if="layers.edges"
+          class="d-flex align-center ga-1"
+        >
+          <i :style="{ color: '#' + editor.theme.oneWay.toString(16).padStart(6, '0') }">→</i>
+          단방향
+        </span>
+        <span
+          v-if="layers.edges"
+          class="d-flex align-center ga-1"
+        >
+          <i :style="{ color: '#' + editor.theme.bothWays.toString(16).padStart(6, '0') }">↔</i>
+          양방향
+        </span>
+        <span
+          v-if="layers.ports"
+          class="d-flex align-center ga-1"
+        >
+          <i>▣</i>
+          포트
+        </span>
+      </div>
+    </div>
     <div
       v-if="!hiddenMenu"
-      class="mgs-bottom d-flex ga-2 pa-1"
+      class="mgs-bottom"
       data-testid="mgs-bottom"
     >
-      <div class="memo-info flex-grow-1 overflow-y-auto">
+      <div
+        class="memo-info overflow-y-auto"
+        aria-label="작업 내역"
+      >
         <div
           v-for="(message, index) in messages"
           :key="index"
@@ -674,7 +761,10 @@ const supported = (id: string) =>
           {{ message }}
         </div>
       </div>
-      <div class="memo-debug overflow-y-auto">
+      <div
+        class="memo-debug overflow-y-auto"
+        aria-label="지도 요약"
+      >
         Map : {{ editor.sourceName }}
         <br />
         Node {{ editor.document.nodes.length }} / Path {{ editor.document.edges.length }} / Port
@@ -706,54 +796,39 @@ const supported = (id: string) =>
           </v-btn>
         </div>
       </div>
-      <div class="selected-actions">
+      <div
+        class="selected-actions"
+        role="group"
+        aria-label="선택 객체 편집 및 데이터 검증"
+      >
         <v-btn
           data-testid="edit-selected-node"
-          @click="editNode"
+          @click="selectedEditor = 'node'"
         >
-          Selected
-          <br />
-          Node Edit
+          Selected Node Edit
         </v-btn>
-        <v-btn @click="editor.objectEditor = 'edges'">
-          Selected
-          <br />
-          Path Edit
-        </v-btn>
+        <v-btn @click="selectedEditor = 'path'">Selected Path Edit</v-btn>
         <v-btn
           data-testid="edit-map-objects"
-          @click="editor.objectEditor = 'ports'"
+          @click="selectedEditor = 'port'"
         >
-          Selected
-          <br />
-          Port Edit
+          Selected Port Edit
         </v-btn>
+        <v-btn @click="openOperations('approach')">포트 진입 설정</v-btn>
         <v-btn
           disabled
           title="원본 Block 데이터 이관 중"
         >
-          Verify
-          <br />
-          Block Data
+          Verify Block Data
         </v-btn>
         <v-btn
           disabled
           title="원본 Blocking 데이터 이관 중"
         >
-          Verify
-          <br />
-          Blocking Data
+          Verify Blocking Data
         </v-btn>
-        <v-btn @click="openOperations('around')">
-          Verify
-          <br />
-          Around Data
-        </v-btn>
-        <v-btn @click="openOperations('aes')">
-          AES
-          <br />
-          데이터 생성
-        </v-btn>
+        <v-btn @click="openOperations('around')">Verify Around Data</v-btn>
+        <v-btn @click="openOperations('aes')">AES 데이터 생성</v-btn>
       </div>
     </div>
     <footer
@@ -873,7 +948,11 @@ const supported = (id: string) =>
       </v-card>
     </v-dialog>
   </section>
-  <MapOperations />
+  <MapOperations @focus="emit('focus', $event)" />
+  <SelectedMapEditor
+    v-model="selectedEditor"
+    @focus="emit('focus', $event)"
+  />
   <AreaEditor />
   <TeachingEditor />
   <DrawingLayout
@@ -889,17 +968,18 @@ const supported = (id: string) =>
 </template>
 
 <style scoped lang="scss">
-// 원본 MainWindow 행과 열의 고정 치수를 사용하는 평면 작업 화면 배치
+// 명령과 지도 및 하단 작업 영역의 크기를 내용에 맞춰 배치하는 작업 화면
 .mgs-workspace {
   --mgs-panel: var(--surface);
   --mgs-tab: var(--surface-muted);
   --mgs-border: var(--border);
+  container-type: inline-size;
   display: grid;
   flex: 1;
   min-height: 0;
   min-width: 0;
-  grid-template-columns: 280px minmax(0, 1fr);
-  grid-template-rows: 130px 35px minmax(0, 1fr) 128px 28px;
+  grid-template-columns: clamp(170px, 19vw, 252px) minmax(0, 1fr);
+  grid-template-rows: auto 38px minmax(0, 1fr) auto 29px;
   color: var(--text);
   background: var(--mgs-panel);
 }
@@ -907,82 +987,169 @@ const supported = (id: string) =>
 .mgs-ribbon {
   grid-column: 1 / -1;
   grid-row: 1;
+  min-width: 0;
   background: var(--surface);
   border-bottom: 1px solid var(--mgs-border);
 }
-.ribbon-tabs {
-  overflow-x: auto;
-  height: 30px;
+
+.ribbon-header {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--mgs-border);
 }
-.ribbon-content {
-  height: 100px;
-}
-.ribbon-group {
-  border: 0;
-  border-right: 1px solid var(--mgs-border);
-  flex-shrink: 0;
+
+.ribbon-tabs {
+  flex: 1;
+  gap: 2px;
   min-width: 0;
-  margin: 4px 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
-.ribbon-group legend {
-  color: var(--text-secondary);
+
+.ribbon-tabs :deep(.text-action) {
+  height: 32px;
+  padding-inline: 11px;
+  border-radius: 7px;
   font-weight: 600;
-  font-size: 12px;
-  padding: 0 3px;
 }
-.ribbon-group :deep(.v-btn) {
-  font-size: 12px;
+
+.ribbon-tabs :deep(.text-action:hover) {
+  background: var(--surface-muted);
+}
+
+.ribbon-tabs :deep(.text-action.active) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ribbon-view {
+  flex-shrink: 0;
+  padding-inline-start: 8px;
+  border-inline-start: 1px solid var(--mgs-border);
+}
+
+.ribbon-view :deep(.text-action) {
+  padding-inline: 8px;
+}
+
+.ribbon-content {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border) transparent;
+}
+
+.ribbon-content:focus-visible,
+.ribbon-tabs :deep(.text-action:focus-visible),
+.ribbon-group :deep(.v-btn:focus-visible) {
+  outline-offset: -2px;
+}
+
+.ribbon-group {
+  flex: 0 0 auto;
+}
+
+.named-group {
+  padding-inline-end: 12px;
+  border-inline-end: 1px solid var(--mgs-border);
+}
+
+.named-group:last-child {
+  padding-inline-end: 0;
+  border: 0;
+}
+
+.ribbon-group-name {
+  margin-bottom: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.file-buttons,
+.compact-buttons {
+  display: grid;
+  grid-auto-flow: column;
+  gap: 5px;
+}
+
+.compact-buttons {
+  grid-template-rows: repeat(2, minmax(34px, auto));
+  grid-auto-columns: 98px;
+}
+
+.file-buttons {
+  grid-auto-columns: 94px;
+}
+
+.ribbon-group :deep(.v-btn),
+.selected-actions :deep(.v-btn) {
+  width: 100%;
   min-width: 0;
+  height: auto;
+  min-height: 34px;
+  padding: 4px 7px;
   border: 1px solid var(--mgs-border);
   border-radius: 8px;
   background: var(--surface);
+  color: var(--text);
   box-shadow: none;
-  height: 26px;
-  padding: 1px 4px;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.22;
+  text-align: center;
 }
+
+.ribbon-group :deep(.v-btn__content),
+.selected-actions :deep(.v-btn__content) {
+  min-width: 0;
+  justify-content: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ribbon-group :deep(.large-button) {
+  min-height: 70px;
+  padding: 6px 8px;
+  background: var(--surface-muted);
+}
+
+.large-button :deep(.v-btn__content) {
+  flex-direction: column;
+  gap: 4px;
+}
+
+.large-button :deep(svg) {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ribbon-group :deep(.v-btn:not(.v-btn--disabled):hover),
+.selected-actions :deep(.v-btn:not(.v-btn--disabled):hover) {
+  border-color: var(--app-border);
+  background: var(--hover);
+}
+
 .ribbon-group :deep(.v-btn.checked) {
   background: var(--accent-soft);
   color: var(--accent);
   border-color: var(--accent);
 }
-.ribbon-group .large-button {
-  height: 70px;
-}
-.large-button :deep(.v-btn__content) {
-  flex-direction: column;
-  white-space: pre-line;
-  gap: 7px;
-  line-height: 1.25;
-  font-weight: 550;
-  justify-content: center;
-}
-.large-button :deep(svg) {
-  color: var(--text-secondary);
-  transition: color 140ms ease;
-}
-.ribbon-group :deep(.large-button) {
+
+.ribbon-group :deep(.v-btn--disabled),
+.selected-actions :deep(.v-btn--disabled) {
+  opacity: 1;
   background: var(--surface-muted);
-  border-color: transparent;
-  border-radius: 10px;
-}
-.ribbon-group :deep(.v-btn:not(.v-btn--disabled):hover) {
-  border-color: var(--app-border);
-  background: var(--hover);
-}
-.large-button:not(:disabled):hover :deep(svg) {
-  color: var(--accent);
-}
-.ribbon-group :deep(.v-btn--disabled) {
+  color: var(--text-muted);
   border-color: transparent;
 }
 
-.compact-buttons {
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(2, 26px);
-  gap: 3px;
-}
 .mgs-summary {
   grid-column: 1;
   grid-row: 2 / 4;
@@ -993,6 +1160,8 @@ const supported = (id: string) =>
   grid-row: 2;
   border-bottom: 1px solid var(--mgs-border);
   white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border) transparent;
 }
 .mgs-quick :deep(.v-btn) {
   border-radius: 6px;
@@ -1014,53 +1183,108 @@ const supported = (id: string) =>
   min-height: 0;
   background: var(--canvas);
 }
+.map-key {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  padding: 4px 9px;
+  border: 1px solid var(--mgs-border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  pointer-events: none;
+}
+.map-key i {
+  font-style: normal;
+  font-weight: 750;
+}
 .mgs-bottom {
   grid-column: 1 / -1;
   grid-row: 4;
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(126px, 0.8fr) minmax(96px, 0.58fr) minmax(
+      320px,
+      1.4fr
+    );
+  gap: 8px;
+  padding: 8px 10px;
   border-top: 1px solid var(--mgs-border);
-  min-width: 0;
+  background: var(--surface-muted);
 }
+
 .memo-info,
 .memo-debug,
-.node-list {
+.selected-nodes,
+.selected-actions {
+  min-width: 0;
   border: 1px solid var(--mgs-border);
   background: var(--surface);
-  border-radius: 6px;
+  border-radius: 9px;
+  padding: 6px;
+}
+
+.memo-info,
+.memo-debug {
+  min-height: 0;
+  contain: size;
   padding: 7px 9px;
+  color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.6;
-}
-.memo-info {
-  min-width: 100px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.memo-debug {
-  width: min(31vw, 500px);
-  flex-shrink: 1;
-  min-width: 150px;
+
+.memo-info {
+  white-space: pre-wrap;
 }
+
 .selected-nodes {
-  width: 200px;
-  flex-shrink: 0;
+  min-height: 0;
+  contain: size;
   font-size: 12px;
 }
+
+.node-list {
+  min-height: 0;
+}
+
 .selected-actions {
-  width: 330px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(36px, auto);
   gap: 5px;
-  flex-shrink: 0;
 }
-.selected-actions :deep(.v-btn) {
-  height: 50px;
-  font-size: 12px;
-  padding: 3px;
-  min-width: 0;
-  border-radius: 6px;
-  border: 1px solid var(--mgs-border);
-  box-shadow: none;
+
+@container (max-width: 760px) {
+  .mgs-bottom {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.8fr);
+    grid-template-rows: 66px auto;
+  }
+
+  .selected-actions {
+    grid-column: 1 / -1;
+  }
 }
+
+@container (max-width: 530px) {
+  .ribbon-header {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .ribbon-tabs {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .ribbon-view {
+    margin-inline-start: auto;
+    padding-inline-start: 0;
+    border: 0;
+  }
+}
+
 .mgs-status {
   background: var(--surface-muted);
   color: var(--text-secondary);
@@ -1077,7 +1301,7 @@ const supported = (id: string) =>
   white-space: nowrap;
 }
 .mgs-status .status-login {
-  width: 200px;
+  width: clamp(64px, 12vw, 150px);
   background: var(--accent-soft);
   color: var(--accent);
   flex-shrink: 0;
@@ -1103,7 +1327,7 @@ const supported = (id: string) =>
 }
 .menu-hidden {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 0 35px minmax(0, 1fr) 0 28px;
+  grid-template-rows: 0 38px minmax(0, 1fr) 0 29px;
 }
 .menu-hidden .mgs-map,
 .menu-hidden .mgs-quick {

@@ -4,14 +4,18 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
-import { serializeLegacy, type LegacySource } from '@/entities/map/model/legacyWriter.ts'
+import {
+  serializeLegacy,
+  type LegacySource,
+  type LegacyWriteOptions,
+} from '@/entities/map/model/legacyWriter.ts'
 import { previewLegacy } from '@/entities/map/model/legacy.ts'
 import type { MapDocument } from '@/entities/map/model/map.ts'
 /** 원본 직렬화 결과를 다시 해석하고 도면 및 영역을 유지한 편집 메타데이터를 구성하는 문서 갱신 */
 export const serializeLegacySnapshot = (
   map: MapDocument,
   source?: LegacySource | null,
-  options: { rebuildControls?: boolean } = {},
+  options: LegacyWriteOptions = {},
 ) => {
   const output = serializeLegacy(map, source, options),
     native = previewLegacy(output.content, map.name, output.groups),

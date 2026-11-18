@@ -126,8 +126,8 @@ const pickPort = (x: number, y: number) => {
       .reverse()
       .find(
         (port) =>
-          Math.abs(x - port.x) <= (port.width ?? 1000) / 2 &&
-          Math.abs(y - port.y) <= (port.height ?? 1000) / 2,
+          Math.abs(x - port.x) <= (port.width ?? 420) / 2 &&
+          Math.abs(y - port.y) <= (port.height ?? 260) / 2,
       )?.id ?? null
   )
 }
@@ -341,6 +341,7 @@ onMounted(() => {
     scene.setRenderPaused(editor.renderPaused)
     scene.setDocument(editor.visibleDocument, editor.theme)
     scene.setLayers(props.layers)
+    scene.setSelectedPort(editor.selectedPortId)
     scene.setTool(editor.tool, editor.readOnly)
     scene.fit()
   } catch (cause) {
@@ -365,6 +366,10 @@ watch(
 watch(
   () => editor.selectedId,
   (id) => scene?.setSelected(id),
+)
+watch(
+  () => editor.selectedPortId,
+  (id) => scene?.setSelectedPort(id),
 )
 watch(
   () => [editor.tool, editor.readOnly] as const,

@@ -2,7 +2,7 @@
  * 파일명: assistant-tools.cjs
  * 설명: 대화 중 필요한 기능만 선택할 수 있는 지도 에이전트 도구 계약
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
 const number = { type: 'number' }
 const text = { type: 'string' }
@@ -19,6 +19,28 @@ const tool = (name, description, properties = {}, required = []) => ({
   },
 })
 const tools = [
+  tool(
+    'audit_port_references',
+    'Read-only check for missing parent port IDs, standby node UIDs and reservation port UIDs. Use exact portId for a single port, omit for the full map. Returns a page of issues.',
+    { portId: text, offset: number },
+  ),
+  tool(
+    'search_mgs_training',
+    'Search local MGS training material for a specific operation or concept. Returns guidance with slide or video time references.',
+    { query: text },
+    ['query'],
+  ),
+  tool(
+    'port_approach',
+    'Inspect legal incoming routes to a port and direction-specific Reverse and Vehicle Degree. Use selected port when portId is omitted. For set_reverse, inspect first, use the exact incoming edge ID and a user-requested or confirmed travel mode. This changes only that direction’s Reverse flag; edge direction and opposite controls stay intact.',
+    {
+      operation: { type: 'string', enum: ['inspect', 'set_reverse'] },
+      portId: text,
+      edgeId: text,
+      reverse: { type: 'boolean' },
+    },
+    ['operation'],
+  ),
   tool(
     'ask_user',
     'Ask for information or a decision needed to continue ANY task after checking available context/tools. Pauses work and shows an inline input/selection card; the real user answer is returned as a tool result and work resumes. Use for dimensions, targets, direction, scope, preferences, names, missing attachments or ambiguous intent. Do not guess essential unknown values. Every field MUST have id (ASCII key), label (display text), and type. Never use name instead of id/label. Omit unnecessary fields; ask only what is needed now. Choices are alternative answers that bypass the form. allowSkip is only for optional information where draft work can continue.',
@@ -327,6 +349,7 @@ Selected nodes add a copy 2 meters above: edit_selection({"operation":"duplicate
 Never use translate, addNode, target=node or target=selection. When dx/dy is used OMIT x/y; optional keys are absent, not zero placeholders. Never change node IDs or re-generate a map for a local edit.
 Selection requests such as "선택한 노드 제거해줘" are supported: inspect current selection and call edit_selection. Do not claim selection edits are unsupported or regenerate the whole map to delete/move/add local objects. Compute offsets from actual coordinates and map units; preserve connections and check resulting context. For deletion explain removed dependent objects in the result.
 Use the same decision policy for EVERY task: first use available context and read tools to resolve facts yourself. Act directly when evidence and user intent are sufficient. If essential information or an ambiguous decision cannot be resolved, call ask_user with a concise natural question and suitable fields/choices. This applies to map edits, equipment design/placement, directions, names, dimensions, scope, files and preferences, not just drawings.
+Use search_mgs_training for MGS workflow questions and before applying unfamiliar settings for calibration, curves, vehicle angles, port approach and operating data. Cite the returned slide or video time when relying on it. Treat example settings as case-specific evidence. For port entry and Reverse, inspect port_approach first; distinguish Reverse from flipping edge direction. If multiple incoming paths match and the user did not identify which one, ask with route choices before editing. Do not infer the vehicle's fork orientation from the map.
 A valid ask_user example is {"question":"설비 크기를 알려주세요","fields":[{"id":"width","label":"가로 길이","type":"number","units":["m","mm"],"unit":"m"}],"allowSkip":false}. Each field requires id, label, type. Omit min/max/defaultValue unless grounded in actual requirements.
 For information needed to continue an action, use ask_user rather than ending with a plain-text question. General discussion stays conversational. After ask_user, wait for the user's tool result and replan from the latest context before dependent actions. Include units in a natural form when helpful, never demand per-pixel scale. Ask for only the missing information; do not prefill invented facts. For an optional value, allowSkip lets the user say no and continue a useful draft. Respect skipped values and do not repeatedly ask the same optional question. A text answer may correct the plan or change the user's intent.
 If an attachment is needed, ask_user can offer an '첨부 완료' choice; the user can attach a file in the composer while waiting. Check the updated attachment context after the answer.

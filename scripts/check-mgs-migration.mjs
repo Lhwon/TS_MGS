@@ -41,6 +41,8 @@ try {
       assignRealIds,
       findNearbyNodes,
       applyAutomaticControls,
+      findFeatureBoundaries,
+      makeLotDistance,
     } = await import('/src/features/map-editor/index.ts')
     const map = emptyDocument()
     map.nodes = [
@@ -137,6 +139,17 @@ try {
     )
       throw Error('control roundtrip')
     const junction = applyAutomaticControls(map, 'spin-junction')
+    const boundary = findFeatureBoundaries(map)
+    if (boundary.map((node) => node.id).join(',') !== '1,2,3')
+      throw Error('Feature boundaries at ends and direction change')
+    const lot = structuredClone(map)
+    lot.ports = [
+      { id: 'CV_1', nodeId: 1, x: 0, y: 3000, name: '' },
+      { id: 'RACK_A_1_1_1', nodeId: 3, x: 0, y: 100, name: '' },
+      { id: 'RACK_A_1_2_1', nodeId: 2, x: 0, y: 4000, name: '' },
+    ]
+    if (makeLotDistance(lot).content !== 'RACK_A_1_2_1\t2101\nRACK_A_1_1_1\t200001101\n\r\n')
+      throw Error('Original LOT priority based on anchor coordinates')
     if (
       !junction.nodes.find((node) => node.id === 2).spinturnable ||
       map.nodes[1].spinturnable !== undefined
@@ -177,6 +190,17 @@ try {
       if (updated.edges.find((edge) => edge.from === 1).controls.forward.vehicleDegree !== 225000)
         throw Error('Dependent special angle after remote straight movement')
       if (drivingType === 9) {
+        const controlled = structuredClone(base)
+        const specialEdge = controlled.edges.find((edge) => edge.from === 1)
+        specialEdge.controls.forward.reverse = 1
+        const rebuilt = serializeLegacy(
+          controlled,
+          { ...first, baseline: base },
+          { autoReverseOrthogonal: true },
+        )
+        const roundTrip = previewLegacy(rebuilt.content, 'auto-reverse.jmapx')
+        if (roundTrip.edges.find((edge) => edge.from === 1).controls.backward.reverse !== 1)
+          throw Error('Automatic Reverse must propagate to the opposite special path')
         e.load(first.content, 'special.jmapx')
         e.moveNodes([3], 1000, 0)
         if (
@@ -315,9 +339,120 @@ try {
     }, content)
     console.log('Read-only original map', result)
   }
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    const { emptyDocument, serializeLegacy } = await import('/src/entities/map/index.ts')
+    const map = emptyDocument()
+    map.nodes = [
+      { id: 1, name: 'N1', x: 0, y: 0 },
+      { id: 2, name: 'N2', x: 1000, y: 0 },
+      { id: 3, name: 'N3', x: 2000, y: 0 },
+    ]
+    map.edges = [
+      { id: 'a', from: 1, to: 2, direction: 1 },
+      { id: 'b', from: 2, to: 3, direction: 1 },
+    ]
+    map.ports = [
+      { id: 'P1', name: '', nodeId: 1, x: 0, y: 100 },
+      { id: 'P2', name: '', nodeId: 2, x: 1000, y: 100 },
+      { id: 'P3', name: '', nodeId: 3, x: 2000, y: 100 },
+    ]
+    const editor = useEditor()
+    editor.load(serializeLegacy(map).content, 'selected.jmapx')
+    editor.selectedIds = [1, 2]
+  })
+  const selectedEditor = page.getByTestId('selected-map-editor')
   await page.getByTestId('edit-selected-node').click()
-  await page.getByTestId('map-operations').waitFor()
-  assert.ok(await page.getByText('지도 일괄 편집', { exact: true }).isVisible())
+  await selectedEditor.getByText('Selected Node Edit', { exact: true }).waitFor()
+  const property = selectedEditor.locator('[data-field="property"]')
+  await property.locator('input').fill('2')
+  assert.equal(
+    await property.locator('input').evaluate((input) => getComputedStyle(input).outlineStyle),
+    'none',
+  )
+  await property.getByRole('button', { name: 'Set' }).click()
+  await selectedEditor.getByRole('button', { name: 'Node Shift' }).click()
+  await selectedEditor.getByLabel('Y Offset mm', { exact: true }).fill('150')
+  await selectedEditor.getByRole('button', { name: 'Run' }).click()
+  await selectedEditor.getByRole('button', { name: '닫기' }).click()
+  await page.getByRole('button', { name: 'Selected Path Edit', exact: true }).click()
+  await selectedEditor.getByRole('button', { name: 'OPPOSITE', exact: true }).click()
+  const speed = selectedEditor.locator('[data-field="controlSpeed"]')
+  await speed.getByLabel('Speed m/min', { exact: true }).fill('15')
+  await speed.getByRole('button', { name: 'Set' }).click()
+  await selectedEditor.getByRole('button', { name: '닫기' }).click()
+  await page.getByRole('button', { name: 'Selected Port Edit', exact: true }).click()
+  await selectedEditor.getByRole('button', { name: 'Shape', exact: true }).click()
+  const offset = selectedEditor.locator('[data-field="offsetY"]')
+  await offset.locator('input').fill('500')
+  await offset.getByRole('button', { name: 'Set' }).click()
+  const data = await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    const editor = useEditor()
+    const { nodes, edges, ports } = editor.document
+    return {
+      nodes: nodes.map((node) => [node.id, node.property, node.y]).sort((a, b) => a[0] - b[0]),
+      paths: edges
+        .map((edge) => [
+          edge.from,
+          edge.controls.forward.controlSpeed,
+          edge.controls.backward.controlSpeed,
+        ])
+        .sort((a, b) => a[0] - b[0]),
+      ports: ports.map((port) => port.y),
+    }
+  })
+  assert.deepEqual(data.nodes, [
+    [1, 2, 150],
+    [2, 2, 150],
+    [3, 0, 0],
+  ])
+  assert.deepEqual(data.paths, [
+    [1, 0, 25],
+    [2, 0, 0],
+  ])
+  assert.deepEqual(data.ports, [650, 650, 100])
+  await selectedEditor.getByRole('button', { name: 'Main', exact: true }).click()
+  await selectedEditor.getByLabel('Port ID 접두사', { exact: true }).fill('RACK')
+  await selectedEditor.getByRole('button', { name: '포트 추가', exact: true }).click()
+  const additions = await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    const { previewLegacy, serializeLegacy } = await import('/src/entities/map/index.ts')
+    const editor = useEditor()
+    const files = serializeLegacy(editor.document, editor.legacySource)
+    const native = previewLegacy(files.content, 'test.jmapx')
+    const created = native.ports
+      .filter((port) => port.id.startsWith('RACK'))
+      .map((port) => [port.id, port.uid, port.nodeId])
+    editor.undo()
+    return { created, remainingPorts: editor.document.ports.length }
+  })
+  assert.deepEqual(additions, {
+    created: [
+      ['RACK_1', 4, 1],
+      ['RACK_2', 5, 2],
+    ],
+    remainingPorts: 3,
+  })
+  await selectedEditor.getByRole('button', { name: '닫기', exact: true }).click()
+  await page.getByTestId('theme-toggle').click()
+  await page.getByTestId('edit-selected-node').click()
+  const focusField = selectedEditor.locator('[data-field="property"]')
+  await focusField.locator('input').focus()
+  const appearance = await focusField.evaluate((row) => {
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--accent)'
+    row.append(probe)
+    const result = {
+      outline: getComputedStyle(row.querySelector('input')).outlineStyle,
+      color: getComputedStyle(row.querySelector('.v-field__outline')).color,
+      accent: getComputedStyle(probe).color,
+    }
+    probe.remove()
+    return result
+  })
+  assert.equal(appearance.outline, 'none')
+  assert.equal(appearance.color, appearance.accent)
   console.log('Migration core and UI checks OK')
 } finally {
   await browser.close()

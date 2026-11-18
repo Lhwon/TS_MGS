@@ -2,11 +2,29 @@
  * 파일명: ai-service.cjs
  * 설명: 내부망 추론 서버 연결과 제한된 지도 작업 제안 생성 및 취소 처리
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
-const BASE_URL = process.env.TS_MGS_AI_URL || 'http://192.168.1.161:11434'
-const VISION_MODEL = process.env.TS_MGS_VISION_MODEL || 'qwen2.5vl:7b'
-const MODEL = process.env.TS_MGS_AI_MODEL || 'gpt-oss:20b'
+const { readFileSync } = require('node:fs')
+const { join } = require('node:path')
+const { parseEnv } = require('node:util')
+
+/** 개발 서버와 Electron에서 동일한 프로젝트 설정 파일을 읽는 시작 설정 */
+const readLocalSettings = () => {
+  try {
+    return parseEnv(readFileSync(join(__dirname, '..', '.env'), 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    throw error
+  }
+}
+const localSettings = readLocalSettings()
+
+/** 프로세스 재정의와 로컬 설정 파일 및 기본값의 순서로 값을 선택하는 설정 조회 */
+const setting = (name, fallback) =>
+  process.env[name]?.trim() || localSettings[name]?.trim() || fallback
+const BASE_URL = setting('TS_MGS_AI_URL', 'http://127.0.0.1:11434')
+const VISION_MODEL = setting('TS_MGS_VISION_MODEL', 'qwen2.5vl:7b')
+const MODEL = setting('TS_MGS_AI_MODEL', 'gpt-oss:20b')
 const requests = new Map()
 const { tools, system } = require('./assistant-tools.cjs')
 /**

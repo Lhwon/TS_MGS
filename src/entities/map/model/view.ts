@@ -7,6 +7,7 @@
 import { systemPalette } from '@/shared/theme/index.ts'
 import type { MapNode, MapDocument, MapPort } from '@/entities/map/model/map.ts'
 export interface Layers {
+  vehicleHeadings?: boolean
   portIndices?: boolean
   portCaptions?: boolean
   fontStyle?: boolean
@@ -162,15 +163,15 @@ export const mgsTheme = (content = '', mode?: 'light' | 'dark') => {
     name,
     dark,
     pathWidth: Math.max(1, Math.min(100, values.path_width ?? values.path_pen_width ?? 3)) * 10,
-    portStroke: dark ? 0xc4d1d8 : 0x000000,
-    portFill: dark ? 0x243b49 : 0xffffff,
+    portStroke: dark ? 0x9aafcf : 0x4a637b,
+    portFill: dark ? 0x24344d : 0xe9f2fc,
     background: color(
       'grid_color',
       dark ? legacyColor(parseInt(systemPalette.dark.background.slice(1), 16)) : 16777215,
     ),
     grid: color('grid_color_bold', dark ? 0x4a392c : 14211288),
-    oneWay: color('node_oneway_color', dark ? 0xe6b05c : 16711680),
-    bothWays: color('node_bothway_color', dark ? 0xbce175 : 2920046),
+    oneWay: color('node_oneway_color', dark ? 0xffb666 : 0xa56017),
+    bothWays: color('node_bothway_color', dark ? 0xccda61 : 0x687d16),
     virtual: color('node_virtual_color', dark ? 0x9f9078 : 8421504),
     font: color('node_font_color', dark ? 0xe8e8e8 : 0),
     fontBackground: color(

@@ -119,10 +119,10 @@ defineExpose({ capture })
 
 <template>
   <aside
-    class="mgs-summary d-flex flex-column overflow-hidden"
+    class="mgs-summary d-flex flex-column overflow-y-auto"
     data-testid="mgs-summary"
   >
-    <div class="summary-tab px-3 d-flex align-center">⌂ &nbsp; Summary</div>
+    <div class="summary-tab px-3 d-flex align-center flex-shrink-0">Summary</div>
     <div class="mini-map ma-2 flex-shrink-0">
       <svg
         ref="miniatureSvg"
@@ -155,24 +155,24 @@ defineExpose({ capture })
         />
       </svg>
     </div>
-    <div class="overflow-y-auto pa-2">
+    <div class="pa-2 flex-shrink-0">
       <dl class="project-information pa-2">
-        <dt>Project Name :</dt>
+        <dt>Project Name</dt>
         <dd>{{ editor.document.name }}</dd>
-        <dt>AGV Type :</dt>
+        <dt>AGV Type</dt>
         <dd>—</dd>
-        <dt>ACS Name :</dt>
+        <dt>ACS Name</dt>
         <dd>—</dd>
-        <dt>Map Name :</dt>
+        <dt>Map Name</dt>
         <dd>{{ editor.sourceName }}</dd>
-        <dt>Map Version :</dt>
+        <dt>Map Version</dt>
         <dd>{{ editor.document.legacy?.version ?? 25 }}</dd>
       </dl>
       <form
         class="mt-3"
         @submit.prevent="findNode"
       >
-        <div class="d-flex ga-2 px-1 mb-2">
+        <div class="d-flex flex-wrap ga-2 px-1 mb-2">
           <label
             v-for="(label, key) in { id: 'Node ID', realId: 'Real ID', uid: 'UID' }"
             :key="key"
@@ -242,13 +242,17 @@ defineExpose({ capture })
 </template>
 
 <style scoped lang="scss">
-// 원본 Summary 고정 폭과 미니맵 및 검색 영역 배치
+// 창 높이에 맞춰 미니맵과 검색 내용을 함께 탐색하는 요약 영역 배치
 .mgs-summary {
+  min-height: 0;
   border-right: 1px solid var(--mgs-border);
   background: var(--mgs-panel);
   font-size: 12px;
 }
 .summary-tab {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   color: var(--text-secondary);
   font-weight: 600;
   height: 30px;
@@ -256,10 +260,10 @@ defineExpose({ capture })
   background: var(--mgs-tab);
 }
 .mini-map {
-  height: 270px;
+  height: clamp(104px, 22vh, 214px);
   background: var(--canvas);
   border: 1px solid var(--mgs-border);
-  border-radius: 7px;
+  border-radius: 9px;
 }
 .mini-map svg {
   display: block;
@@ -269,21 +273,22 @@ defineExpose({ capture })
 }
 .project-information {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 9px 4px;
+  grid-template-columns: minmax(68px, 42%) minmax(0, 1fr);
+  gap: 4px 8px;
   border: 1px solid var(--mgs-border);
-  border-radius: 7px;
+  border-radius: 9px;
 }
 .project-information dt {
   color: var(--text-secondary);
-  text-align: right;
+  font-size: 11px;
 }
 .project-information dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
 .find-input {
-  width: 160px;
+  flex: 1;
+  width: 100%;
   min-width: 0;
   height: 30px;
   padding: 3px 7px;

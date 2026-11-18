@@ -21,6 +21,7 @@ export type {
   AssistantToolCall,
 } from '@/features/ai-assistant/model/proposal.ts'
 export { editMapObjects } from '@/features/ai-assistant/model/mapTools.ts'
+export { searchMgsTraining } from '@/features/ai-assistant/model/mgsTraining.ts'
 export { runAgent, compactAgentHistory } from '@/features/ai-assistant/model/agent.ts'
 export { parseAgentQuestion, validateAgentAnswer } from '@/features/ai-assistant/model/questions.ts'
 export type {

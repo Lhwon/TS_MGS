@@ -87,13 +87,11 @@ try {
     x.fillRect(20, 140, 560, 20)
     return c.toDataURL().split(',')[1]
   })
-  await page
-    .getByTestId('drawing-file')
-    .setInputFiles({
-      name: 'drawing.png',
-      mimeType: 'image/png',
-      buffer: Buffer.from(image, 'base64'),
-    })
+  await page.getByTestId('drawing-file').setInputFiles({
+    name: 'drawing.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(image, 'base64'),
+  })
   await page.getByTestId('drawing-attachment').waitFor()
   let request
   await page.route('**/api/assistant/propose', (r) => {
@@ -109,7 +107,8 @@ try {
   console.log(
     await page.evaluate(async () => {
       const { useEditor } = await import('/src/features/map-editor/index.ts')
-      const { emptyDocument } = await import('/src/entities/map/index.ts')
+      const { emptyDocument, serializeLegacy, previewLegacy } =
+        await import('/src/entities/map/index.ts')
       const { executeAgentTool, agentContext } =
         await import('/src/widgets/ai-assistant/model/tools.ts')
       const { ref } = await import('/node_modules/vue/dist/vue.runtime.esm-bundler.js')
@@ -171,9 +170,125 @@ try {
         throw Error('delete cascade')
       e.undo()
       if (e.document.nodes.length !== 5) throw Error('undo')
-      return 'PASS selection context, boundary, m-unit move, dependent port, connected duplicate, deletion cascade, undo; attachment consumed and retained in chat'
+      map.ports[0].settings = { id_port_parent: 'MissingParent', standby_node_uid0: 54321 }
+      map.ports[0].reservations = { startBuffer: [98765] }
+      e.load(serializeLegacy(map).content, 'training.jmapx')
+      e.selectedPortId = 'P1'
+      const trainingRequest = new AbortController()
+      const invoke = (name, args) =>
+        executeAgentTool({ function: { name, arguments: args } }, trainingRequest, options)
+      const evidence = await invoke('search_mgs_training', { query: '후면 포크 포트 진입 Reverse' })
+      if (!evidence[0]?.source.includes('41분 40초')) throw Error('Training evidence')
+      const audit = await invoke('audit_port_references', { portId: 'P1' })
+      if (audit.total !== 3 || audit.issues.some((issue) => issue.portId !== 'P1'))
+        throw Error('Port reference audit')
+      const port = await invoke('port_approach', { operation: 'inspect' })
+      const route = port.approaches[0]
+      if (port.approaches.length !== 1 || route.direction !== 'backward' || route.fromNodeId !== 2)
+        throw Error('Port approach direction')
+      const change = await invoke('port_approach', {
+        operation: 'set_reverse',
+        edgeId: route.edgeId,
+        reverse: true,
+      })
+      const saved = previewLegacy(
+        serializeLegacy(e.document, e.legacySource).content,
+        'training.jmapx',
+      )
+      const edge = saved.edges.find((item) => item.from === 1 && item.to === 2)
+      if (
+        !change.after.reverse ||
+        edge.controls.backward.reverse !== 1 ||
+        edge.controls.forward.reverse !== 0 ||
+        edge.direction !== 1
+      )
+        throw Error('Directional Reverse round trip')
+      let rejected = false
+      try {
+        await invoke('port_approach', { operation: 'inspect' })
+        await invoke('port_approach', {
+          operation: 'set_reverse',
+          edgeId: saved.edges.find((item) => item.from === 2).id,
+          reverse: true,
+        })
+      } catch {
+        rejected = true
+      }
+      if (!rejected) throw Error('Unrelated approach accepted')
+      e.undo()
+      if (
+        (await invoke('port_approach', { operation: 'inspect', portId: 'P1' })).approaches[0]
+          .reverse
+      )
+        throw Error('Approach undo')
+      e.selectedPortId = 'P1'
+      return 'PASS selection, attachments, training references and direction-specific native port Reverse with undo'
     }),
   )
+  await page.getByRole('button', { name: /포트.*진입 설정/ }).click()
+  await page.getByRole('button', { name: '후진 · Reverse' }).click()
+  await page.getByTestId('apply-map-operation').click()
+  await page.getByText('P1 진입 · 후진 적용', { exact: true }).first().waitFor()
+  await page.getByRole('button', { name: '포트 참조 점검', exact: true }).click()
+  await page.getByText('검사 포트 1개 · 누락 참조 3건', { exact: true }).waitFor()
+  if (process.env.MGS_LIVE_AGENT === '1') {
+    await page.evaluate(async () => {
+      const { useEditor } = await import('/src/features/map-editor/index.ts')
+      const editor = useEditor()
+      editor.operationsOpen = false
+      editor.undo()
+      editor.selectedPortId = 'P1'
+    })
+    await page.unroute('**/api/assistant/propose')
+    const observation = page.waitForRequest(
+      (request) => {
+        if (!request.url().endsWith('/api/assistant/propose')) return false
+        return request
+          .postDataJSON()
+          .history.some(
+            (item) =>
+              item.tool_name === 'port_approach' &&
+              JSON.parse(item.content).result?.changed === true,
+          )
+      },
+      { timeout: 120000 },
+    )
+    await page
+      .getByTestId('ai-prompt')
+      .fill(
+        '교육 자료에서 후면 포크 사례를 찾아줘. 먼저 선택한 P1 포트의 진입 경로와 현재 설정을 조회한 다음, 진입 경로가 하나라면 그 방향의 Reverse를 설정해줘.',
+      )
+    await page.getByTestId('ai-send').click()
+    await page.waitForFunction(
+      async () => {
+        const { useEditor } = await import('/src/features/map-editor/index.ts')
+        return useEditor().document.edges.some(
+          (edge) =>
+            edge.from === 1 &&
+            edge.to === 2 &&
+            edge.direction === 1 &&
+            edge.controls?.backward?.reverse === 1 &&
+            edge.controls?.forward?.reverse === 0,
+        )
+      },
+      undefined,
+      { timeout: 120000 },
+    )
+    const history = (await observation).postDataJSON().history
+    assert.ok(
+      history.some(
+        (item) => item.tool_name === 'search_mgs_training' && JSON.parse(item.content).ok,
+      ),
+    )
+    assert.ok(
+      history.some(
+        (item) =>
+          item.tool_name === 'port_approach' &&
+          JSON.parse(item.content).result?.approaches?.length === 1,
+      ),
+    )
+    console.log('Live Ollama applied only the selected port approach direction')
+  }
 } finally {
   await browser.close()
   await server.close()

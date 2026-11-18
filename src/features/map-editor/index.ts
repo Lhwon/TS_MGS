@@ -5,6 +5,14 @@
  * 작성일자: 2026-10-20
  */
 export { useEditor } from '@/features/map-editor/model/editor.ts'
+export { default as SelectedMapEditor } from '@/features/map-editor/ui/SelectedMapEditor.vue'
+export { findFeatureBoundaries } from '@/features/map-editor/model/featureBoundaries.ts'
+export { makeLotDistance } from '@/features/map-editor/model/lotDistance.ts'
+export { auditPortReferences } from '@/features/map-editor/model/portAudit.ts'
+export {
+  inspectPortApproach,
+  setPortApproachReverse,
+} from '@/features/map-editor/model/portApproach.ts'
 export type { Tool } from '@/features/map-editor/model/editor.ts'
 export { useMapFiles } from '@/features/map-editor/model/useMapFiles.ts'
 export type { NativeSaveOptions } from '@/features/map-editor/model/useMapFiles.ts'

@@ -103,6 +103,104 @@ try {
   })
   await page.goto(server.resolvedUrls.local[0], { waitUntil: 'networkidle' })
   await page.waitForFunction(() => !!window.__mapView)
+  const themeToggle = page.getByTestId('theme-toggle')
+  const originalTheme = await page.locator('html').getAttribute('data-theme')
+  const tabList = page.getByRole('tablist', { name: 'MGS 작업 메뉴' })
+  const tabs = await tabList.getByRole('tab').allTextContents()
+  for (const theme of ['light', 'dark']) {
+    if ((await page.locator('html').getAttribute('data-theme')) !== theme) await themeToggle.click()
+    await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme)
+    for (const width of [1120, 800, 520]) {
+      await page.setViewportSize({ width, height: 720 })
+      for (const name of tabs) {
+        await tabList.getByRole('tab', { name: name.trim(), exact: true }).click()
+        const clipped = await page.evaluate(() => {
+          const root = document.querySelector('.mgs-workspace')
+          const ribbon = root.querySelector('.ribbon-content')
+          const bottom = root.querySelector('.mgs-bottom').getBoundingClientRect()
+          const status = root.querySelector('.mgs-status').getBoundingClientRect()
+          const map = root.querySelector('.mgs-map').getBoundingClientRect()
+          const errors = []
+          if (map.height < 140 || bottom.bottom > status.top + 1 || status.bottom > innerHeight + 1)
+            errors.push('지도 또는 하단 영역 잘림')
+          for (const button of root.querySelectorAll(
+            '.ribbon-group .v-btn, .selected-actions .v-btn',
+          )) {
+            const text = document.createRange()
+            text.selectNodeContents(button.querySelector('.v-btn__content'))
+            const box = button.getBoundingClientRect()
+            const area =
+              button.closest('.selected-actions')?.getBoundingClientRect() ??
+              ribbon.getBoundingClientRect()
+            for (const fragment of text.getClientRects()) {
+              if (
+                fragment.width &&
+                (fragment.left < box.left - 1 ||
+                  fragment.right > box.right + 1 ||
+                  fragment.top < box.top - 1 ||
+                  fragment.bottom > box.bottom + 1 ||
+                  fragment.top < area.top - 1 ||
+                  fragment.bottom > area.bottom + 1)
+              )
+                errors.push(button.textContent.trim())
+            }
+          }
+          return errors
+        })
+        assert.deepEqual(clipped, [], `${theme} ${width}px ${name.trim()} 레이블과 레이아웃`)
+      }
+      if (width === 1120) {
+        for (const name of ['File', 'Data']) {
+          await tabList.getByRole('tab', { name, exact: true }).click()
+          await page.screenshot({ path: path.join(output, `${theme}-${name}.png`), scale: 'css' })
+        }
+      }
+    }
+  }
+  await tabList.getByRole('tab', { name: 'File', exact: true }).click()
+  if ((await page.locator('html').getAttribute('data-theme')) !== originalTheme)
+    await themeToggle.click()
+  await page.setViewportSize({ width: 1560, height: 980 })
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
+    const { emptyDocument } = await import('/src/entities/map/model/map.ts')
+    const map = emptyDocument()
+    map.nodes = [
+      { id: 1, name: 'N1', x: 0, y: 0 },
+      { id: 2, name: 'N2', x: 1300, y: 0, direction: 1 },
+      { id: 3, name: 'N3', x: 2600, y: 0, direction: 1 },
+      { id: 4, name: 'N4', x: 2900, y: 160, curve: true, virtual: true },
+      { id: 5, name: 'N5', x: 3050, y: 420, curve: true, virtual: true },
+      { id: 6, name: 'N6', x: 3050, y: 900 },
+    ]
+    map.edges = [
+      { id: 'a', from: 1, to: 2, direction: 0 },
+      { id: 'b', from: 2, to: 3, direction: 1 },
+      { id: 'c', from: 3, to: 4, direction: 0, drivingType: 2 },
+      { id: 'd', from: 4, to: 5, direction: 0, drivingType: 2 },
+      { id: 'e', from: 5, to: 6, direction: 0, drivingType: 2 },
+    ]
+    map.ports = [
+      { id: 'P1', nodeId: 1, name: '입고', x: 400, y: 550, width: 490, height: 310 },
+      { id: 'P2', nodeId: 3, name: '출고', x: 2000, y: 620, width: 490, height: 310 },
+    ]
+    const editor = useEditor()
+    editor.load(JSON.stringify(map), 'topology-preview.tsmgs.json')
+    editor.selectedPortId = 'P2'
+  })
+  for (const theme of ['light', 'dark']) {
+    if ((await page.locator('html').getAttribute('data-theme')) !== theme) await themeToggle.click()
+    await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme)
+    await page.screenshot({
+      path: path.join(output, `topology-${theme}.png`),
+      scale: 'css',
+      animations: 'disabled',
+    })
+  }
+  if ((await page.locator('html').getAttribute('data-theme')) !== originalTheme)
+    await themeToggle.click()
+  await page.evaluate(() => document.activeElement?.blur())
   await page.evaluate(async () => {
     const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
     const { emptyDocument } = await import('/src/entities/map/model/map.ts')
@@ -170,29 +268,60 @@ try {
     const before = JSON.stringify(source)
     const topology = createMapTopology(source)
     const arrows = topology.group.getObjectByName('arrows').geometry.getAttribute('position')
+    const directional = createMapTopology({
+      ...source,
+      nodes: [source.nodes[0], { ...source.nodes[1], curve: false }],
+      edges: [
+        {
+          id: 'E1',
+          from: 1,
+          to: 2,
+          direction: 1,
+          controls: { forward: { vehicleDegree: 0 }, backward: { vehicleDegree: 0, reverse: 1 } },
+        },
+      ],
+    })
+    const pair = directional.group.getObjectByName('arrows').geometry.getAttribute('position')
+    const headings = directional.group.getObjectByName('vehicle-headings')
+    const heading = headings.geometry.getAttribute('position')
     const result = {
       unchanged: before === JSON.stringify(source),
       origin: topology.nodeMesh.position.x,
       localX: topology.nodeMesh.instanceMatrix.array[28],
       curveRadiusMm: topology.group.getObjectByName('node-borders').instanceMatrix.array[16] * 25,
-      markerLength: Math.abs(arrows.getX(1)),
-      markerHalfWidth: Math.abs(arrows.getY(0)),
+      markerLength: arrows.getX(0) - arrows.getX(1),
+      markerHalfWidth: Math.abs(arrows.getY(1)),
+      centered: arrows.getX(0) < 1000 && arrows.getX(1) > 0,
+      opposing: pair.count === 6 && pair.getX(0) > pair.getX(1) && pair.getX(3) < pair.getX(4),
+      vehicle:
+        !headings.visible &&
+        heading.count === 6 &&
+        heading.getX(0) > heading.getX(1) &&
+        heading.getX(3) < heading.getX(4),
+      portFill: topology.portMesh.geometry
+        .getAttribute('position')
+        .array.some((z, index) => index % 3 === 2 && z === 95),
     }
-    topology.group.traverse((object) => {
-      object.geometry?.dispose()
-      if (object.material)
-        for (const material of Array.isArray(object.material) ? object.material : [object.material])
-          material.dispose()
-      if (object.isInstancedMesh) object.dispose()
-    })
+    for (const { group } of [topology, directional])
+      group.traverse((object) => {
+        object.geometry?.dispose()
+        if (object.material)
+          for (const material of Array.isArray(object.material)
+            ? object.material
+            : [object.material])
+            material.dispose()
+        if (object.isInstancedMesh) object.dispose()
+      })
     return result
   })
   assert.ok(precision.unchanged)
   assert.equal(precision.origin, 900000000)
   assert.equal(precision.localX, 1000)
-  assert.ok(Math.abs(precision.curveRadiusMm - 1 / 0.03) < 0.00001)
-  assert.equal(precision.markerLength, 200)
+  assert.ok(Math.abs(precision.curveRadiusMm - 17.5) < 0.00001)
+  assert.ok(Math.abs(precision.markerLength - 200) < 0.001)
   assert.ok(Math.abs(precision.markerHalfWidth - 2 / 0.03) < 0.00001)
+  assert.ok(precision.centered && precision.portFill)
+  assert.ok(precision.opposing && precision.vehicle)
   const topology = await page.evaluate(() => {
     const view = window.__mapView
     const nodes = view.scene.getObjectByName('nodes')
@@ -260,7 +389,7 @@ try {
       calls: view.renderer.info.render.calls,
     }
   })
-  assert.ok(movement.cache && movement.geometry && movement.panned)
+  assert.ok(movement.cache && movement.geometry && movement.panned, JSON.stringify(movement))
   assert.equal(movement.smallText, 0)
   assert.ok(movement.frames >= 20)
   await page.screenshot({ path: path.join(output, 'map-light.png') })

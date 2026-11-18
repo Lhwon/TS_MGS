@@ -196,6 +196,8 @@ export const createFacilityScene = (
       if (['node-borders', 'nodes'].includes(object.name)) object.visible = layers.nodes
       if (object.name === 'ports') object.visible = layers.ports
       if (object.name === 'port-captions') object.visible = layers.ports && !!layers.portCaptions
+      if (object.name === 'vehicle-headings')
+        object.visible = layers.edges && !!layers.vehicleHeadings
     }
     portMeshes = ground.children.filter(
       (o) => o.visible && (o.userData.portIds || o.userData.portFaces),

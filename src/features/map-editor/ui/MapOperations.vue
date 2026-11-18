@@ -5,7 +5,8 @@
  * 작성일자: 2026-11-18
 -->
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { VAutocomplete } from 'vuetify/components'
 import { useEditor } from '@/features/map-editor/model/editor.ts'
 import { subdividePaths, shortestMapPath } from '@/features/map-editor/model/operations.ts'
 import { editSelectedNodes, NODE_FLAGS, PATH_CONTROLS } from '@/entities/map/index.ts'
@@ -14,6 +15,11 @@ import { makeAroundData } from '@/features/map-editor/model/around.ts'
 import { downloadJson } from '@/shared/lib/files/index.ts'
 import { assignRealIds } from '@/features/map-editor/model/realIds.ts'
 import { findNearbyNodes } from '@/features/map-editor/model/nearby.ts'
+import { auditPortReferences } from '@/features/map-editor/model/portAudit.ts'
+import {
+  inspectPortApproach,
+  setPortApproachReverse,
+} from '@/features/map-editor/model/portApproach.ts'
 import {
   MAP_CONTROL_ACTIONS,
   applyAutomaticControls,
@@ -46,6 +52,59 @@ const flags = reactive<Record<string, number>>({}),
 const realIds = reactive({ start: 1, step: 1, order: 'id' as 'id' | 'xy' | 'yx', insert: false })
 const aroundRadius = ref(30000)
 const automaticAction = ref('spin-junction')
+const approachPort = ref(''),
+  approachEdge = ref(''),
+  approachReverse = ref(false)
+const emit = defineEmits<{ focus: [nodeId: number] }>()
+const portAudit = computed(() =>
+  tab.value === 'port-audit' && editor.operationsOpen ? auditPortReferences(editor.document) : null,
+)
+const auditPage = ref(0)
+watch(portAudit, () => {
+  auditPage.value = 0
+})
+/** 검토 대상 포트를 현재 선택으로 연결하는 지도 탐색 */
+const focusPortIssue = (portId: string, nodeId: number) => {
+  editor.selectedPortId = portId
+  editor.selectedId = nodeId
+  editor.selectedIds = [nodeId]
+  editor.operationsOpen = false
+  emit('focus', nodeId)
+}
+const approach = computed(() =>
+  editor.document.ports.some((port) => port.id === approachPort.value)
+    ? inspectPortApproach(editor.document, approachPort.value)
+    : null,
+)
+const approachRoute = computed(() =>
+  approach.value?.approaches.find((row) => row.edgeId === approachEdge.value),
+)
+watch(
+  () => [editor.operationsOpen, tab.value] as const,
+  ([open, current]) => {
+    if (open && current === 'approach') {
+      approachPort.value = editor.selectedPortId ?? ''
+      approachEdge.value = ''
+    }
+  },
+)
+watch(approach, (current) => {
+  if (!current?.approaches.some((row) => row.edgeId === approachEdge.value))
+    approachEdge.value = current?.approaches.length === 1 ? current.approaches[0].edgeId : ''
+})
+watch(approachRoute, (row) => {
+  approachReverse.value = row?.reverse ?? false
+})
+/** 확인한 진입 방향의 후진 플래그만 변경하는 포트 경로 적용 */
+const applyApproach = () =>
+  run(() => {
+    if (!approachRoute.value) throw new Error('포트와 진입 경로를 선택하세요.')
+    if (approachRoute.value.reverse === approachReverse.value) return '현재 설정과 같습니다.'
+    editor.commit((map) => {
+      setPortApproachReverse(map, approachPort.value, approachEdge.value, approachReverse.value)
+    })
+    return `${approachPort.value} 진입 · ${approachReverse.value ? '후진' : '기본 차량 방향'} 적용`
+  })
 /** 원본 Control Map Data의 선택 명령을 전체 지도에 하나의 이력으로 반영하는 자동 설정 */
 const applyAutomatic = () =>
   run(() => {
@@ -70,6 +129,32 @@ const checkNearby = () =>
     )
   })
 const aesVehicle = reactive({ ...DEFAULT_AES_VEHICLE })
+const aesReview = shallowRef<ReturnType<typeof makeAesData>>()
+const aesIndex = ref(1),
+  aesPhase = ref(2)
+const aesRow = computed(() => aesReview.value?.review[Number(aesIndex.value) - 1])
+watch([() => editor.document, aesVehicle], () => {
+  aesReview.value = undefined
+})
+/** 현재 지도와 차량 설정으로 충돌 목록을 다시 계산하는 검토 실행 */
+const reviewAes = () =>
+  run(() => {
+    const vehicle = { ...aesVehicle }
+    for (const key of Object.keys(vehicle) as (keyof typeof vehicle)[])
+      vehicle[key] = Number(vehicle[key])
+    const data = makeAesData(editor.document, vehicle, editor.legacySource)
+    aesReview.value = data
+    aesIndex.value = 1
+    return `계획 경로 ${data.paths}개 · 충돌 참조 ${data.collisions}개`
+  })
+/** 선택 AES 경로와 충돌 노드를 지도 선택으로 표시 */
+const selectAesNodes = () => {
+  const row = aesRow.value
+  if (!row) return
+  editor.selectedId = row.head
+  editor.selectedIds = [...new Set([row.head, row.target, ...row.nodes[aesPhase.value]])]
+  editor.operationsOpen = false
+}
 /** 원본 차량 설정 파일에서 첫 번째 AGV의 AES 생성 치수를 적용하는 설정 열기 */
 const importVehicle = async (event: Event) => {
   const input = event.target as HTMLInputElement,
@@ -244,6 +329,7 @@ const applyOperation = () => {
   const commands: Record<string, () => void> = {
     nodes: applyNodes,
     automatic: applyAutomatic,
+    approach: applyApproach,
     move,
     spacing: subdivide,
     control: applyControls,
@@ -284,6 +370,8 @@ const applyOperation = () => {
             { id: 'spacing', label: '노드 간격' },
             { id: 'control', label: '경로 제어' },
             { id: 'automatic', label: '자동 제어 설정' },
+            { id: 'approach', label: '포트 진입' },
+            { id: 'port-audit', label: '포트 참조 점검' },
             { id: 'distance', label: '경로 거리' },
             { id: 'grid', label: '격자 생성' },
             { id: 'bays', label: 'Bay 필터' },
@@ -302,7 +390,19 @@ const applyOperation = () => {
         </v-btn>
       </div>
       <v-select
-        v-if="!['aes', 'around', 'grid', 'distance', 'bays', 'nearby', 'automatic'].includes(tab)"
+        v-if="
+          ![
+            'aes',
+            'around',
+            'grid',
+            'distance',
+            'bays',
+            'nearby',
+            'automatic',
+            'approach',
+            'port-audit',
+          ].includes(tab)
+        "
         v-model="scope"
         :items="[
           { title: `선택 노드 ${selected.length}개`, value: 'selection' },
@@ -426,6 +526,97 @@ const applyOperation = () => {
             원본 path_around.bem 형식 · 정수 직선 거리 · 가까운 노드 순서
           </p>
         </div>
+        <div v-else-if="tab === 'port-audit' && portAudit">
+          <p class="text-body-2 mb-3">
+            검사 포트 {{ portAudit.checked }}개 · 누락 참조 {{ portAudit.issues.length }}건
+          </p>
+          <ul
+            v-if="portAudit.issues.length"
+            class="pa-0 audit-results"
+          >
+            <li
+              v-for="(issue, index) in portAudit.issues.slice(auditPage * 25, auditPage * 25 + 25)"
+              :key="index"
+              class="d-flex align-center ga-3 py-2"
+            >
+              <v-btn
+                color="primary"
+                variant="tonal"
+                @click="focusPortIssue(issue.portId, issue.nodeId)"
+              >
+                {{ issue.portId }}
+              </v-btn>
+              <span class="text-body-2">{{ issue.field }} · {{ issue.reference }}</span>
+            </li>
+          </ul>
+          <div
+            v-if="portAudit.issues.length > 25"
+            class="d-flex align-center ga-2 mt-2"
+          >
+            <v-btn
+              :disabled="auditPage === 0"
+              @click="auditPage--"
+            >
+              이전
+            </v-btn>
+            <span>{{ auditPage + 1 }} / {{ Math.ceil(portAudit.issues.length / 25) }}</span>
+            <v-btn
+              :disabled="(auditPage + 1) * 25 >= portAudit.issues.length"
+              @click="auditPage++"
+            >
+              다음
+            </v-btn>
+          </div>
+        </div>
+        <div
+          v-else-if="tab === 'approach'"
+          class="d-flex flex-column ga-4"
+        >
+          <VAutocomplete
+            v-model="approachPort"
+            label="포트"
+            :items="
+              editor.document.ports.map((port) => ({
+                value: port.id,
+                title: port.name ? `${port.id} · ${port.name}` : port.id,
+              }))
+            "
+          />
+          <v-select
+            v-if="approach?.approaches.length"
+            v-model="approachEdge"
+            label="진입 경로"
+            :items="
+              approach.approaches.map((row) => ({
+                value: row.edgeId,
+                title: `N${row.fromNodeId} → N${row.toNodeId} · ${row.reverse ? 'Reverse 사용' : '기본 차량 방향'}`,
+              }))
+            "
+          />
+          <p
+            v-else-if="approach"
+            class="text-body-2"
+          >
+            연결 노드 N{{ approach.nodeId }}로 들어오는 경로가 없습니다.
+          </p>
+          <template v-if="approachRoute">
+            <p class="text-body-2">
+              차량 유지각
+              {{
+                approachRoute.vehicleDegree === null ? '미지정' : `${approachRoute.vehicleDegree}°`
+              }}
+            </p>
+            <v-btn-toggle
+              v-model="approachReverse"
+              mandatory
+              color="primary"
+              aria-label="포트 진입 차량 방향"
+            >
+              <v-btn :value="false">기본 차량 방향</v-btn>
+              <v-btn :value="true">후진 · Reverse</v-btn>
+            </v-btn-toggle>
+          </template>
+        </div>
         <div v-else-if="tab === 'automatic'">
           <v-select
             v-model="automaticAction"
@@ -473,6 +664,52 @@ const applyOperation = () => {
             원본의 첫 번째 AGV 치수 기준 · 현재와 다음 위치 및 합집합 계산 · 현재 지도와 동일한
             버전의 AES 파일로 사용
           </p>
+          <v-btn
+            class="mt-3"
+            variant="outlined"
+            @click="reviewAes"
+          >
+            충돌 참조 계산
+          </v-btn>
+          <div
+            v-if="aesReview?.paths"
+            class="mt-4"
+          >
+            <div class="fields">
+              <v-text-field
+                v-model="aesIndex"
+                label="AES 경로 인덱스"
+                type="number"
+                min="1"
+                :max="aesReview.paths"
+              />
+              <v-select
+                v-model="aesPhase"
+                label="비교 위치"
+                :items="[
+                  { value: 0, title: '현재 · Pre' },
+                  { value: 1, title: '다음 · Next' },
+                  { value: 2, title: '합집합 · Both' },
+                  { value: 3, title: 'All' },
+                ]"
+              />
+            </div>
+            <div
+              v-if="aesRow"
+              class="mt-3 text-body-2"
+            >
+              <p>계획 경로 N{{ aesRow.head }} / N{{ aesRow.target }}</p>
+              <p class="result">충돌 경로 {{ aesRow.paths[aesPhase].join(', ') || '없음' }}</p>
+              <p class="result">충돌 노드 {{ aesRow.nodes[aesPhase].join(', ') || '없음' }}</p>
+              <v-btn
+                variant="outlined"
+                class="mt-2"
+                @click="selectAesNodes"
+              >
+                지도에서 선택
+              </v-btn>
+            </div>
+          </div>
         </div>
         <div v-else-if="tab === 'bays'">
           <v-select
@@ -539,11 +776,14 @@ const applyOperation = () => {
           {{ result }}
         </p>
       </v-card-text>
-      <v-card-actions class="mt-4 pa-0">
+      <v-card-actions
+        v-if="tab !== 'port-audit'"
+        class="mt-4 pa-0"
+      >
         <v-btn
           color="primary"
           variant="flat"
-          :disabled="editor.readOnly"
+          :disabled="editor.readOnly || (tab === 'approach' && !approachRoute)"
           data-testid="apply-map-operation"
           @click="applyOperation"
         >
@@ -554,6 +794,9 @@ const applyOperation = () => {
   </v-dialog>
 </template>
 <style scoped lang="scss">
+.audit-results {
+  list-style: none;
+}
 .fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

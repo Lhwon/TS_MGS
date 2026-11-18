@@ -91,8 +91,8 @@ export const createMapLabels = (
             ? [`View : ${node.safetyViewDistance.toLocaleString('en-US')}`]
             : []),
         ].join('\n'),
-        x: node.x + 250,
-        y: node.y - 100,
+        x: node.x,
+        y: node.y - 75,
         size: layers.fontStyle ? theme.nodeFontSize : node.virtual || node.curve ? 70 : 100,
         color:
           node.safetyDistance || node.safetyViewDistance

@@ -171,16 +171,16 @@ npm start
 
 ### 로컬 AI 연결(선택)
 
-Ollama 서버를 실행한 후 환경 변수를 지정합니다.
+프로젝트 루트의 `.env.example`을 `.env`로 복사한 뒤 Ollama 주소와 모델을 지정합니다.
 
-```powershell
-$env:TS_MGS_AI_URL = 'http://127.0.0.1:11434'
-$env:TS_MGS_AI_MODEL = 'gpt-oss:20b'
-$env:TS_MGS_VISION_MODEL = 'qwen2.5vl:7b'
-
-npm start
+```dotenv
+TS_MGS_AI_URL=http://127.0.0.1:11434
+TS_MGS_AI_MODEL=gpt-oss:20b
+TS_MGS_VISION_MODEL=qwen2.5vl:7b
 ```
 
+- `npm run dev`, `npm run dev:web`, `npm start` 모두 프로젝트 루트의 `.env`를 읽습니다. 수정 후 실행 중인 개발 서버나 Electron을 재시작합니다.
+- 명시적으로 설정한 프로세스 환경 변수가 있으면 `.env`보다 우선합니다. 실제 `.env`는 Git에서 제외됩니다.
 - AI 작업 모델과 비전 모델은 별도 설정합니다.
 - 채팅 상단 모델 선택 UI에서 설치된 Ollama 모델을 검색·선택할 수 있습니다.
 - 모델 변경은 다음 요청부터 적용되며 선택 상태는 재실행 후에도 유지됩니다.
@@ -250,16 +250,18 @@ node scripts/check-aes.mjs
 
 **기존 C# MGS의 2D 기능 이관 진행 중**
 
-원본 리본 명령 107개 중 **22개는 현재 연결되지 않아 비활성 상태**로 기록되어 있습니다. 나머지 명령도 모든 하위 동작의 동등성 검증이 완료됐다는 뜻은 아닙니다.
+원본 리본 명령 107개 중 **16개는 현재 연결되지 않아 비활성 상태**입니다. 차량 방향 표시, 현재 맵의 IC/JC 경계 후보 확인, LOT Closer 파일 추출 및 특수 주행의 자동 Reverse 옵션을 추가했습니다. 연결된 명령에도 아래 추가 이관 및 검증 항목이 남아 있습니다.
+
+에이전트는 통합 교육 PPT와 두 영상에서 확인한 용어와 작업 절차를 앱 내부에서 검색하며 슬라이드 번호 또는 영상 시각을 반환합니다. 지도에서 포트를 선택하고 진입 방향 변경을 요청하면 연결 노드의 진입 경로와 현재 차량 설정을 확인합니다. 수동 작업에서는 하단 **포트 진입 설정**에서 포트와 경로를 고른 뒤 Reverse를 적용할 수 있습니다. **Verify AES Data**는 치수와 지도에 따른 PRE/NEXT/BOTH 참조를 표시하고 해당 노드를 지도에서 선택합니다.
 
 <details>
 <summary><strong>미이관 또는 추가 검증 필요 항목 보기</strong></summary>
 
 - Feature·Blocking·Pre-Occupation 생성·편집, Command·SCMD·Schedule·Vehicle Limited Area·DPP
 - AGV·Carrier·Contour·ODS·Grid·Drawing 설정 창 및 SETTING 파일 저장·복제
-- 불법 노드·포트의 상세 진단, LOT 거리, IC/JC, 제외 Occupation, AES 상세 조회
-- 차량 방향 도형, 곡선 시작 노드 강제 삭제, 곡선 재구성·그래프 복제
-- 직각 주행 자동 Reverse 전파
+- 불법 노드 진단, 포트 원본 기준 좌표·노드 UID 불일치 진단과 복구, Feature 생성 결과와 IC/JC 전수 대조, 제외 Occupation, AES 외곽선 표시 및 충돌 참조 수동 수정
+- 곡선 시작 노드 강제 삭제, 곡선 재구성·그래프 복제
+- 사행·직각·Crab 주행의 자동 Reverse 현장 지도 대조
 - DB 데이터 적용 및 Ver.23 이전 지도 파일 변환
 - 원본 C#에서 생성한 현장 AES·Around 파일의 전수 비교
 - 원본 저장 마법사의 전체 단계 동등성 검증

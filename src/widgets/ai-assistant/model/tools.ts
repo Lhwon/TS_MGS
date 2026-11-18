@@ -5,7 +5,14 @@
  * 작성일자: 2026-11-18
  */
 import type { Ref } from 'vue'
-import { subdividePaths, shortestMapPath, useEditor } from '@/features/map-editor/index.ts'
+import {
+  subdividePaths,
+  shortestMapPath,
+  useEditor,
+  inspectPortApproach,
+  auditPortReferences,
+  setPortApproachReverse,
+} from '@/features/map-editor/index.ts'
 import { useFacilityEditor } from '@/features/facility-editor/index.ts'
 import {
   analyzeDrawing,
@@ -13,6 +20,7 @@ import {
   inspectSelectedNodes,
   editSelectedNodes,
   selectionDelta,
+  searchMgsTraining,
   type AssistantToolCall,
 } from '@/features/ai-assistant/index.ts'
 import {
@@ -30,6 +38,16 @@ import {
   type DrawingFinding,
 } from '@/features/drawing-import/index.ts'
 import { executeDrawingTool } from '@/widgets/ai-assistant/model/drawingTools.ts'
+import type { MapDocument } from '@/entities/map/index.ts'
+const inspectedApproaches = new WeakMap<
+  AbortController,
+  { map: MapDocument; portIds: Set<string> }
+>()
+/** 편집 작업 전체에 적용할 실제 화면 선택 범위 */
+const selectedNodeIds = (editor: ReturnType<typeof useEditor>) => [
+  ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
+]
+
 interface Options {
   context: () => ReturnType<typeof agentContext>
   drawing: () => Promise<DrawingAttachment>
@@ -45,9 +63,7 @@ export const agentContext = (attachment?: DrawingAttachment) => {
   const editor = useEditor(),
     facility = useFacilityEditor(),
     map = editor.document
-  const nodeIds = [
-    ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-  ]
+  const nodeIds = selectedNodeIds(editor)
   return {
     map: {
       name: editor.sourceName,
@@ -188,9 +204,59 @@ export const executeAgentTool = async (
       throw new Error(`${key} 수치를 확인하세요.`)
   if (name === 'get_map_context')
     return args.entity === 'summary' ? options.context() : readContext(args)
+  if (name === 'search_mgs_training') return searchMgsTraining(String(args.query ?? ''))
+  if (name === 'audit_port_references') {
+    const { checked, issues } = auditPortReferences(
+      map,
+      typeof args.portId === 'string' ? args.portId : undefined,
+    )
+    const offset = Math.max(0, Math.trunc(Number(args.offset) || 0))
+    return {
+      checked,
+      total: issues.length,
+      offset,
+      issues: issues.slice(offset, offset + 40),
+      hasMore: offset + 40 < issues.length,
+    }
+  }
+  if (name === 'port_approach') {
+    const portId = String(args.portId ?? editor.selectedPortId ?? '')
+    const state = inspectPortApproach(map, portId)
+    const reviewed = inspectedApproaches.get(request)
+    if (args.operation === 'inspect') {
+      if (reviewed?.map === map) reviewed.portIds.add(portId)
+      else inspectedApproaches.set(request, { map, portIds: new Set([portId]) })
+      return state
+    }
+    if (
+      args.operation !== 'set_reverse' ||
+      typeof args.edgeId !== 'string' ||
+      typeof args.reverse !== 'boolean'
+    )
+      throw new Error('진입 경로와 후진 설정 여부를 지정하세요.')
+    if (editor.readOnly) throw new Error('읽기 전용 지도입니다.')
+    if (reviewed?.map !== map || !reviewed.portIds.has(portId))
+      throw new Error(
+        '먼저 현재 지도에서 port_approach inspect로 이 포트의 진입 경로를 조회하세요.',
+      )
+    const before = state.approaches.find((row) => row.edgeId === args.edgeId)
+    if (!before) throw new Error('선택한 경로는 이 포트로 진입할 수 없습니다.')
+    if (before.reverse === args.reverse) return { changed: false, portId, before, after: before }
+    const { edgeId, reverse } = args
+    mutate(() =>
+      editor.commit((document) => {
+        setPortApproachReverse(document, portId, edgeId, reverse)
+      }),
+    )
+    const after = inspectPortApproach(editor.document, portId).approaches.find(
+      (row) => row.edgeId === edgeId,
+    )
+    if (after?.reverse !== reverse) throw new Error('포트 진입 변경 결과를 확인할 수 없습니다.')
+    return { changed: true, portId, before, after, undoAvailable: editor.canUndo }
+  }
   if (name === 'subdivide_paths') {
     if (editor.readOnly) throw new Error('읽기 전용 지도입니다.')
-    const selected = args.scope === 'selection' ? options.context().selection.nodeIds : undefined
+    const selected = args.scope === 'selection' ? selectedNodeIds(editor) : undefined
     if (selected && !selected.length) throw new Error('선택한 노드가 없습니다.')
     const output = subdividePaths(map, Number(args.spacingMm), selected)
     mutate(() => editor.commit((document) => Object.assign(document, output.map)))
@@ -220,7 +286,7 @@ export const executeAgentTool = async (
     const target = String(args.target ?? targets[0])
     if (!targets.includes(target)) throw new Error('선택한 대상 종류를 확인하세요.')
     if (target === 'nodes') {
-      const result = editSelectedNodes(map, context.nodeIds, args)
+      const result = editSelectedNodes(map, selectedNodeIds(editor), args)
       mutate(() => editor.commit((document) => Object.assign(document, result.map)))
       return {
         changed: result.results,

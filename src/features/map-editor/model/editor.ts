@@ -62,6 +62,7 @@ export const useEditor = defineStore('editor', () => {
     checkOverlap: false,
     autoPrevious: true,
     autoConnectDelete: false,
+    autoReverseOrthogonal: false,
   })
   /** 원본 직각과 축 자석 옵션을 노드 입력에 적용하는 좌표 보정 */
   const snapPoint = (x: number, y: number, connection: number | null) => {
@@ -267,7 +268,9 @@ export const useEditor = defineStore('editor', () => {
         references = reordered.references
         if (nextSource) nextSource = remapLegacySource(nextSource, reordered.references)
       }
-      validated = serializeLegacySnapshot(validated, nextSource).map
+      validated = serializeLegacySnapshot(validated, nextSource, {
+        autoReverseOrthogonal: drawingOptions.autoReverseOrthogonal,
+      }).map
     }
     // 전체 지도 스냅샷을 제한된 개수로 보관하며 대형 지도 메모리 부담이 확인되면 변경 명령 단위 이력으로 전환할 수 있는 현재 저장 방식
     captureContext()

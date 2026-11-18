@@ -319,7 +319,10 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <div class="studio-shell d-flex flex-column overflow-hidden">
+  <div
+    class="studio-shell d-flex flex-column overflow-hidden"
+    :class="{ 'facility-shell': mode === 'facility' }"
+  >
     <WorkspaceHeader
       v-if="mode === 'facility'"
       :busy="files.busy.value || facility.busy"
@@ -542,6 +545,9 @@ kbd {
 }
 .studio-shell {
   height: 100dvh;
+  min-width: 0;
+}
+.facility-shell {
   min-height: 650px;
   min-width: 1100px;
 }

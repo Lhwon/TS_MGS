@@ -94,12 +94,22 @@ try {
     if (makeAesData(map, vehicle).content !== '1\t\r\n1\t\r\n') throw Error('Empty dummy table')
     const { useEditor } = await import('/src/features/map-editor/index.ts')
     const editor = useEditor()
+    editor.load(native.content, 'aes-review.jmapx', '', native.groups)
     editor.operationTab = 'aes'
     editor.operationsOpen = true
     return { paths: output.paths, collisions: output.collisions, roundtrip: true }
   })
   await page.getByText('AGV_TYPE.INI 열기', { exact: false }).waitFor()
   assert.ok(await page.getByLabel('외곽 표본 간격 mm', { exact: true }).isVisible())
+  await page.getByRole('button', { name: '충돌 참조 계산' }).click()
+  await page.getByText('계획 경로 N2 / N1', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '지도에서 선택' }).click()
+  assert.ok(
+    await page.evaluate(async () => {
+      const { useEditor } = await import('/src/features/map-editor/index.ts')
+      return useEditor().selectedIds.includes(2) && useEditor().selectedIds.includes(1)
+    }),
+  )
   console.log('AES data and UI OK', result)
 } finally {
   await browser.close()

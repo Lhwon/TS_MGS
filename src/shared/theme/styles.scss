@@ -2,7 +2,7 @@
  * 파일명: styles.scss
  * 설명: 로컬 글꼴과 입력 및 버튼의 공통 시각 상태와 테마 기준
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 @font-face {
   font-family: 'Pretendard';
@@ -124,6 +124,14 @@ input[type='checkbox'] {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+// Vuetify 필드의 기본 포커스 윤곽선에만 강조색 적용
+.v-field :is(input, textarea):focus-visible {
+  outline: none;
+}
+.v-field--focused .v-field__outline {
+  color: var(--accent);
 }
 
 ::-webkit-scrollbar {

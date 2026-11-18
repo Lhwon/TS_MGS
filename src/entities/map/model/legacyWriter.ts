@@ -15,6 +15,10 @@ export interface LegacySource {
   groups: string
   baseline: MapDocument
 }
+export interface LegacyWriteOptions {
+  rebuildControls?: boolean
+  autoReverseOrthogonal?: boolean
+}
 
 /**
  * 원본과 편집 문서의 동일 속성을 비교하는 변경 판정
@@ -149,13 +153,13 @@ const planningEdges = (map: MapDocument) => {
 export const serializeLegacy = (
   input: MapDocument,
   source?: LegacySource | null,
-  options: { rebuildControls?: boolean } = {},
+  options: LegacyWriteOptions = {},
 ) => {
   const map = parseDocument(JSON.stringify(input))
   if (map.units !== 'mm')
     throw new Error('도면 기준 거리를 지정해 mm 축척을 확정한 후 JMAPX로 저장하세요.')
   const before = source?.baseline
-  if (before && same(before, map) && !options.rebuildControls)
+  if (before && same(before, map) && !options.rebuildControls && !options.autoReverseOrthogonal)
     return { content: source!.content, groups: source!.groups }
   const lines = source?.content.replace(/^\uFEFF/, '').split(/\r?\n/) ?? []
   const header = lines[1]?.split('\t') ?? ['0', '-111', '0', '0', '1', '0', '0', '0', '']
@@ -518,6 +522,7 @@ export const serializeLegacy = (
   }
   if (
     options.rebuildControls ||
+    options.autoReverseOrthogonal ||
     topologyChanged ||
     moved.size ||
     map.edges.some(
@@ -525,6 +530,34 @@ export const serializeLegacy = (
     )
   ) {
     const pathParts = paths.map(splitPath)
+    if (options.autoReverseOrthogonal) {
+      const byRealId = new Map<string, (typeof pathParts)[number][]>()
+      for (const part of pathParts) {
+        const matches = byRealId.get(part.head[1]) ?? []
+        matches.push(part)
+        byRealId.set(part.head[1], matches)
+      }
+      for (const part of pathParts)
+        for (const block of part.blocks) {
+          const kind = Number(block[5])
+          if (
+            Number(block[24]) !== 2 ||
+            kind < 4 ||
+            kind > 9 ||
+            (Number(block[27]) === 1 && Number(block[15]) !== -1)
+          )
+            continue
+          // 연결 하나인 경우 상대 Real ID를 기준으로 찾고 분기에서는 같은 노드의 다른 경로를 사용
+          const candidates =
+            part.blocks.length === 1
+              ? (byRealId.get(block[1]) ?? []).flatMap((source) => source.blocks)
+              : part.blocks
+          for (const candidate of candidates) {
+            const type = Number(candidate[5])
+            if (candidate !== block && type >= 4 && type <= 9) block[16] = candidate[16]
+          }
+        }
+    }
     const indexes = new Map<string, number>()
     let sequence = 1
     for (const part of pathParts) {

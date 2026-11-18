@@ -60,10 +60,18 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let topologyGroup = new THREE.Group()
   let nodeMesh: THREE.InstancedMesh | null = null
   let portMesh: THREE.Mesh | null = null
+  let selectedPortId: string | null = null
+  const portOutline = new THREE.LineLoop(
+    new THREE.BufferGeometry().setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3),
+    ),
+    new THREE.LineBasicMaterial({ color: 0xff9900, depthTest: false, depthWrite: false }),
+  )
   let highlightMesh = new THREE.Mesh(
     new THREE.RingGeometry(MAP_NODE_RADIUS_MM * 1.8, MAP_NODE_RADIUS_MM * 2.2, 32),
     new THREE.MeshBasicMaterial({
-      color: 0x69efc3,
+      color: 0xff9900,
       side: THREE.DoubleSide,
       depthTest: false,
       depthWrite: false,
@@ -283,6 +291,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     portMesh = topology.portMesh
     setLayers(visibleLayers)
     setSelected(selectedId)
+    setSelectedPort(selectedPortId)
   }
   /**
    * 지도 테마를 교체하고 기존 문서를 다시 구성하는 색상 및 표시 설정 적용
@@ -312,6 +321,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     if (edges) edges.visible = layers.edges
     const arrows = topologyGroup.getObjectByName('arrows')
     if (arrows) arrows.visible = layers.edges
+    const headings = topologyGroup.getObjectByName('vehicle-headings')
+    if (headings) headings.visible = layers.edges && !!layers.vehicleHeadings
     setSelected(selectedId)
     requestRender()
   }
@@ -339,6 +350,21 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     const node = mapDocument?.nodes.find((item) => item.id === id)
     highlightMesh.visible = !!node && visibleLayers.nodes
     if (node) highlightMesh.position.set(node.x, node.y, 15)
+    requestRender()
+  }
+  /** 그룹에 속한 포트는 화면에 나타난 그룹 외곽으로 강조하는 선택 표시 */
+  const setSelectedPort = (id: string | null) => {
+    selectedPortId = id
+    const target =
+      id === null
+        ? undefined
+        : (mapDocument?.portGroups?.find((group) => group.portIds.includes(id)) ??
+          mapDocument?.ports.find((port) => port.id === id))
+    portOutline.visible = !!target && visibleLayers.ports
+    if (target) {
+      portOutline.position.set(target.x, target.y, 98)
+      portOutline.scale.set((target.width ?? 420) + 30, (target.height ?? 260) + 30, 1)
+    }
     requestRender()
   }
   /**
@@ -759,6 +785,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     ;(grid.material as THREE.Material).dispose()
     highlightMesh.geometry.dispose()
     highlightMesh.material.dispose()
+    portOutline.geometry.dispose()
+    portOutline.material.dispose()
     renderer.dispose()
     canvas.remove()
     labelCanvas.remove()
@@ -797,7 +825,9 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   grid.renderOrder = -200
   highlightMesh.renderOrder = 10
   highlightMesh.visible = false
-  scene.add(grid, topologyGroup, highlightMesh, curvePreview, drawingPlane)
+  portOutline.visible = false
+  portOutline.renderOrder = 11
+  scene.add(grid, topologyGroup, highlightMesh, portOutline, curvePreview, drawingPlane)
   const canvas = renderer.domElement
   canvas.addEventListener('pointerdown', pointerDown)
   canvas.addEventListener('dblclick', doubleClick)
@@ -841,6 +871,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     setLayers: setLayers,
     setTool: setTool,
     setSelected: setSelected,
+    setSelectedPort,
     setAreaSelection: setAreaSelection,
     fit: fit,
     focus: focus,

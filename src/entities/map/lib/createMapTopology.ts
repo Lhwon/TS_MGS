@@ -11,8 +11,8 @@ import type { MapDocument } from '@/entities/map/model/map.ts'
 import { legacyColor, mgsTheme, displayMapPorts } from '@/entities/map/model/view.ts'
 // TS_UI의 원본 좌표 반경과 동일한 노드 치수
 export const MAP_NODE_RADIUS_MM = 25
-// TS_UI의 방향 마커 치수를 원본 밀리미터 좌표로 환산하는 기준
-const MAP_MARKER_SIZE_MM = 2 / 0.03
+// 원형 실제 노드와 곡선 보간점을 구분하는 표시 반경
+const MAP_CURVE_NODE_RADIUS_MM = 17.5
 
 // 평면 편집기와 삼차원 바닥에서 같은 좌표와 형상을 재사용하는 지도 도형 생성
 /**
@@ -102,54 +102,84 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
     )
     for (let i = 0; i < 6; i++) colors.push(color.r, color.g, color.b)
   }
+  const vehiclePositions: number[] = []
+  const vehicleColors: number[] = []
+  /** 정점 중심과 진행 각도로 방향을 나타내는 삼각형 추가 */
+  const directionMarker = (
+    vertices: number[],
+    colors: number[],
+    x: number,
+    y: number,
+    angle: number,
+    size: number,
+    color: THREE.Color,
+  ) => {
+    const cos = Math.cos(angle),
+      sin = Math.sin(angle)
+    for (const [forward, side] of [
+      [2 * size, 0],
+      [-size, -size],
+      [-size, size],
+    ]) {
+      vertices.push(x + cos * forward - sin * side, y + sin * forward + cos * side, 2)
+      colors.push(color.r, color.g, color.b)
+    }
+  }
   for (const edge of map.edges) {
     const a = byId.get(edge.from),
       b = byId.get(edge.to)
     if (!a || !b) continue
-    const color = new THREE.Color(
-      edge.direction === 0 || edge.direction === undefined
-        ? theme.oneWay
-        : edge.direction === 1
-          ? theme.bothWays
-          : 0xff0000,
-    )
+    const both = edge.direction === 1
+    const color = new THREE.Color(both ? theme.bothWays : theme.oneWay)
     addSegment(a.x, a.y, b.x, b.y, color)
-    if (a.curve) continue
-    const angle = Math.atan2(b.y - a.y, b.x - a.x)
-    {
-      // 경로 중간점이 아닌 출발 노드를 기준으로 배치하는 원본 방향 화살표
-      const size = theme.arrowSize === 0 ? 0 : MAP_MARKER_SIZE_MM
-      color.set(
-        a.virtual || a.curve
-          ? theme.virtual
-          : a.noSendGoal
-            ? 0
-            : edge.direction === 1
-              ? theme.bothWays
-              : edge.direction === undefined || edge.direction === 0
-                ? theme.oneWay
-                : 0xff0000,
+    const dx = b.x - a.x,
+      dy = b.y - a.y,
+      length = Math.hypot(dx, dy)
+    if (!length) continue
+    const angle = Math.atan2(dy, dx)
+    const size = Math.min(length * 0.14, theme.arrowSize / 3)
+    if (size > 0 && (!a.curve || !b.curve)) {
+      const t = both ? 0.67 : 0.5
+      directionMarker(arrowPositions, arrowColors, a.x + dx * t, a.y + dy * t, angle, size, color)
+      if (both)
+        directionMarker(
+          arrowPositions,
+          arrowColors,
+          a.x + dx * (1 - t),
+          a.y + dy * (1 - t),
+          angle + Math.PI,
+          size,
+          color,
+        )
+    }
+    if (a.virtual || b.virtual || a.curve || b.curve) continue
+    // 지도 연결 방향과 별도로 방향별 차량 유지각과 후진 설정을 나타내는 표시
+    for (const [side, control] of [
+      [1, edge.controls?.forward],
+      [-1, both ? edge.controls?.backward : undefined],
+    ] as const) {
+      if (control?.vehicleDegree === undefined || control.vehicleDegree < 0) continue
+      const heading =
+        ((control.vehicleDegree / 1000 - (control.reverse === 1 ? 180 : 0)) * Math.PI) / 180
+      const shift = Math.min(190, length / 4) * side
+      const headingColor = new THREE.Color(
+        control.reverse === 1
+          ? theme.dark
+            ? 0xffac59
+            : 0x9a520b
+          : theme.dark
+            ? 0xd6adff
+            : 0x7044a9,
       )
-      /**
-       * 진행 방향과 측면 오프셋을 원본 노드 좌표에 합성하는 화살표 정점 계산
-       *
-       * @param forward 진행 방향을 기준으로 하는 정점 이동량
-       * @param side 진행 방향에 수직인 정점 이동량
-       * @returns 원본 출발 노드에 상대 이동을 합성한 화살표 정점 좌표
-       */
-      const p = (forward: number, side: number) => [
-        a.x + Math.cos(angle) * forward - Math.sin(angle) * side,
-        a.y + Math.sin(angle) * forward + Math.cos(angle) * side,
-        2,
-      ]
-      const sides = [p(0, -size), p(-(edge.direction === 1 ? 2.5 : 3) * size, 0), p(0, size)]
-      arrowPositions.push(...sides.flat())
-      for (let index = 0; index < 3; index++) arrowColors.push(color.r, color.g, color.b)
-      if (edge.direction === 1) {
-        arrowPositions.push(...p(0, -size), ...p(0, size), ...p(2.5 * size, 0))
-        for (let index = 0; index < 3; index++) arrowColors.push(color.r, color.g, color.b)
-      }
-      continue
+      directionMarker(
+        vehiclePositions,
+        vehicleColors,
+        (a.x + b.x) / 2 - Math.sin(angle) * shift,
+        (a.y + b.y) / 2 + Math.cos(angle) * shift,
+        heading,
+        Math.min(80, length / 5),
+        headingColor,
+      )
     }
   }
 
@@ -171,6 +201,16 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
   arrows.name = 'arrows'
   group.add(arrows)
 
+  const vehicleHeadings = new THREE.Mesh(
+    new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.Float32BufferAttribute(vehiclePositions, 3))
+      .setAttribute('color', new THREE.Float32BufferAttribute(vehicleColors, 3)),
+    new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+  )
+  vehicleHeadings.name = 'vehicle-headings'
+  vehicleHeadings.visible = false
+  group.add(vehicleHeadings)
+
   nodeMesh = new THREE.InstancedMesh(
     new THREE.CircleGeometry(MAP_NODE_RADIUS_MM - 5, 32),
     new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
@@ -179,31 +219,31 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
   nodeMesh.count = map.nodes.length
 
   map.nodes.forEach((node, index) => {
-    const radius = node.curve ? MAP_MARKER_SIZE_MM / 2 : MAP_NODE_RADIUS_MM
+    const radius = node.curve ? MAP_CURVE_NODE_RADIUS_MM : MAP_NODE_RADIUS_MM
     const borderScale = radius / MAP_NODE_RADIUS_MM
     matrix.makeScale(borderScale, borderScale, 1).setPosition(node.x, node.y, 4)
     borders.setMatrixAt(index, matrix)
-    borders.setColorAt(
-      index,
-      new THREE.Color(node.virtual || node.curve ? theme.virtual : 0xc0c0c0),
-    )
+    const color =
+      node.virtual || node.curve
+        ? theme.virtual
+        : node.noSendGoal
+          ? theme.dark
+            ? 0xfbb673
+            : 0x9a520b
+          : node.direction === 1
+            ? theme.bothWays
+            : theme.oneWay
+    borders.setColorAt(index, new THREE.Color(color))
 
-    // 원형 노드의 외곽 반경과 테두리 두께를 일정하게 유지하는 채움 배치
+    // 일반 노드는 중앙을 밝게 유지하고 가상 노드는 속을 비워 경로 위에서 구분하는 표현
     const fillScale = (radius - 5) / (MAP_NODE_RADIUS_MM - 5)
     matrix.makeScale(fillScale, fillScale, 1).setPosition(node.x, node.y, 5)
-    nodeMesh!.setMatrixAt(index, matrix)
-    nodeMesh!.setColorAt(
+    nodeMesh.setMatrixAt(index, matrix)
+    nodeMesh.setColorAt(
       index,
-      new THREE.Color(
-        node.virtual || node.curve
-          ? theme.virtual
-          : node.noSendGoal
-            ? 0
-            : node.direction === 1
-              ? theme.bothWays
-              : node.direction === undefined || node.direction === 0
-                ? theme.oneWay
-                : 0xff0000,
+      new THREE.Color(theme.background).lerp(
+        new THREE.Color(color),
+        node.virtual || node.curve ? 0 : 0.24,
       ),
     )
   })
@@ -266,18 +306,12 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
       currentPort = port.id
       const w = port.width ?? 420,
         h = port.height ?? 260,
-        stroke = theme.portStrokeWidth
-      rounded(
-        port.x,
-        port.y,
-        w,
-        h,
-        Math.min(w, h) / (port.radiusRatio ?? 10),
-        94,
-        port.strokeColor === undefined || port.strokeColor === 0
-          ? theme.portStroke
-          : legacyColor(port.strokeColor),
-      )
+        stroke = Math.min(theme.portStrokeWidth, Math.min(w, h) * 0.075),
+        outline =
+          port.strokeColor === undefined || port.strokeColor === 0
+            ? theme.portStroke
+            : legacyColor(port.strokeColor)
+      rounded(port.x, port.y, w, h, Math.min(w, h) / (port.radiusRatio ?? 10), 94, outline)
       rounded(
         port.x,
         port.y,
@@ -289,6 +323,18 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
           ? theme.portFill
           : legacyColor(port.fillColor),
       )
+      if (stroke > 0 && !port.radiusRatio) {
+        const tabWidth = Math.min(w * 0.24, h * 0.46)
+        rounded(
+          port.x,
+          port.y - h / 2 + stroke * 2,
+          tabWidth,
+          stroke * 1.2,
+          stroke / 2,
+          96,
+          outline,
+        )
+      }
     }
     portMesh = new THREE.Mesh(
       new THREE.BufferGeometry()
@@ -348,6 +394,7 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
   const orders: Record<string, number> = {
     edges: -100,
     arrows: -99,
+    'vehicle-headings': -96,
     'node-borders': -98,
     ports: -95,
     'port-captions': -94,

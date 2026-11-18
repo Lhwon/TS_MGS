@@ -3,7 +3,7 @@
  * 파일명: MapViewport.vue
  * 설명: 지도 렌더러 수명주기와 우클릭 메뉴 및 노드 입력을 연결하는 뷰포트
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 -->
 <script setup lang="ts">
@@ -338,6 +338,7 @@ onMounted(() => {
       },
       zoom: (value) => emit('zoom', value),
     })
+    scene.setRenderPaused(editor.renderPaused)
     scene.setDocument(editor.visibleDocument, editor.theme)
     scene.setLayers(props.layers)
     scene.setTool(editor.tool, editor.readOnly)
@@ -373,6 +374,10 @@ watch(
   () => props.layers,
   (layers) => scene?.setLayers(layers),
   { deep: true },
+)
+watch(
+  () => editor.renderPaused,
+  (paused) => scene?.setRenderPaused(paused),
 )
 watch(
   () => editor.mapRevision,

@@ -2,7 +2,7 @@
  * 파일명: MapScene.ts
  * 설명: 평면 지도 도형과 원본 입력 동작 및 선택 강조를 관리하는 렌더러
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 import { createMapLabels, paintMapLabel } from '@/entities/map/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
@@ -205,6 +205,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let visibleLayers: Layers = { ...DEFAULT_LAYERS }
   let toolMode: 'select' | 'add' | 'connect' = 'select'
   let animationFrame = 0
+  let renderPaused = false
   let viewportWidth = 1
   let viewportHeight = 1
   let drag: {
@@ -303,6 +304,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     grid.visible = layers.grid
     if (nodeMesh) nodeMesh.visible = layers.nodes
     if (portMesh) portMesh.visible = layers.ports
+    const captions = topologyGroup.getObjectByName('port-captions')
+    if (captions) captions.visible = layers.ports && !!layers.portCaptions
     const borders = topologyGroup.getObjectByName('node-borders')
     if (borders) borders.visible = layers.nodes
     const edges = topologyGroup.getObjectByName('edges')
@@ -579,9 +582,10 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    * 중복 프레임 예약을 합치고 도형과 라벨을 함께 그리는 화면 갱신 예약
    */
   const requestRender = () => {
-    if (animationFrame) return
+    if (animationFrame || renderPaused) return
     animationFrame = requestAnimationFrame(() => {
       animationFrame = 0
+      if (renderPaused) return
       const centre = screenToWorld(viewportWidth / 2, viewportHeight / 2)
       const left = screenToWorld(0, viewportHeight / 2),
         right = screenToWorld(viewportWidth, viewportHeight / 2)
@@ -825,6 +829,11 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   }
   return {
     capture,
+    /** 문서와 편집 상태를 유지하며 화면 갱신만 중단하거나 재개하는 렌더링 전환 */
+    setRenderPaused: (paused: boolean) => {
+      renderPaused = paused
+      if (!paused) requestRender()
+    },
     setCurvePreview,
     setDrawingVisible,
     setDocument: setDocument,

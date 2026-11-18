@@ -2,9 +2,9 @@
  * 파일명: createMapLabels.ts
  * 설명: 두 지도 화면에서 공유하는 원본 라벨 위치와 글꼴 및 색상 구성
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
-import type { MapDocument } from '@/entities/map/model/map.ts'
+import type { MapDocument, MapPort } from '@/entities/map/model/map.ts'
 import {
   legacyColor,
   mgsTheme,
@@ -36,6 +36,33 @@ export interface MapLabel {
 export const mapObjectColor = (color: number, theme: ReturnType<typeof mgsTheme>) =>
   color === 0 ? theme.font : color === 0xffffff ? theme.background : legacyColor(color)
 
+/** 원본 이름 배치와 인출선에서 공유하는 포트 캡션 기준 좌표 계산 */
+export const portNameAnchor = (port: MapPort) => {
+  const size = port.fontSize || 10,
+    distance = Math.trunc((port.nameDistance ?? 0) / 10)
+  let x = port.x,
+    y = port.y
+  switch (port.namePosition) {
+    case 0:
+      x += size + distance
+      y += (port.height ?? 0) + distance
+      break
+    case 1:
+      x += size + distance
+      y += -(port.height ?? 0) + distance
+      break
+    case 2:
+      x += (port.width ?? 0) + distance
+      y -= size + distance
+      break
+    case 3:
+      x += -(port.width ?? 0) + distance
+      y -= size + distance
+      break
+  }
+  return { x, y }
+}
+
 /**
  * 원본 좌표와 글자 크기를 유지하는 두 화면의 공통 라벨 목록 생성
  * @param map 현재 지도 문서
@@ -66,11 +93,11 @@ export const createMapLabels = (
         ].join('\n'),
         x: node.x + 250,
         y: node.y - 100,
-        size: node.virtual || node.curve ? 70 : 100,
+        size: layers.fontStyle ? theme.nodeFontSize : node.virtual || node.curve ? 70 : 100,
         color:
           node.safetyDistance || node.safetyViewDistance
             ? 0xff0000
-            : node.virtual || node.curve
+            : !layers.fontStyle && (node.virtual || node.curve)
               ? theme.virtual
               : theme.font,
         background: theme.fontBackground,
@@ -81,6 +108,9 @@ export const createMapLabels = (
   if (layers.ports)
     for (const port of displayMapPorts(map)) {
       const extra = [
+        layers.portIndices
+          ? `${map.ports.findIndex((item) => item.id === port.id) + 1}\nUCS Idx : ${port.settings?.ucs_setting_idx ?? -1}`
+          : '',
         layers.portReports ? String(port.settings?.report_id ?? '') : '',
         layers.portShifts ? `LU Shift ${port.settings?.lu_shift ?? 0}` : '',
         layers.portHandshake ? `PIO ${port.settings?.handshaking ?? 0}` : '',
@@ -111,27 +141,7 @@ export const createMapLabels = (
         })
       if (!port.name || layers.portNames === false) continue
       const size = port.fontSize || 10
-      const distance = Math.trunc((port.nameDistance ?? 0) / 10)
-      let x = port.x,
-        y = port.y
-      switch (port.namePosition) {
-        case 0:
-          x += size + distance
-          y += (port.height ?? 0) + distance
-          break
-        case 1:
-          x += size + distance
-          y += -(port.height ?? 0) + distance
-          break
-        case 2:
-          x += (port.width ?? 0) + distance
-          y -= size + distance
-          break
-        case 3:
-          x += -(port.width ?? 0) + distance
-          y -= size + distance
-          break
-      }
+      const { x, y } = portNameAnchor(port)
       labels.push({
         text: port.name,
         x,

@@ -2,9 +2,9 @@
  * 파일명: legacy.ts
  * 설명: 원본 지도 레코드의 원본 토폴로지 해석과 참조 정보 검증
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
-import { PORT_SETTINGS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 import {
   emptyDocument,
@@ -207,10 +207,20 @@ export const previewLegacy = (content: string, name: string, groupContent = ''):
     if (!nodes.has(nodeId)) throw new Error(`${line}행: 포트 ${fields[4]}의 연결 노드가 없습니다.`)
     if (fields[208] !== undefined) portUids.set(num(208), fields[4])
     let listOffset = 246
+    const reservations: NonNullable<import('@/entities/map/model/map.ts').MapPort['reservations']> =
+      {}
     for (let list = 0; list < 8 && fields[listOffset] !== undefined; list++) {
       const count = Number(fields[listOffset])
-      if (!Number.isSafeInteger(count) || count < 0 || count > 5000)
+      if (
+        !Number.isSafeInteger(count) ||
+        count < 0 ||
+        count > 5000 ||
+        listOffset + count >= fields.length
+      )
         throw new Error('포트 예약 개수를 확인하세요.')
+      reservations[PORT_RESERVATIONS[list].key] = fields
+        .slice(listOffset + 1, listOffset + 1 + count)
+        .map(Number)
       listOffset += count + 1
     }
     const bayCount = Number(fields[listOffset] ?? 0)
@@ -220,6 +230,8 @@ export const previewLegacy = (content: string, name: string, groupContent = ''):
         : []
     map.ports.push({
       id: fields[4],
+      uid: num(208),
+      reservations,
       name: fields[5] === '(null)' ? '' : fields[5],
       nodeId,
       bays: portBays,

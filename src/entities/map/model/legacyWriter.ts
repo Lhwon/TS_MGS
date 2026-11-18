@@ -4,7 +4,7 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
-import { PORT_SETTINGS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 import { previewLegacy } from '@/entities/map/model/legacy.ts'
 import { parseDocument } from '@/entities/map/model/map.ts'
@@ -146,12 +146,17 @@ const planningEdges = (map: MapDocument) => {
  * @param source 처음 열었을 때의 원본 레코드와 표시 문서
  * @returns 원본 지도 문자열과 별도 포트 그룹 문자열
  */
-export const serializeLegacy = (input: MapDocument, source?: LegacySource | null) => {
+export const serializeLegacy = (
+  input: MapDocument,
+  source?: LegacySource | null,
+  options: { rebuildControls?: boolean } = {},
+) => {
   const map = parseDocument(JSON.stringify(input))
   if (map.units !== 'mm')
     throw new Error('도면 기준 거리를 지정해 mm 축척을 확정한 후 JMAPX로 저장하세요.')
   const before = source?.baseline
-  if (before && same(before, map)) return { content: source!.content, groups: source!.groups }
+  if (before && same(before, map) && !options.rebuildControls)
+    return { content: source!.content, groups: source!.groups }
   const lines = source?.content.replace(/^\uFEFF/, '').split(/\r?\n/) ?? []
   const header = lines[1]?.split('\t') ?? ['0', '-111', '0', '0', '1', '0', '0', '0', '']
   const nodeCount = Number(header[0])
@@ -169,8 +174,8 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
       map.nodes.map((node) => node.id),
     ) ||
     !same(
-      before.edges.map((edge) => [edge.from, edge.to, edge.direction ?? 0]),
-      map.edges.map((edge) => [edge.from, edge.to, edge.direction ?? 0]),
+      before.edges.map((edge) => [edge.from, edge.to, edge.direction ?? 0, edge.drivingType ?? 1]),
+      map.edges.map((edge) => [edge.from, edge.to, edge.direction ?? 0, edge.drivingType ?? 1]),
     )
   const sortedIds = [...nodes.keys()].sort((a, b) => a - b)
   if (topologyChanged && sortedIds.some((id, index) => id !== index + 1))
@@ -200,19 +205,39 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
     })
   )
     throw new Error('기존 커브의 연결 변경은 커브 체인을 함께 편집해야 합니다.')
-  // 원본 노드 편집과 동일하게 보간 좌표와 반경을 유지하며 연결 거리와 참조 좌표를 다시 계산하는 곡선 이동
-  const affected = new Set([...moved])
-  for (const edge of map.edges)
-    if (moved.has(edge.from) || moved.has(edge.to)) {
-      affected.add(edge.from)
-      affected.add(edge.to)
-    }
-  if (
-    map.edges.some(
-      (edge) => (edge.drivingType ?? 1) > 3 && (affected.has(edge.from) || affected.has(edge.to)),
+  const straightReferences = new Map<number, MapEdge>(),
+    firstConnections = new Map<number, MapEdge>()
+  for (const edge of map.edges) {
+    if (!firstConnections.has(edge.from)) firstConnections.set(edge.from, edge)
+    const realId = nodes.get(edge.from)!.realId ?? edge.from
+    if ((edge.drivingType ?? 1) === 1 && !straightReferences.has(realId))
+      straightReferences.set(realId, edge)
+  }
+  /** 원본의 직선 기준 탐색을 따르며 닫힌 순환에서 무한 탐색을 차단하는 특수 주행 각도 계산 */
+  const automaticDegree = (edge: MapEdge) => {
+    const manual = edge.controls?.forward
+    if (
+      manual?.manualDegree === 1 &&
+      manual.vehicleDegree !== undefined &&
+      manual.vehicleDegree !== -1
     )
-  )
-    throw new Error('사행과 직각 및 Crab 주행의 기준각 재계산은 추가 이관 대상입니다.')
+      return manual.vehicleDegree
+    if ((edge.drivingType ?? 1) <= 3)
+      return vehicleDegree(nodes.get(edge.from)!, nodes.get(edge.to)!)
+    let current = nodes.get(edge.to)!
+    const visited = new Set<number>()
+    while (!visited.has(current.id)) {
+      visited.add(current.id)
+      const straight = straightReferences.get(current.realId ?? current.id)
+      if (straight) return vehicleDegree(nodes.get(straight.from)!, nodes.get(straight.to)!)
+      const next = firstConnections.get(current.id)
+      if (!next) break
+      current = nodes.get(next.to)!
+    }
+    throw new Error(
+      `경로 N${edge.from}-N${edge.to}의 사행·직각·Crab 기준 직선을 찾을 수 없습니다. 연결 또는 수동 차량 각도를 확인하세요.`,
+    )
+  }
   for (const node of map.nodes) {
     integer(node.x)
     integer(node.y)
@@ -304,8 +329,11 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
       row[14] = row[15] = row[21] = row[22] = row[30] = row[31] = '-1'
       row[28] = String(node.realId ?? node.id)
       row[29] = String(node.uid ?? node.id)
-      if (!template) row[33] = row[34] = row[36] = '1'
-      patch(row, undefined, node, nodeColumns)
+      if (!template) {
+        row[33] = '1'
+        row[34] = row[36] = '0'
+      }
+      patch(row, undefined, { ...node, removable: node.removable ?? true }, nodeColumns)
       if (edge) {
         const to = nodes.get(edge.to)!
         const geo = geometry(node, to)
@@ -429,7 +457,7 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
           !same(edge.curveAngle, oldEdges.get(`${edge.from}-${edge.to}`)?.curveAngle)
         ) {
           block[12] = String(((edge.curveAngle ?? 0) * Math.PI) / 180)
-          block[13] = String(edge.radius ?? -1)
+          block[13] = String(Number(to.noSendGoalLoaded ?? false))
         }
         block[24] = reverse ? '2' : '1'
         block[26] = String(to.uid ?? to.id)
@@ -489,6 +517,7 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
     paths.push([...path.head, ...path.blocks.flat(), ...path.tail])
   }
   if (
+    options.rebuildControls ||
     topologyChanged ||
     moved.size ||
     map.edges.some(
@@ -500,7 +529,8 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
     let sequence = 1
     for (const part of pathParts) {
       const id = Number(part.head[0])
-      if (topologyChanged) part.tail[2] = part.blocks.length ? String(sequence) : '0'
+      if (topologyChanged || options.rebuildControls)
+        part.tail[2] = part.blocks.length ? String(sequence) : '0'
       for (const block of part.blocks) indexes.set(`${id}-${block[0]}`, sequence++)
     }
     const orientations = new Map<string, { forward: number; backward: number }>()
@@ -511,27 +541,13 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
         const key = Number(block[24]) === 2 ? `${id}-${target}` : `${target}-${id}`
         const edge = edges.get(key)
         if (!edge) continue
-        if (topologyChanged) {
+        if (topologyChanged || options.rebuildControls) {
           const reverse = indexes.get(`${target}-${id}`) ?? -1
           block[49] = block[50] = String(reverse)
         }
-        const controlChanged = !same(edge.controls, oldEdges.get(key)?.controls)
-        if (!topologyChanged && !moved.has(edge.from) && !moved.has(edge.to) && !controlChanged)
-          continue
-        if (![1, 2, 3].includes(edge.drivingType ?? 1)) continue
-        const previousEdge = oldEdges.get(key)
-        if (
-          previousEdge &&
-          previousEdge.direction === edge.direction &&
-          previousEdge.drivingType === edge.drivingType &&
-          !moved.has(edge.from) &&
-          !moved.has(edge.to) &&
-          !controlChanged
-        )
-          continue
         // 수동 각도를 유지하며 양방향에서도 동일한 차량 유지각을 사용하는 원본 제어 규칙
         if (Number(block[27]) !== 1 || Number(block[15]) === -1)
-          block[15] = String(vehicleDegree(nodes.get(edge.from)!, nodes.get(edge.to)!))
+          block[15] = String(automaticDegree(edge))
         let degree = Math.fround(Number(block[15]) / 1000)
         if (Number(block[16]) === 1) {
           degree -= 180
@@ -584,9 +600,10 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
         const count = Number(row[offset])
         if (!Number.isInteger(count) || count < 0 || offset + count >= row.length)
           throw new Error('포트 예약 목록의 원본 개수를 확인하세요.')
-        referenced ||= row
-          .slice(offset + 1, offset + 1 + count)
-          .some((uid) => removedUids.has(Number(uid)))
+        const effective =
+          map.ports.find((port) => port.id === id)?.reservations?.[PORT_RESERVATIONS[index].key] ??
+          row.slice(offset + 1, offset + 1 + count).map(Number)
+        referenced ||= effective.some((uid) => removedUids.has(uid))
         offset += 1 + count
       }
       if (referenced)
@@ -602,6 +619,12 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
     )
   )
     throw new Error('포트 그룹의 기준 노드를 먼저 변경한 후 삭제하세요.')
+  const allocatedPortUids = new Set([...rawPorts.values()].map((row) => Number(row[208])))
+  let maximumPortUid = Math.max(
+    Number(header[7]) || 0,
+    0,
+    ...map.ports.map((port) => port.uid ?? 0),
+  )
   const ports = map.ports.map((port) => {
     const original = rawPorts.get(port.id)
     const row = original ?? [...Array<string>(259).fill('0'), '']
@@ -612,9 +635,12 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
       row[11] = row[12] = '1000'
       row[17] = '100'
       row[207] = '40'
-      row[208] = String(
-        Number(header[7]) + map.ports.filter((item) => !rawPorts.has(item.id)).indexOf(port) + 1,
-      )
+      const uid =
+        port.uid !== undefined && port.uid > (Number(header[7]) || 0) ? port.uid : ++maximumPortUid
+      if (!Number.isSafeInteger(uid) || uid < 1 || allocatedPortUids.has(uid))
+        throw new Error('새 포트의 UID 중복 또는 범위를 확인하세요.')
+      allocatedPortUids.add(uid)
+      row[208] = String(uid)
       row[226] = String(nodes.get(port.nodeId)!.realId ?? port.nodeId)
       row[244] = '-1'
     }
@@ -639,6 +665,17 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
       if (value !== undefined && value !== oldPorts.get(port.id)?.settings?.[field.key])
         row[field.column] =
           field.kind === 'text' ? fieldText(String(value)) : integer(Number(value))
+    }
+    let reservationOffset = 246
+    for (const field of PORT_RESERVATIONS) {
+      const count = Number(row[reservationOffset])
+      if (!Number.isSafeInteger(count) || count < 0 || reservationOffset + count >= row.length)
+        throw new Error('포트 예약 목록의 개수를 확인하세요.')
+      const list = port.reservations?.[field.key]
+      if (list !== undefined && !same(list, oldPorts.get(port.id)?.reservations?.[field.key])) {
+        row.splice(reservationOffset, 1 + count, String(list.length), ...list.map(integer))
+        reservationOffset += 1 + list.length
+      } else reservationOffset += 1 + count
     }
     const node = nodes.get(port.nodeId)!
     if (
@@ -771,6 +808,13 @@ export const serializeLegacy = (input: MapDocument, source?: LegacySource | null
           strokeColor: 11,
           fillColor: 12,
         })
+        const anchor = nodes.get(Number(row[7]))
+        if (!anchor) throw new Error('포트 그룹의 기준 노드를 확인하세요.')
+        row[5] = integer(group.x - anchor.x)
+        row[6] = integer(group.y - anchor.y)
+        row[8] = integer(anchor.uid ?? anchor.id)
+        row[9] = integer(anchor.x)
+        row[10] = integer(anchor.y)
         return [
           ...row.slice(0, 19),
           String(group.portIds.length),

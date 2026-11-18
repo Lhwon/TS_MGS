@@ -2,7 +2,7 @@
  * 파일명: test-map-rendering.mjs
  * 설명: 대량 지도 노드 치수와 평면 레이어 및 라벨 캐시와 고해상도 표시 검증
  * 작성자: 이희원
- * 작성일자: 2026-11-04
+ * 작성일자: 2026-11-18
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
@@ -228,7 +228,10 @@ try {
   assert.equal(topology.far, 20000)
   assert.ok(topology.meshState.length >= 7)
   assert.ok(
-    topology.meshState.every((mesh) => !mesh.depthTest && !mesh.depthWrite && !mesh.transparent),
+    topology.meshState.every(
+      (mesh) =>
+        !mesh.depthTest && !mesh.depthWrite && (mesh.name === 'port-captions' || !mesh.transparent),
+    ),
   )
   const canvas = page.locator('.map-viewport > canvas').first()
   const rect = await canvas.boundingBox()

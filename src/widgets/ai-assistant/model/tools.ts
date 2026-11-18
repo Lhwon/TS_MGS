@@ -2,7 +2,7 @@
  * 파일명: tools.ts
  * 설명: 에이전트의 조회와 배경 및 지도와 설비 편집 도구 실행
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
 import type { Ref } from 'vue'
 import { subdividePaths, shortestMapPath, useEditor } from '@/features/map-editor/index.ts'
@@ -45,6 +45,9 @@ export const agentContext = (attachment?: DrawingAttachment) => {
   const editor = useEditor(),
     facility = useFacilityEditor(),
     map = editor.document
+  const nodeIds = [
+    ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
+  ]
   return {
     map: {
       name: editor.sourceName,
@@ -55,18 +58,10 @@ export const agentContext = (attachment?: DrawingAttachment) => {
       ports: map.ports.length,
     },
     selection: {
-      nodeIds: [
-        ...new Set([
-          ...editor.selectedIds,
-          ...(editor.selectedId === null ? [] : [editor.selectedId]),
-        ]),
-      ],
-      details: inspectSelectedNodes(map, [
-        ...new Set([
-          ...editor.selectedIds,
-          ...(editor.selectedId === null ? [] : [editor.selectedId]),
-        ]),
-      ]),
+      nodeIds: nodeIds.slice(0, 100),
+      nodeCount: nodeIds.length,
+      nodeIdsTruncated: nodeIds.length > 100,
+      details: inspectSelectedNodes(map, nodeIds),
       port: map.ports.find((port) => port.id === editor.selectedPortId) ?? null,
       instance:
         facility.document.instances.find((instance) => instance.id === facility.selectedId) ?? null,

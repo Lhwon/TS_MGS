@@ -2,7 +2,7 @@
  * 파일명: check-mgs-migration.mjs
  * 설명: 노드 간격과 참조 재정렬 및 원본 제어값의 저장 복원을 검증하는 이관 회귀 점검
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
@@ -24,10 +24,24 @@ try {
   const page = await browser.newPage()
   await page.goto(server.resolvedUrls.local[0], { waitUntil: 'networkidle' })
   const results = await page.evaluate(async () => {
-    const { emptyDocument, serializeLegacy, previewLegacy } =
-      await import('/src/entities/map/index.ts')
-    const { subdividePaths, shortestMapPath, useEditor, createGrid, makeAroundData } =
-      await import('/src/features/map-editor/index.ts')
+    const {
+      emptyDocument,
+      serializeLegacy,
+      previewLegacy,
+      calculateCurve,
+      appendCurve,
+      editSelectedNodes,
+    } = await import('/src/entities/map/index.ts')
+    const {
+      subdividePaths,
+      shortestMapPath,
+      useEditor,
+      createGrid,
+      makeAroundData,
+      assignRealIds,
+      findNearbyNodes,
+      applyAutomaticControls,
+    } = await import('/src/features/map-editor/index.ts')
     const map = emptyDocument()
     map.nodes = [
       { id: 1, uid: 1, realId: 1, name: 'N1', x: 0, y: 0 },
@@ -122,7 +136,161 @@ try {
       read.edges[0].controls.forward.vehicleCorrection !== 123
     )
       throw Error('control roundtrip')
-    return { added: output.added, distance: 4500, renumber: true, controls: true, undo: true }
+    const junction = applyAutomaticControls(map, 'spin-junction')
+    if (
+      !junction.nodes.find((node) => node.id === 2).spinturnable ||
+      map.nodes[1].spinturnable !== undefined
+    )
+      throw Error('IC JC automatic control atomic update')
+    const retained = applyAutomaticControls(map, 'retain-auto')
+    if (!retained.nodes[0].dontRemoveCmd || retained.nodes[1].dontRemoveCmd)
+      throw Error('Bidirectional command retention')
+    const numbered = assignRealIds(map, [2, 3], { start: 10, step: 2, order: 'id', insert: false })
+    if (
+      numbered.map.nodes[1].realId !== 10 ||
+      numbered.map.nodes[2].realId !== 12 ||
+      map.nodes[1].realId !== 2
+    )
+      throw Error('Real ID atomic assignment')
+    for (const drivingType of [4, 5, 6, 7, 8, 9]) {
+      const special = emptyDocument()
+      special.nodes = [
+        { id: 1, name: 'N1', x: 0, y: 0 },
+        { id: 2, name: 'N2', x: 1000, y: 0 },
+        { id: 3, name: 'N3', x: 1000, y: 1000 },
+      ]
+      special.edges = [
+        { id: 'special', from: 1, to: 2, drivingType, direction: 1 },
+        { id: 'straight', from: 2, to: 3, drivingType: 1, direction: 1 },
+      ]
+      const first = serializeLegacy(special),
+        base = previewLegacy(first.content, 'special.jmapx')
+      const degree = base.edges.find((edge) => edge.from === 1).controls
+      if (degree.forward.vehicleDegree !== 270000 || degree.backward.vehicleDegree !== 270000)
+        throw Error('Special driving reference degree')
+      const changed = structuredClone(base)
+      changed.nodes[2].x = 2000
+      const updated = previewLegacy(
+        serializeLegacy(changed, { ...first, baseline: base }).content,
+        'special.jmapx',
+      )
+      if (updated.edges.find((edge) => edge.from === 1).controls.forward.vehicleDegree !== 225000)
+        throw Error('Dependent special angle after remote straight movement')
+      if (drivingType === 9) {
+        e.load(first.content, 'special.jmapx')
+        e.moveNodes([3], 1000, 0)
+        if (
+          e.document.edges.find((edge) => edge.from === 1).controls.forward.vehicleDegree !== 225000
+        )
+          throw Error('Editor native metadata synchronization')
+      }
+    }
+    const locked = structuredClone(map)
+    locked.nodes[0].removable = false
+    let protectedNode = false
+    try {
+      editSelectedNodes(locked, [1], { operation: 'delete' })
+    } catch {
+      protectedNode = true
+    }
+    if (!protectedNode || locked.nodes.length !== 3) throw Error('Removable protection')
+    const close = structuredClone(map)
+    close.nodes[1].x = 300
+    if (
+      findNearbyNodes(close, 300).nodes.length !== 2 ||
+      findNearbyNodes(close, 299).nodes.length !== 0
+    )
+      throw Error('Nearby inclusive threshold')
+    close.nodes[1].x = 0
+    if (findNearbyNodes(close, 0).pairs !== 1) throw Error('Coincident node detection')
+    const portMap = structuredClone(map)
+    portMap.ports.push({ ...portMap.ports[0], id: 'P2' })
+    const portSource = serializeLegacy(portMap),
+      portBase = previewLegacy(portSource.content, 'ports.jmapx'),
+      edited = structuredClone(portBase)
+    edited.ports[0].reservations.startBuffer = [edited.ports[1].uid]
+    edited.ports[0].reservations.loadedReserved = [edited.ports[0].uid, edited.ports[1].uid]
+    edited.ports[0].bays = [2, 4]
+    const reserved = serializeLegacy(edited, { ...portSource, baseline: portBase }),
+      reread = previewLegacy(reserved.content, 'ports.jmapx')
+    if (
+      reread.ports[0].reservations.startBuffer[0] !== edited.ports[1].uid ||
+      reread.ports[0].bays.join(',') !== '2,4'
+    )
+      throw Error('Reservation variable record splice')
+    const removed = structuredClone(reread)
+    removed.ports.pop()
+    let refused = false
+    try {
+      serializeLegacy(removed, { ...reserved, baseline: reread })
+    } catch {
+      refused = true
+    }
+    if (!refused) throw Error('Referenced port deletion accepted')
+    removed.ports[0].reservations = { startBuffer: [], loadedReserved: [] }
+    if (
+      previewLegacy(
+        serializeLegacy(removed, { ...reserved, baseline: reread }).content,
+        'ports.jmapx',
+      ).ports.length !== 1
+    )
+      throw Error('Reservation repair and delete')
+    e.load(reserved.content, 'ports.jmapx')
+    const temporaryPort = e.addPort(1, 0, 0),
+      stablePort = e.addPort(1, 0, 500)
+    const stableUid = e.document.ports.find((port) => port.id === stablePort).uid
+    e.removePort(temporaryPort)
+    if (e.document.ports.find((port) => port.id === stablePort).uid !== stableUid)
+      throw Error('New port UID changed after sibling deletion')
+    const curved = emptyDocument()
+    curved.nodes = [{ id: 1, name: 'N1', x: 0, y: 0 }]
+    const arc = calculateCurve(
+      curved,
+      1,
+      { x: 1000, y: 1000 },
+      {
+        force: true,
+        autoSelect: false,
+        reverse: false,
+        dynamicRadius: false,
+        radius: 1000,
+        angle: 90,
+        divide: 15,
+        direction: 1,
+      },
+    )
+    const curveHead = appendCurve(curved, 1, arc, 1, 0)
+    const curveFile = serializeLegacy(curved)
+    e.load(curveFile.content, 'curve.jmapx')
+    const positions = new Map(
+      e.document.nodes.map((node) => [
+        node.id,
+        { x: node.x, y: node.y, move: node.id === curveHead || node.curve },
+      ]),
+    )
+    e.moveNodes([curveHead], 100, 200)
+    for (const node of e.document.nodes) {
+      const before = positions.get(node.id)
+      if (
+        node.x !== before.x + (before.move ? 100 : 0) ||
+        node.y !== before.y + (before.move ? 200 : 0)
+      )
+        throw Error('Curve virtual node move')
+    }
+    previewLegacy(serializeLegacy(e.document, e.legacySource).content, 'curve.jmapx')
+    e.bayFilter = [99]
+    e.newMap()
+    if (e.bayFilter.length) throw Error('Stale Bay filter after map replacement')
+    return {
+      added: output.added,
+      distance: 4500,
+      renumber: true,
+      controls: true,
+      undo: true,
+      reservations: true,
+      curveMove: true,
+      nearby: true,
+    }
   })
   console.log(results)
   const actual = process.env.MGS_REFERENCE_MAP

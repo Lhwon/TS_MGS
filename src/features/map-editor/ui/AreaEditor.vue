@@ -93,6 +93,8 @@ const apply = () => {
   try {
     applyRow()
     const checked = validateAreas(data.value, true),
+      previousBayCount = editor.document.areas?.bays.length ?? 0,
+      previousLimitCount = editor.document.areas?.limits.length ?? 0,
       bayRefs = new Map(
         bayReferences.map((old, index) => [old, index + 1] as const).filter(([old]) => old > 0),
       ),
@@ -103,12 +105,21 @@ const apply = () => {
       map.areas = checked
       for (const edge of map.edges)
         if (edge.bays)
-          edge.bays = edge.bays.flatMap((id) => (bayRefs.has(id) ? [bayRefs.get(id)!] : []))
+          edge.bays = edge.bays.flatMap((id) =>
+            bayRefs.has(id) ? [bayRefs.get(id)!] : id > previousBayCount ? [id] : [],
+          )
       for (const port of map.ports) {
         if (port.bays)
-          port.bays = port.bays.flatMap((id) => (bayRefs.has(id) ? [bayRefs.get(id)!] : []))
+          port.bays = port.bays.flatMap((id) =>
+            bayRefs.has(id) ? [bayRefs.get(id)!] : id > previousBayCount ? [id] : [],
+          )
         if (port.settings?.limit_ports_idx !== undefined)
-          port.settings.limit_ports_idx = limitRefs.get(Number(port.settings.limit_ports_idx)) ?? 0
+          port.settings.limit_ports_idx =
+            limitRefs.get(Number(port.settings.limit_ports_idx)) ??
+            (Number(port.settings.limit_ports_idx) > previousLimitCount ||
+            Number(port.settings.limit_ports_idx) < 1
+              ? port.settings.limit_ports_idx
+              : 0)
       }
     })
     bayReferences = checked.bays.map((_, index) => index + 1)

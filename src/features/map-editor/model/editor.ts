@@ -2,7 +2,7 @@
  * 파일명: editor.ts
  * 설명: 지도 문서와 선택 및 원본 저장 상태와 편집 이력 관리
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 import { computed, reactive, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
@@ -16,7 +16,7 @@ import {
   mgsTheme,
   parseDocument,
   previewLegacy,
-  serializeLegacy,
+  serializeLegacySnapshot,
   remapLegacySource,
   parseAreaFiles,
   expandCurveSelection,
@@ -43,6 +43,7 @@ export const useEditor = defineStore('editor', () => {
   const selectedId = ref<number | null>(null)
   const selectedIds = ref<number[]>([])
   const tool = ref<Tool>('select')
+  const renderPaused = ref(false)
   const curveOptions = reactive<CurveOptions>({
     force: false,
     autoSelect: false,
@@ -187,7 +188,13 @@ export const useEditor = defineStore('editor', () => {
   const areaCategory = ref('bays')
   const bayFilter = ref<number[]>([])
   const availableBays = computed(() =>
-    [...new Set(document.value.edges.flatMap((edge) => edge.bays ?? []))].sort((a, b) => a - b),
+    [
+      ...new Set([
+        ...document.value.edges.flatMap((edge) => edge.bays ?? []),
+        ...document.value.ports.flatMap((port) => port.bays ?? []),
+        ...(document.value.areas?.bays.map((_, index) => index + 1) ?? []),
+      ]),
+    ].sort((a, b) => a - b),
   )
   const visibleDocument = computed(() => {
     if (!bayFilter.value.length) return document.value
@@ -260,7 +267,7 @@ export const useEditor = defineStore('editor', () => {
         references = reordered.references
         if (nextSource) nextSource = remapLegacySource(nextSource, reordered.references)
       }
-      serializeLegacy(validated, nextSource)
+      validated = serializeLegacySnapshot(validated, nextSource).map
     }
     // 전체 지도 스냅샷을 제한된 개수로 보관하며 대형 지도 메모리 부담이 확인되면 변경 명령 단위 이력으로 전환할 수 있는 현재 저장 방식
     captureContext()
@@ -288,6 +295,9 @@ export const useEditor = defineStore('editor', () => {
     saved.value = map
     saveState = { saved: map }
     sourceName.value = name
+    bayFilter.value = []
+    renderPaused.value = false
+    operationsOpen.value = areaEditorOpen.value = teachingOpen.value = false
     projectToken.value = undefined
     readOnly.value = false
     legacySource.value = null
@@ -314,6 +324,9 @@ export const useEditor = defineStore('editor', () => {
     past.value = [...past.value.slice(-49), document.value]
     future.value = []
     document.value = next
+    bayFilter.value = []
+    renderPaused.value = false
+    operationsOpen.value = areaEditorOpen.value = teachingOpen.value = false
     saveState = { saved: saved.value }
     mapRevision.value++
     sourceName.value = `${next.name}.tsmgs.json`
@@ -683,6 +696,8 @@ export const useEditor = defineStore('editor', () => {
     if (selectedId.value === null || readOnly.value) return
     const id = selectedId.value
     commit((map) => {
+      if (map.nodes.find((node) => node.id === id)?.removable === false)
+        throw new Error(`N${id}의 Removable 설정이 해제되어 있습니다.`)
       if (drawingOptions.autoConnectDelete) {
         const incident = map.edges.filter((edge) => edge.from === id || edge.to === id),
           neighbors = [
@@ -800,6 +815,7 @@ export const useEditor = defineStore('editor', () => {
     message.value = `${name} 저장 완료`
   }
   return {
+    renderPaused,
     document,
     importGeneratedMap,
     curveOptions,

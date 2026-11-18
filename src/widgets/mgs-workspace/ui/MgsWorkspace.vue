@@ -15,6 +15,7 @@ import {
   AreaEditor,
   MapOperations,
   useEditor,
+  rebuildPathControls,
 } from '@/features/map-editor/index.ts'
 import { parseDocument } from '@/entities/map/index.ts'
 import type { Layers } from '@/entities/map/index.ts'
@@ -103,6 +104,9 @@ watch(
   { immediate: true },
 )
 const viewCommands: Record<string, keyof Layers> = {
+  TBT_show_port_idx: 'portIndices',
+  TBT_show_port_caption: 'portCaptions',
+  TBT_show_font_style: 'fontStyle',
   TBT_show_real_id: 'realIds',
   TBT_show_node_id: 'nodeIds',
   TBT_show_unique_id: 'uniqueIds',
@@ -137,6 +141,7 @@ const viewCommands: Record<string, keyof Layers> = {
   TBT_show_lu_height: 'portHeight',
 }
 const drawingChecks = computed<Record<string, boolean>>(() => ({
+  TBT_stop_rendering: editor.renderPaused,
   BT_force_curve: editor.curveOptions.force,
   BT_auto_straight_curve: editor.curveOptions.autoSelect,
   BT_curve_reverse: editor.curveOptions.reverse,
@@ -228,6 +233,9 @@ const clearControl = (key: string, toggle = false) => {
   editor.message = '경로 제어값 적용'
 }
 const commands: Record<string, () => void> = {
+  TBT_stop_rendering: () => {
+    editor.renderPaused = !editor.renderPaused
+  },
   BT_right_angle: () => {
     editor.drawingOptions.rightAngle = !editor.drawingOptions.rightAngle
   },
@@ -263,8 +271,14 @@ const commands: Record<string, () => void> = {
     editor.teachingOpen = true
   },
   BT_control_map_data: () => {
-    editor.operationTab = 'nodes'
+    editor.operationTab = 'automatic'
     editor.operationsOpen = true
+  },
+  BT_node_ban_setting: () => openOperations('nodes'),
+  BT_check_closer_node: () => openOperations('nearby'),
+  BT_clear_path_index: () => {
+    editor.commit((map) => Object.assign(map, rebuildPathControls(map, editor.legacySource)))
+    editor.message = '경로 인덱스와 차량 유지각 재계산 완료'
   },
   BT_capture_minimap: () => summary.value?.capture(),
   BT_set_real_id_in_area: () => openOperations('ids'),
@@ -734,6 +748,11 @@ const supported = (id: string) =>
           Verify
           <br />
           Around Data
+        </v-btn>
+        <v-btn @click="openOperations('aes')">
+          AES
+          <br />
+          데이터 생성
         </v-btn>
       </div>
     </div>

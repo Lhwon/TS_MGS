@@ -2,7 +2,7 @@
  * 파일명: index.ts
  * 설명: 슬라이스의 컴포넌트와 데이터 및 기능을 외부에 제공하는 공개 진입점
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 export {
   demoDocument,
@@ -45,9 +45,11 @@ export {
   createMapLabels,
   paintMapLabel,
   MIN_MAP_LABEL_PIXELS,
+  mapObjectColor,
 } from '@/entities/map/lib/createMapLabels.ts'
 
 export { serializeLegacy } from '@/entities/map/model/legacyWriter.ts'
+export { serializeLegacySnapshot } from '@/entities/map/model/nativeSnapshot.ts'
 export type { LegacySource } from '@/entities/map/model/legacyWriter.ts'
 
 export { calculateCurve, appendCurve } from '@/entities/map/model/curve.ts'
@@ -55,7 +57,7 @@ export type { CurveOptions } from '@/entities/map/model/curve.ts'
 
 export { PATH_CONTROLS, NODE_FLAGS } from '@/entities/map/model/controls.ts'
 export { remapLegacySource } from '@/entities/map/model/remapLegacy.ts'
-export { PORT_SETTINGS } from '@/entities/map/model/portSettings.ts'
+export { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
 export {
   emptyAreas,
   validateAreas,

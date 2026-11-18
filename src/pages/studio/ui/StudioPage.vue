@@ -3,7 +3,7 @@
  * 파일명: StudioPage.vue
  * 설명: 지도와 설비 편집 화면 및 파일 작업과 단축키를 조합하는 편집 페이지
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 -->
 <script setup lang="ts">
@@ -22,8 +22,8 @@ import { WorkspaceHeader } from '@/widgets/workspace-header/index.ts'
 import { MgsWorkspace } from '@/widgets/mgs-workspace/index.ts'
 import { NodeInspector, MapObjectEditor } from '@/widgets/node-inspector/index.ts'
 import { MapViewport } from '@/widgets/map-canvas/index.ts'
-import { useEditor, useMapFiles } from '@/features/map-editor/index.ts'
-import type { Tool } from '@/features/map-editor/index.ts'
+import { useEditor, useMapFiles, MapSaveDialog } from '@/features/map-editor/index.ts'
+import type { Tool, NativeSaveOptions } from '@/features/map-editor/index.ts'
 import type { Layers } from '@/entities/map/index.ts'
 import { DEFAULT_LAYERS } from '@/entities/map/index.ts'
 import { AppIcon, TextAction } from '@/shared/ui/index.ts'
@@ -89,6 +89,23 @@ const files = useMapFiles(
         '맵을 교체하면 현재 3D 설계가 초기화됩니다. 저장하지 않은 변경을 버리시겠습니까?',
       )),
 )
+const saveDialogOpen = ref(false),
+  saveToNewProject = ref(false)
+/** 원본 지도는 저장 항목을 구성하고 전용 JSON은 기존 방식으로 저장하는 파일 명령 */
+const requestSave = (saveAs = false) => {
+  if (files.busy.value || editor.readOnly) return
+  if (
+    mode.value === 'map' &&
+    (editor.legacySource || editor.sourceName.toLowerCase().endsWith('.jmapx'))
+  ) {
+    saveToNewProject.value = saveAs
+    saveDialogOpen.value = true
+  } else void files.save(saveAs)
+}
+/** 같은 문서 스냅샷의 부가 데이터를 생성하고 새 버전의 저장 성공 후 창을 닫는 저장 실행 */
+const saveWithOptions = async (options: NativeSaveOptions) => {
+  if (await files.save(saveToNewProject.value, false, options)) saveDialogOpen.value = false
+}
 watch(
   () => editor.mapRevision,
   () => facility.resetForMap(mapReference.value),
@@ -231,7 +248,7 @@ const keyboard = (event: KeyboardEvent) => {
   }
   if (mod && key === 's') {
     event.preventDefault()
-    void files.save(event.shiftKey)
+    requestSave(event.shiftKey)
     return
   }
   if (mod && key === 'o') {
@@ -308,8 +325,8 @@ onBeforeUnmount(() => {
       :busy="files.busy.value || facility.busy"
       @create="files.create()"
       @open="files.open()"
-      @save="files.save()"
-      @save-as="files.save(true)"
+      @save="requestSave()"
+      @save-as="requestSave(true)"
       @folder="files.openFolder"
       @help="help?.showModal()"
     />
@@ -321,11 +338,13 @@ onBeforeUnmount(() => {
         <AppIcon
           name="layers"
           :size="17"
-        /><span>프로젝트</span
-        ><AppIcon
+        />
+        <span>프로젝트</span>
+        <AppIcon
           name="chevron"
           :size="12"
-        /><strong>{{ editor.document.name }}</strong>
+        />
+        <strong>{{ editor.document.name }}</strong>
       </div>
       <div class="workspace-mode d-flex align-center">
         <div
@@ -335,26 +354,30 @@ onBeforeUnmount(() => {
           <TextAction
             data-testid="mode-map"
             @activate="mode = 'map'"
-            >2D</TextAction
           >
+            2D
+          </TextAction>
           <TextAction
             data-testid="mode-facility"
             :active="mode === 'facility'"
             @activate="openFacility"
-            >3D</TextAction
           >
+            3D
+          </TextAction>
         </div>
         <TextAction
           data-testid="theme-toggle"
           @activate="editor.toggleColorMode"
-          >{{ editor.colorMode === 'dark' ? 'Light' : 'Dark' }}</TextAction
         >
+          {{ editor.colorMode === 'dark' ? 'Light' : 'Dark' }}
+        </TextAction>
         <TextAction
           data-testid="open-ai"
           :active="assistantOpen"
           @activate="assistantOpen = !assistantOpen"
-          >AI 도우미</TextAction
         >
+          AI 도우미
+        </TextAction>
         <span class="workspace-version">v0.6.0</span>
       </div>
     </div>
@@ -367,8 +390,8 @@ onBeforeUnmount(() => {
           :cursor="cursor"
           :zoom="mapZoom"
           @open="files.open()"
-          @save="files.save()"
-          @save-as="files.save(true)"
+          @save="requestSave()"
+          @save-as="requestSave(true)"
           @save-native="files.save(false, true)"
           @folder="files.openFolder()"
           @show-folder="files.showFolder()"
@@ -402,9 +425,9 @@ onBeforeUnmount(() => {
           v-if="mode === 'facility'"
           class="status-bar d-flex align-center flex-shrink-0"
         >
-          <span class="status-ready d-flex align-center"
-            ><span class="state-dot flex-shrink-0"></span
-            >{{
+          <span class="status-ready d-flex align-center">
+            <span class="state-dot flex-shrink-0"></span>
+            {{
               mode === 'facility'
                 ? '3D EDIT'
                 : editor.readOnly
@@ -412,12 +435,15 @@ onBeforeUnmount(() => {
                   : files.busy.value
                     ? 'WORKING'
                     : 'READY'
-            }}</span
-          ><span
+            }}
+          </span>
+          <span
             class="status-message overflow-hidden"
             role="status"
-            >{{ mode === 'facility' ? facility.message : editor.message }}</span
-          ><span class="status-platform">{{ desktop ? 'DESKTOP' : 'WEB' }}</span>
+          >
+            {{ mode === 'facility' ? facility.message : editor.message }}
+          </span>
+          <span class="status-platform">{{ desktop ? 'DESKTOP' : 'WEB' }}</span>
         </footer>
       </main>
       <AiAssistant
@@ -430,6 +456,12 @@ onBeforeUnmount(() => {
     <MapObjectEditor
       v-model="objectOpen"
       :initial-category="editor.objectEditor ?? 'ports'"
+    />
+    <MapSaveDialog
+      v-model="saveDialogOpen"
+      :busy="files.busy.value"
+      :message="editor.message"
+      @save="saveWithOptions"
     />
     <dialog
       ref="help"
@@ -471,8 +503,8 @@ onBeforeUnmount(() => {
           v-for="[key, description] in shortcuts"
           :key="key"
         >
-          <span>{{ description }}</span
-          ><kbd>{{ key }}</kbd>
+          <span>{{ description }}</span>
+          <kbd>{{ key }}</kbd>
         </div>
       </div>
       <p class="dialog-tip text-center">

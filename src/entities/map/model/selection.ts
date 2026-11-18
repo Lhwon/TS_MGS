@@ -227,6 +227,7 @@ export const editSelectedNodes = (
                   'namePosition',
                   'nameDirection',
                   'settings',
+                  'reservations',
                   'bays',
                 ].flatMap((key) =>
                   (port as unknown as Record<string, unknown>)[key] === undefined

@@ -13,6 +13,16 @@ import { createGrid } from '@/features/map-editor/model/grid.ts'
 import { makeAroundData } from '@/features/map-editor/model/around.ts'
 import { downloadJson } from '@/shared/lib/files/index.ts'
 import { assignRealIds } from '@/features/map-editor/model/realIds.ts'
+import { findNearbyNodes } from '@/features/map-editor/model/nearby.ts'
+import {
+  MAP_CONTROL_ACTIONS,
+  applyAutomaticControls,
+} from '@/features/map-editor/model/automaticControls.ts'
+import {
+  DEFAULT_AES_VEHICLE,
+  makeAesData,
+  readAesVehicle,
+} from '@/features/map-editor/model/aes.ts'
 const editor = useEditor(),
   tab = computed({
     get: () => editor.operationTab,
@@ -35,6 +45,47 @@ const flags = reactive<Record<string, number>>({}),
   controlValue = ref(0)
 const realIds = reactive({ start: 1, step: 1, order: 'id' as 'id' | 'xy' | 'yx', insert: false })
 const aroundRadius = ref(30000)
+const automaticAction = ref('spin-junction')
+/** 원본 Control Map Data의 선택 명령을 전체 지도에 하나의 이력으로 반영하는 자동 설정 */
+const applyAutomatic = () =>
+  run(() => {
+    editor.commit((map) =>
+      Object.assign(map, applyAutomaticControls(map, automaticAction.value, editor.legacySource)),
+    )
+    return '전체 지도 자동 제어 설정 적용'
+  })
+const nearbyRadius = ref(300)
+/** 원본 검사 거리 안의 근접 노드를 목록과 지도 선택에 함께 표시하는 진단 실행 */
+const checkNearby = () =>
+  run(() => {
+    const output = findNearbyNodes(editor.document, Number(nearbyRadius.value))
+    editor.selectedIds = output.nodes.map((node) => node.id)
+    editor.selectedId = editor.selectedIds[0] ?? null
+    return (
+      `${output.nodes.length}개 근접 노드 · ${output.pairs}개 노드 쌍\n` +
+      output.nodes
+        .slice(0, 200)
+        .map((node) => `N${node.id} ↔ N${node.other} · ${node.distance.toFixed(2)} mm`)
+        .join('\n')
+    )
+  })
+const aesVehicle = reactive({ ...DEFAULT_AES_VEHICLE })
+/** 원본 차량 설정 파일에서 첫 번째 AGV의 AES 생성 치수를 적용하는 설정 열기 */
+const importVehicle = async (event: Event) => {
+  const input = event.target as HTMLInputElement,
+    file = input.files?.[0]
+  if (!file) return
+  try {
+    if (file.size > 1024 * 1024) throw new Error('차량 설정 파일은 일 MB 이하여야 합니다.')
+    Object.assign(aesVehicle, readAesVehicle(await file.text()))
+    error.value = ''
+    result.value = `${file.name} · AGV_TYPE_01 적용`
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    input.value = ''
+  }
+}
 const grid = reactive({ rows: 3, columns: 3, spacingX: 1000, spacingY: 1000, x: 0, y: 0 })
 const spacing = ref(1000),
   dx = ref(0),
@@ -140,6 +191,19 @@ const exportAround = () =>
     )
     return `주변 데이터 생성 · ${data.nodes}개 노드 · ${data.pairs}개 참조`
   })
+/** 현재 저장 대상의 계획 경로 순서로 충돌 인덱스를 계산하는 AES 파일 추출 */
+const exportAes = () =>
+  run(() => {
+    const vehicle = Object.fromEntries(
+      Object.entries(aesVehicle).map(([key, value]) => [key, Number(value)]),
+    ) as typeof aesVehicle
+    const data = makeAesData(editor.document, vehicle, editor.legacySource)
+    downloadJson(
+      data.content,
+      editor.sourceName.replace(/\.(jmapx|tsmgs\.json|json)$/i, '') + '.aesx',
+    )
+    return `AES 생성 · 계획 경로 ${data.paths}개 · 충돌 참조 ${data.collisions}개`
+  })
 /** 선택 범위의 Real ID를 순서와 삽입 옵션에 따라 지정하는 실제 식별자 적용 */
 const applyRealIds = () =>
   run(() => {
@@ -175,6 +239,28 @@ const distance = () =>
     const path = shortestMapPath(editor.document, Number(start.value), Number(end.value))
     return `${Math.round(path.distance)} ${path.units} · ${path.nodes.join(' → ')}`
   })
+/** 선택한 작업의 입력과 검증을 명시적인 처리 목록에 연결하는 적용 명령 */
+const applyOperation = () => {
+  const commands: Record<string, () => void> = {
+    nodes: applyNodes,
+    automatic: applyAutomatic,
+    move,
+    spacing: subdivide,
+    control: applyControls,
+    grid: generateGrid,
+    ids: applyRealIds,
+    around: exportAround,
+    aes: exportAes,
+    nearby: checkNearby,
+    distance,
+    duplicate: () => editSelection('duplicate'),
+    delete: () => editSelection('delete'),
+    bays: () => {
+      result.value = 'Bay 표시 적용'
+    },
+  }
+  commands[tab.value]?.()
+}
 </script>
 <template>
   <v-dialog
@@ -197,10 +283,13 @@ const distance = () =>
             { id: 'move', label: '이동' },
             { id: 'spacing', label: '노드 간격' },
             { id: 'control', label: '경로 제어' },
+            { id: 'automatic', label: '자동 제어 설정' },
             { id: 'distance', label: '경로 거리' },
             { id: 'grid', label: '격자 생성' },
             { id: 'bays', label: 'Bay 필터' },
             { id: 'around', label: '주변 데이터' },
+            { id: 'aes', label: 'AES 생성' },
+            { id: 'nearby', label: '근접 노드 검사' },
             { id: 'ids', label: 'Real ID' },
             { id: 'duplicate', label: '복제' },
             { id: 'delete', label: '삭제' },
@@ -213,6 +302,7 @@ const distance = () =>
         </v-btn>
       </div>
       <v-select
+        v-if="!['aes', 'around', 'grid', 'distance', 'bays', 'nearby', 'automatic'].includes(tab)"
         v-model="scope"
         :items="[
           { title: `선택 노드 ${selected.length}개`, value: 'selection' },
@@ -336,10 +426,63 @@ const distance = () =>
             원본 path_around.bem 형식 · 정수 직선 거리 · 가까운 노드 순서
           </p>
         </div>
+        <div v-else-if="tab === 'automatic'">
+          <v-select
+            v-model="automaticAction"
+            :items="MAP_CONTROL_ACTIONS"
+            label="Control Map Data 명령"
+          />
+          <p class="text-caption mt-3">원본 기준으로 전체 지도에 적용 · 기존 실행 취소 지원</p>
+        </div>
+        <div v-else-if="tab === 'nearby'">
+          <v-text-field
+            v-model="nearbyRadius"
+            label="근접 검사 거리 mm"
+            type="number"
+          />
+          <p class="text-caption">지정 거리 이하의 노드를 검사하고 지도에서 선택</p>
+        </div>
+        <div v-else-if="tab === 'aes'">
+          <label class="d-block mb-4">
+            AGV_TYPE.INI 열기
+            <input
+              type="file"
+              accept=".ini"
+              class="d-block mt-2"
+              @change="importVehicle"
+            />
+          </label>
+          <div class="fields">
+            <v-text-field
+              v-for="field in [
+                { key: 'width', label: '차량 폭 mm' },
+                { key: 'height', label: '차량 높이 mm' },
+                { key: 'leftWidth', label: '왼쪽 중심 Offset mm' },
+                { key: 'topHeight', label: '위쪽 중심 Offset mm' },
+                { key: 'sampleLength', label: '외곽 표본 간격 mm' },
+                { key: 'detectionDistance', label: '검출 여유 mm' },
+                { key: 'searchRatio', label: '탐색 반경의 차량 폭 배율' },
+              ]"
+              :key="field.key"
+              v-model="aesVehicle[field.key as keyof typeof aesVehicle]"
+              :label="field.label"
+              type="number"
+            />
+          </div>
+          <p class="text-caption">
+            원본의 첫 번째 AGV 치수 기준 · 현재와 다음 위치 및 합집합 계산 · 현재 지도와 동일한
+            버전의 AES 파일로 사용
+          </p>
+        </div>
         <div v-else-if="tab === 'bays'">
           <v-select
             v-model="editor.bayFilter"
-            :items="editor.availableBays"
+            :items="
+              editor.availableBays.map((id) => ({
+                value: id,
+                title: `${id} · ${editor.document.areas?.bays[id - 1]?.name ?? '이름 미지정'}`,
+              }))
+            "
             label="표시할 Bay · 빈 선택은 전체 표시"
             multiple
             chips
@@ -402,29 +545,7 @@ const distance = () =>
           variant="flat"
           :disabled="editor.readOnly"
           data-testid="apply-map-operation"
-          @click="
-            tab === 'nodes'
-              ? applyNodes()
-              : tab === 'move'
-                ? move()
-                : tab === 'spacing'
-                  ? subdivide()
-                  : tab === 'control'
-                    ? applyControls()
-                    : tab === 'grid'
-                      ? generateGrid()
-                      : tab === 'duplicate'
-                        ? editSelection('duplicate')
-                        : tab === 'delete'
-                          ? editSelection('delete')
-                          : tab === 'ids'
-                            ? applyRealIds()
-                            : tab === 'around'
-                              ? exportAround()
-                              : tab === 'bays'
-                                ? (result = 'Bay 표시 적용')
-                                : distance()
-          "
+          @click="applyOperation"
         >
           {{ tab === 'distance' ? '거리 계산' : '적용' }}
         </v-btn>

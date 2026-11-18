@@ -2,10 +2,11 @@
  * 파일명: createMapTopology.ts
  * 설명: 평면과 삼차원 화면에서 재사용하는 지도 도형과 선택 식별 정보 생성
  * 작성자: 이희원
- * 작성일자: 2026-11-04
+ * 작성일자: 2026-11-18
  */
 import * as THREE from 'three'
 import { createMapShapes } from '@/entities/map/lib/createMapShapes.ts'
+import { portNameAnchor } from '@/entities/map/lib/createMapLabels.ts'
 import type { MapDocument } from '@/entities/map/model/map.ts'
 import { legacyColor, mgsTheme, displayMapPorts } from '@/entities/map/model/view.ts'
 // TS_UI의 원본 좌표 반경과 동일한 노드 치수
@@ -299,12 +300,57 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
     portMesh.userData.portFaces = portFaces
     group.add(portMesh)
   }
+  const captionVertices: number[] = []
+  for (const port of displayMapPorts(map)) {
+    if (!port.name) continue
+    const end = portNameAnchor(port),
+      length = Math.hypot(end.x - port.x, end.y - port.y)
+    if (!length) continue
+    const dx = (-(end.y - port.y) / length) * 40,
+      dy = ((end.x - port.x) / length) * 40
+    captionVertices.push(
+      port.x + dx,
+      port.y + dy,
+      0,
+      port.x - dx,
+      port.y - dy,
+      0,
+      end.x + dx,
+      end.y + dy,
+      0,
+      end.x + dx,
+      end.y + dy,
+      0,
+      port.x - dx,
+      port.y - dy,
+      0,
+      end.x - dx,
+      end.y - dy,
+      0,
+    )
+  }
+  const captions = new THREE.Mesh(
+    new THREE.BufferGeometry().setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(captionVertices, 3),
+    ),
+    new THREE.MeshBasicMaterial({
+      color: theme.font,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+    }),
+  )
+  captions.name = 'port-captions'
+  captions.visible = false
+  group.add(captions)
   // 압축한 바닥 높이와 무관하게 겹침 순서를 보장하는 지도 전용 페인터 순서
   const orders: Record<string, number> = {
     edges: -100,
     arrows: -99,
     'node-borders': -98,
     ports: -95,
+    'port-captions': -94,
   }
   nodeMesh.name = 'nodes'
   nodeMesh.renderOrder = -97

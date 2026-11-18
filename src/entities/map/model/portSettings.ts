@@ -2,8 +2,19 @@
  * 파일명: portSettings.ts
  * 설명: 원본 Ver 스물다섯 포트 저장 명세에서 확인한 운행 속성의 열 위치와 표시 이름
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
+export const PORT_RESERVATIONS = [
+  { key: 'startBuffer', label: 'Start Buffer Port UID' },
+  { key: 'sequenceBuffer', label: 'Sequence Buffer Port UID' },
+  { key: 'directBuffer', label: 'Direct Buffer Port UID' },
+  { key: 'simultaneousLoad', label: 'Simultaneous Load Port UID' },
+  { key: 'simultaneousUnload', label: 'Simultaneous Unload Port UID' },
+  { key: 'emptyReserved', label: 'Empty Reserved Port UID' },
+  { key: 'loadedReserved', label: 'Loaded Reserved Port UID' },
+  { key: 'positionReserved', label: 'Position Reserved Port UID' },
+] as const
+
 export const PORT_SETTINGS = [
   {
     key: 'b_no_select',

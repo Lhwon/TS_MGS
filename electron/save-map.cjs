@@ -63,7 +63,9 @@ const saveMapVersion = async (directory, content, groups = '', auxiliary = {}) =
     throw new Error('부가 저장 데이터 형식을 확인하세요.')
   for (const [key, value] of Object.entries(auxiliary))
     if (
-      !['bay', 'bay_group', 'zone', 'bay_offset', 'limit_ports'].includes(key) ||
+      !['bay', 'bay_group', 'zone', 'bay_offset', 'limit_ports', 'path_around', 'aes'].includes(
+        key,
+      ) ||
       typeof value !== 'string' ||
       Buffer.byteLength(value) > MAX_BYTES
     )
@@ -88,11 +90,14 @@ const saveMapVersion = async (directory, content, groups = '', auxiliary = {}) =
         : [[mapFile, content]]
       files.unshift(
         ...Object.entries(auxiliary).map(([suffix, text]) => [
-          path.join(dataDirectory, `${path.parse(name).name}_${suffix}.bem`),
+          suffix === 'aes'
+            ? path.join(dataDirectory, 'TRAFFIC', `${path.parse(name).name}.aesx`)
+            : path.join(dataDirectory, `${path.parse(name).name}_${suffix}.bem`),
           text,
         ]),
       )
       for (const [file, text] of files) {
+        await fs.mkdir(path.dirname(file), { recursive: true })
         const temporary = `${file}.${randomUUID()}.tmp`
         staged.push(temporary)
         await fs.writeFile(temporary, text, { encoding: 'utf8', flag: 'wx' })

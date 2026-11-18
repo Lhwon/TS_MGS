@@ -8,6 +8,15 @@ import { serializeAreas, serializeLegacy } from '@/entities/map/index.ts'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
 import { useEditor } from '@/features/map-editor/model/editor.ts'
+import { makeAroundData } from '@/features/map-editor/model/around.ts'
+import { makeAesData, type AesVehicle } from '@/features/map-editor/model/aes.ts'
+export interface NativeSaveOptions {
+  includeAreas: boolean
+  includeAround: boolean
+  aroundRadius: number
+  includeAes: boolean
+  vehicle: AesVehicle
+}
 /**
  * 파일 열기와 저장 및 브라우저 이탈 처리를 연결하는 지도 파일 작업 구성
  * @param beforeReplace 함께 연결된 설계의 교체 가능 여부를 확인하는 사전 검사
@@ -73,26 +82,41 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
   /**
    * 작업 시작 시점의 문서를 저장하고 완료된 스냅샷만 저장 기준으로 표시하는 비동기 저장
    */
-  const save = async (saveAs = false, forceNative = false) => {
+  const save = async (saveAs = false, forceNative = false, options?: NativeSaveOptions) => {
     if (busy.value || editor.readOnly) return
     const snapshot = editor.document
+    const revision = editor.mapRevision
     busy.value = true
     try {
       const native =
         forceNative || !!editor.legacySource || editor.sourceName.toLowerCase().endsWith('.jmapx')
       const serialized = native ? serializeLegacy(snapshot, editor.legacySource) : undefined
       const content = serialized?.content ?? JSON.stringify(snapshot, null, 2)
+      const auxiliary: Record<string, string> = {}
+      if (native && !forceNative) {
+        if (snapshot.areas && options?.includeAreas !== false)
+          Object.assign(auxiliary, serializeAreas(snapshot.areas))
+        if (options?.includeAround)
+          auxiliary.path_around = makeAroundData(snapshot, options.aroundRadius).content
+        if (options?.includeAes)
+          auxiliary.aes = makeAesData(snapshot, options.vehicle, editor.legacySource).content
+      }
       if (window.desktop?.apiVersion === 2) {
         const result = await window.desktop.saveMap(content, editor.sourceName, {
           token: editor.projectToken,
           groups: serialized?.groups,
-          auxiliary:
-            native && !forceNative && snapshot.areas ? serializeAreas(snapshot.areas) : undefined,
+          auxiliary,
           saveAs,
         })
         if (result) {
-          editor.projectToken = result.token
-          editor.markSaved(snapshot, result.name)
+          if (editor.mapRevision === revision) {
+            editor.projectToken = result.token
+            if (native && snapshot.areas && (forceNative || options?.includeAreas === false)) {
+              editor.sourceName = result.name
+              editor.message = `${result.name} 지도 저장 완료 · 영역 설정은 저장 항목에서 제외`
+            } else editor.markSaved(snapshot, result.name)
+          }
+          return true
         }
       } else {
         downloadJson(
@@ -101,6 +125,13 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
         )
         if (serialized?.groups)
           downloadJson(serialized.groups, editor.sourceName.replace(/\.jmapx$/i, '_port_group.bem'))
+        if (native && !forceNative)
+          for (const [suffix, data] of Object.entries(auxiliary))
+            downloadJson(
+              data,
+              editor.sourceName.replace(/\.(?:jmapx|(?:tsmgs\.)?json)$/i, '') +
+                (suffix === 'aes' ? '.aesx' : `_${suffix}.bem`),
+            )
         editor.message = window.desktop
           ? '지도 파일 다운로드를 요청했습니다. 새 데스크톱 저장 기능은 앱을 재시작하면 적용됩니다.'
           : '지도 파일 다운로드를 요청했습니다.'

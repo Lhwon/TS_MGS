@@ -78,6 +78,7 @@ export const editMapObjects = (input: MapDocument, value: unknown, maximum = 200
         'namePosition',
         'nameDirection',
         'settings',
+        'reservations',
         'bays',
       ],
       shape: [
@@ -106,6 +107,8 @@ export const editMapObjects = (input: MapDocument, value: unknown, maximum = 200
     if (command.operation !== 'create' && !found)
       throw new Error(`${command.entity} ${id} 객체를 찾지 못했습니다.`)
     if (command.operation === 'delete') {
+      if (key === 'nodes' && found!.removable === false)
+        throw new Error(`N${id}의 Removable 설정이 해제되어 있습니다.`)
       rows.splice(rows.indexOf(found!), 1)
       if (key === 'nodes') {
         map.edges = map.edges.filter((edge) => edge.from !== found!.id && edge.to !== found!.id)

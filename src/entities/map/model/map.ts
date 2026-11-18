@@ -5,7 +5,7 @@
  * 작성일자: 2026-11-18
  */
 import { validateAreas, type AreaData } from '@/entities/map/model/areas.ts'
-import { PORT_SETTINGS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 export interface DrawingVision {
   routeColor: string
@@ -78,6 +78,8 @@ export interface MapEdge {
   realConnection?: number
 }
 export interface MapPort {
+  uid?: number
+  reservations?: Partial<Record<(typeof PORT_RESERVATIONS)[number]['key'], number[]>>
   bays?: number[]
   settings?: Record<string, string | number>
   id: string
@@ -405,6 +407,7 @@ export const parseDocument = (content: string): MapDocument => {
       y: numeric(port.y, '포트 Y'),
       name: text(port.name, '포트 이름'),
       ...optionalNumbers(port, [
+        'uid',
         'width',
         'height',
         'fillColor',
@@ -425,6 +428,20 @@ export const parseDocument = (content: string): MapDocument => {
       throw new Error('포트 크기는 0 이상이어야 합니다.')
     if (port.bays !== undefined)
       result.bays = array(port.bays, '포트 Bay', 10000).map((value) => identifier(value, 'Bay'))
+    if (port.reservations !== undefined) {
+      const lists = record(port.reservations, '포트 예약 목록')
+      result.reservations = {}
+      for (const field of PORT_RESERVATIONS)
+        if (lists[field.key] !== undefined)
+          result.reservations[field.key] = array(lists[field.key], field.label, MAX_PORTS).map(
+            (value) => {
+              const uid = numeric(value, field.label)
+              if (!Number.isSafeInteger(uid) || uid < 0)
+                throw new Error('예약 포트 UID는 영 이상의 정수여야 합니다.')
+              return uid
+            },
+          )
+    }
     if (port.settings !== undefined) {
       const values = record(port.settings, '포트 운행 설정')
       result.settings = {}

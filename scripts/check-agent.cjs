@@ -2,7 +2,7 @@
  * 파일명: check-agent.cjs
  * 설명: 외부 추론 없이 대화와 도구 호출 및 관찰 응답 계약을 확인하는 점검
  * 작성자: 이희원
- * 작성일자: 2026-11-17
+ * 작성일자: 2026-11-18
  */
 const assert = require('node:assert/strict')
 const { aiPropose, aiStatus } = require('../electron/ai-service.cjs')
@@ -12,6 +12,7 @@ const check = async () => {
   const original = global.fetch
   const captured = []
   let capabilities = ['completion', 'tools', 'thinking']
+  let httpError = false
   let response = { role: 'assistant', content: '안녕하세요.', tool_calls: [] }
   global.fetch = async (_url, options) => {
     if (String(_url).endsWith('/api/show'))
@@ -30,10 +31,12 @@ const check = async () => {
         ],
       })
     captured.push(JSON.parse(options.body))
+    if (httpError) return Response.json({ error: 'runner resource limit' }, { status: 500 })
     return Response.json({ done: true, message: response })
   }
   try {
     assert.equal(new Set(tools.map((tool) => tool.function.name)).size, tools.length)
+    assert.ok(tools.some((tool) => tool.function.name === 'subdivide_paths' && tool.function.parameters.required.includes('spacingMm')))
     const ask = (history = []) =>
       aiPropose({ id: crypto.randomUUID(), prompt: '배경만 적용해줘', context: '{}', history })
     const status = await aiStatus()
@@ -129,6 +132,11 @@ const check = async () => {
       tool_calls: [{ function: { name: 'execute_shell', arguments: {} } }],
     }
     await assert.rejects(ask(), /지원하지 않는 도구/)
+    httpError = true
+    await assert.rejects(ask(), /500, \/api\/chat.*runner resource limit/)
+    httpError = false
+    response = { role: 'assistant', content: '오류 후 연속 대화' }
+    assert.equal((await ask()).content, '오류 후 연속 대화')
     process.stdout.write('Agent conversation and tool-result contracts OK\n')
   } finally {
     global.fetch = original

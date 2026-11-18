@@ -2,11 +2,14 @@
  * 파일명: view.ts
  * 설명: 지도 표시 옵션과 식별 라벨 및 원본 색상과 테마 설정 해석
  * 작성자: 이희원
- * 작성일자: 2026-11-04
+ * 작성일자: 2026-11-18
  */
 import { systemPalette } from '@/shared/theme/index.ts'
 import type { MapNode, MapDocument, MapPort } from '@/entities/map/model/map.ts'
 export interface Layers {
+  portIndices?: boolean
+  portCaptions?: boolean
+  fontStyle?: boolean
   nodeProperties?: boolean
   noSendGoals?: boolean
   loadedGoals?: boolean
@@ -174,6 +177,7 @@ export const mgsTheme = (content = '', mode?: 'light' | 'dark') => {
       'node_font_brush_color',
       dark ? legacyColor(parseInt(systemPalette.dark.background.slice(1), 16)) : 16777215,
     ),
+    nodeFontSize: Math.max(1, Math.min(200, values.node_font_size ?? 10)) * 10,
     arrowSize: Math.max(0, Math.min(1000, values.path_setting_tri_size ?? 20)) * 10,
     portStrokeWidth: Math.max(0, Math.min(1000, values.port_pen_width ?? 15)) * 10,
   }

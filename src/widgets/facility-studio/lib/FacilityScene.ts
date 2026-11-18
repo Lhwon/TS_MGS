@@ -2,7 +2,7 @@
  * 파일명: FacilityScene.ts
  * 설명: 기준 지도와 설비 모델 및 포트 선택과 변환 핸들을 관리하는 렌더러
  * 작성자: 이희원
- * 작성일자: 2026-11-16
+ * 작성일자: 2026-11-18
  */
 import { createMapLabels, paintMapLabel } from '@/entities/map/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
@@ -195,6 +195,7 @@ export const createFacilityScene = (
       if (['edges', 'arrows'].includes(object.name)) object.visible = layers.edges
       if (['node-borders', 'nodes'].includes(object.name)) object.visible = layers.nodes
       if (object.name === 'ports') object.visible = layers.ports
+      if (object.name === 'port-captions') object.visible = layers.ports && !!layers.portCaptions
     }
     portMeshes = ground.children.filter(
       (o) => o.visible && (o.userData.portIds || o.userData.portFaces),

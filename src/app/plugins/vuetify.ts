@@ -2,7 +2,7 @@
  * 파일명: vuetify.ts
  * 설명: 공통 컴포넌트 기본값과 프로젝트 색상을 정의하는 화면 테마 구성
  * 작성자: 이희원
- * 작성일자: 2026-11-04
+ * 작성일자: 2026-11-18
  */
 import { vuetifyColors } from '@/shared/theme/index.ts'
 import { createVuetify } from 'vuetify'
@@ -19,6 +19,7 @@ import {
   VBtnToggle,
   VSpacer,
   VAlert,
+  VCheckbox,
 } from 'vuetify/components'
 
 export const vuetify = createVuetify({
@@ -35,6 +36,7 @@ export const vuetify = createVuetify({
     VBtnToggle,
     VSpacer,
     VAlert,
+    VCheckbox,
   },
   defaults: {
     VBtn: { variant: 'text', size: 'small', minWidth: 0, rounded: 'lg' },

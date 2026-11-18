@@ -7,6 +7,8 @@
 export { useEditor } from '@/features/map-editor/model/editor.ts'
 export type { Tool } from '@/features/map-editor/model/editor.ts'
 export { useMapFiles } from '@/features/map-editor/model/useMapFiles.ts'
+export type { NativeSaveOptions } from '@/features/map-editor/model/useMapFiles.ts'
+export { default as MapSaveDialog } from '@/features/map-editor/ui/MapSaveDialog.vue'
 
 export {
   subdividePaths,
@@ -20,3 +22,14 @@ export { default as AreaEditor } from '@/features/map-editor/ui/AreaEditor.vue'
 export { readTeachingFile, applyTeaching } from '@/features/map-editor/model/teaching.ts'
 export { default as TeachingEditor } from '@/features/map-editor/ui/TeachingEditor.vue'
 export { assignRealIds } from '@/features/map-editor/model/realIds.ts'
+export { findNearbyNodes } from '@/features/map-editor/model/nearby.ts'
+export {
+  MAP_CONTROL_ACTIONS,
+  applyAutomaticControls,
+  rebuildPathControls,
+} from '@/features/map-editor/model/automaticControls.ts'
+export {
+  makeAesData,
+  readAesVehicle,
+  DEFAULT_AES_VEHICLE,
+} from '@/features/map-editor/model/aes.ts'

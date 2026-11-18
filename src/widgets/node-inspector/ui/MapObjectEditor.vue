@@ -11,6 +11,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useEditor } from '@/features/map-editor/index.ts'
 import {
   PORT_SETTINGS,
+  PORT_RESERVATIONS,
   PATH_CONTROLS,
   type MapEdge,
   type MapPort,
@@ -34,6 +35,7 @@ const stringFields = new Set([
   'description',
   'bays',
   'portIds',
+  ...PORT_RESERVATIONS.map((field) => `reservations.${field.key}`),
   ...PORT_SETTINGS.filter((field) => field.kind === 'text').map((field) => `settings.${field.key}`),
 ])
 const fields = computed(() => {
@@ -55,6 +57,9 @@ const fields = computed(() => {
       nameDirection: '이름 방향',
       bays: 'Bay 목록 쉼표 구분',
       ...Object.fromEntries(PORT_SETTINGS.map((field) => [`settings.${field.key}`, field.label])),
+      ...Object.fromEntries(
+        PORT_RESERVATIONS.map((field) => [`reservations.${field.key}`, `${field.label} 쉼표 구분`]),
+      ),
     }
   if (category.value === 'portGroups')
     return {
@@ -144,10 +149,14 @@ const reset = () => {
           ] ?? 0)
         : key === 'bays' || key === 'portIds'
           ? ((value?.[key] as (number | string)[] | undefined)?.join(',') ?? '')
-          : key.startsWith('settings.')
-            ? ((value as unknown as MapPort)?.settings?.[key.split('.')[1]] ??
-              (stringFields.has(key) ? '' : 0))
-            : (value?.[key] ?? (stringFields.has(key) ? '' : 0)),
+          : key.startsWith('reservations.')
+            ? ((value as unknown as MapPort)?.reservations?.[
+                key.split('.')[1] as (typeof PORT_RESERVATIONS)[number]['key']
+              ]?.join(',') ?? '')
+            : key.startsWith('settings.')
+              ? ((value as unknown as MapPort)?.settings?.[key.split('.')[1]] ??
+                (stringFields.has(key) ? '' : 0))
+              : (value?.[key] ?? (stringFields.has(key) ? '' : 0)),
     )
   initialDraft.value = { ...draft }
   error.value = ''
@@ -206,11 +215,33 @@ const apply = () => {
                 .split(',')
                 .map((part) => Number(part.trim()))
             : []
+        } else if (key.startsWith('reservations.')) {
+          const port = target as MapPort
+          port.reservations ??= {}
+          port.reservations[key.split('.')[1] as (typeof PORT_RESERVATIONS)[number]['key']] =
+            String(value).trim()
+              ? String(value)
+                  .split(',')
+                  .map((part) => Number(part.trim()))
+              : []
         } else if (key.startsWith('settings.')) {
           const port = target as MapPort
           port.settings ??= {}
           port.settings[key.split('.')[1]] = value
         } else Object.assign(target, { [key]: value })
+      }
+      if (category.value === 'portGroups') {
+        const group = target as MapPortGroup,
+          node = map.nodes.find((item) => item.id === group.nodeId)
+        if (!node) throw new Error('포트 그룹의 기준 노드를 확인하세요.')
+        if (changes.offsetX !== undefined && changes.x === undefined)
+          group.x = node.x + Number(changes.offsetX)
+        if (changes.offsetY !== undefined && changes.y === undefined)
+          group.y = node.y + Number(changes.offsetY)
+        group.nodeX = node.x
+        group.nodeY = node.y
+        group.offsetX = group.x - node.x
+        group.offsetY = group.y - node.y
       }
     })
     editor.message = '지도 객체 속성을 적용했습니다.'

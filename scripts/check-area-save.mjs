@@ -45,17 +45,41 @@ try {
     map.nodes = [{ id: 1, name: 'N1', x: 0, y: 0 }]
     map.areas = area
     const native = serializeLegacy(map)
-    return { native, serialized }
+    const { makeAesData, makeAroundData, DEFAULT_AES_VEHICLE } =
+      await import('/src/features/map-editor/index.ts')
+    return {
+      native,
+      serialized,
+      aes: makeAesData(map, DEFAULT_AES_VEHICLE).content,
+      around: makeAroundData(map, 30000).content,
+    }
   })
   const names = await Promise.all([
-    saveMapVersion(directory, output.native.content, output.native.groups, output.serialized),
-    saveMapVersion(directory, output.native.content, output.native.groups, output.serialized),
+    saveMapVersion(directory, output.native.content, output.native.groups, {
+      ...output.serialized,
+      aes: output.aes,
+      path_around: output.around,
+    }),
+    saveMapVersion(directory, output.native.content, output.native.groups, {
+      ...output.serialized,
+      aes: output.aes,
+      path_around: output.around,
+    }),
   ])
   assert.notEqual(names[0], names[1])
   for (const name of names) {
     const file = await readMapFile(path.join(directory, name))
     assert.deepEqual(file.areaFiles, output.serialized)
     assert.equal(file.content, output.native.content)
+    const stem = path.parse(name).name
+    assert.equal(
+      await fs.readFile(path.join(temporary, 'DATA', 'TRAFFIC', `${stem}.aesx`), 'utf8'),
+      output.aes,
+    )
+    assert.equal(
+      await fs.readFile(path.join(temporary, 'DATA', `${stem}_path_around.bem`), 'utf8'),
+      output.around,
+    )
   }
   await assert.rejects(
     saveMapVersion(directory, output.native.content, '', { '../bad': 'invalid' }),
@@ -69,6 +93,78 @@ try {
     e.areaEditorOpen = true
   })
   await page.getByTestId('area-editor').waitFor()
+  await page.evaluate(async (output) => {
+    const e = (await import('/src/features/map-editor/index.ts')).useEditor()
+    e.areaEditorOpen = false
+    e.load(output.native.content, 'save.jmapx', '', output.native.groups, output.serialized)
+    e.commit((map) => {
+      map.nodes[0].x = 100
+    })
+    window.desktop = {
+      apiVersion: 2,
+      setDirty: () => {},
+      saveMap: async (content, name, options) => {
+        window.__saveBundle = { content, name, options }
+        return { name: '20261118_120000.jmapx', token: 'test-project' }
+      },
+    }
+  }, output)
+  await page.keyboard.press('Control+s')
+  const dialog = page.getByTestId('map-save-dialog')
+  await dialog.waitFor()
+  await dialog.getByLabel('AES Data 생성', { exact: true }).check()
+  await dialog.getByRole('button', { name: '저장', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  const saved = await page.evaluate(async () => {
+    const { previewLegacy } = await import('/src/entities/map/index.ts')
+    const e = (await import('/src/features/map-editor/index.ts')).useEditor()
+    return {
+      auxiliary: window.__saveBundle.options.auxiliary,
+      x: previewLegacy(window.__saveBundle.content, 'saved.jmapx').nodes[0].x,
+      dirty: e.dirty,
+    }
+  })
+  assert.equal(saved.x, 100)
+  assert.equal(saved.dirty, false)
+  assert.equal(saved.auxiliary.aes, output.aes)
+  assert.equal(saved.auxiliary.path_around, output.around)
+  assert.equal(saved.auxiliary.bay, output.serialized.bay)
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    const { emptyAreas } = await import('/src/entities/map/index.ts')
+    const e = useEditor()
+    e.newMap()
+    e.commit((map) => {
+      map.nodes = [
+        { id: 1, name: 'N1', x: 0, y: 0 },
+        { id: 2, name: 'N2', x: 1000, y: 0 },
+      ]
+      map.edges = [{ id: 'e', from: 1, to: 2, bays: [1, 2, 9] }]
+      map.ports = [{ id: 'P1', name: '', nodeId: 1, x: 0, y: 500, bays: [1, 2, 9] }]
+      map.areas = {
+        ...emptyAreas(),
+        bays: [
+          { name: 'A', zone: 'Z' },
+          { name: 'B', zone: 'Z' },
+        ],
+        zones: [{ name: 'Z', groups: [] }],
+      }
+    })
+    e.areaCategory = 'bays'
+    e.areaEditorOpen = true
+  })
+  const areaDialog = page.getByTestId('area-editor')
+  await areaDialog.getByRole('button', { name: '삭제', exact: true }).click()
+  await areaDialog.getByRole('button', { name: '지도에 적용', exact: true }).click()
+  const refs = await page.evaluate(async () => {
+    const e = (await import('/src/features/map-editor/index.ts')).useEditor()
+    const result = { edges: e.document.edges[0].bays, ports: e.document.ports[0].bays }
+    e.undo()
+    return { ...result, undo: e.document.edges[0].bays }
+  })
+  assert.deepEqual(refs.edges, [1, 9])
+  assert.deepEqual(refs.ports, [1, 9])
+  assert.deepEqual(refs.undo, [1, 2, 9])
   console.log(
     'Area roundtrip, concurrent atomic version bundles, folder load, forbidden path rejection and editor UI OK',
   )

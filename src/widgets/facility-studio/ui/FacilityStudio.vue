@@ -15,13 +15,18 @@ import {
   resolveFacilityInstance,
   MAX_GLB_BYTES,
   facilityModelSize,
+  createInteriorModel,
+  floorMaterials,
+  interiorModels,
   loadDefaultCatalog,
+  MAX_FLOOR_POINTS,
 } from '@/entities/facility/index.ts'
-import type { FacilityAsset } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, InteriorModel } from '@/entities/facility/index.ts'
 import { createFacilityScene } from '@/widgets/facility-studio/lib/FacilityScene.ts'
 import { DEFAULT_LAYERS, type Layers } from '@/entities/map/index.ts'
 import { GlbModelCache } from '@bem/map3d/glb'
 import ModelDesigner from '@/widgets/facility-studio/ui/ModelDesigner.vue'
+import FloorAreaEditor from '@/widgets/facility-studio/ui/FloorAreaEditor.vue'
 
 const emit = defineEmits<{ draftDirty: [value: boolean] }>()
 
@@ -41,6 +46,13 @@ const selectedModel = computed(() =>
   studio.document.assets.find((asset) => asset.id === studio.selected?.assetId),
 )
 const baseSize = computed(() => selectedModel.value && facilityModelSize(selectedModel.value))
+const wallPart = computed(() => selectedModel.value?.parts.find((part) => part.wall))
+const wallTransparency = computed(() =>
+  Math.round(100 * (1 - (studio.selected?.wallOpacity ?? wallPart.value?.opacity ?? 1))),
+)
+const wallStart = shallowRef<{ x: number; y: number }>()
+const floorPlanVisible = ref<boolean>()
+const showFloorPlan = computed(() => floorPlanVisible.value ?? !!map.document.layout?.visible)
 const sizeFields = [
   { axis: 'x', label: '가로' },
   { axis: 'y', label: '세로' },
@@ -62,12 +74,49 @@ const quickResize = shallowRef<{
 /** 표시 정밀도를 정리하면서 작은 치수의 유효 숫자를 유지 */
 const displaySize = (size: number) => Number(size.toPrecision(12))
 
-const tool = ref<'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale'>('select')
+const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'translate' | 'rotate' | 'scale'>('select')
+const floorId = ref('')
+const floorAreas = computed(() => studio.document.floors ?? [])
+const hasSceneContent = computed(() => studio.document.assets.length > 0 || floorAreas.value.length > 0)
+const selectedFloor = computed(() => floorAreas.value.find((area) => area.id === floorId.value))
+const floorDraft = shallowRef<{
+  shape: 'rectangle' | 'polygon'
+  points: FloorPoint[]
+  replaceId?: string
+}>()
+const floorMaterial = ref<FloorMaterial>('concrete')
+const floorGuide = computed(() => {
+  const draft = floorDraft.value
+  if (!draft) return ''
+  if (draft.shape === 'rectangle')
+    return draft.points.length ? '맞은편 모서리를 클릭하세요.' : '첫 번째 모서리를 클릭하세요.'
+  if (draft.points.length < 3) return '경계점을 3개 이상 클릭하세요.'
+  return '첫 점 ①을 클릭하거나 Enter를 눌러 바닥을 적용하세요.'
+})
 
-/** 배치 모델의 선택과 즉시 사용 가능한 이동 핸들 활성화 */
-const selectInstance = (id: string | null) => {
-  studio.selectedId = id
-  if (id && tool.value !== 'rotate' && tool.value !== 'scale') tool.value = 'translate'
+/** 바닥 영역을 선택하고 모델 선택 및 변형 핸들을 해제 */
+const selectFloor = (id: string) => {
+  floorId.value = id
+  studio.selectedId = null
+  tool.value = 'select'
+}
+
+const selectedIds = computed(() => new Set(studio.selectedIds))
+const multiSelected = computed(() => studio.selectedIds.length > 1)
+const batchOffset = reactive({ x: 0, y: 0 })
+
+/** 클릭과 드래그의 선택 변경을 하나의 목록으로 반영하고 단일 객체에서만 핸들 활성화 */
+const selectInstances = (ids: string[], operation: 'replace' | 'add' | 'toggle' = 'replace') => {
+  if (operation !== 'replace' && !ids.length) return
+  const next = new Set(operation === 'replace' ? [] : studio.selectedIds)
+  for (const id of ids) {
+    if (operation === 'toggle' && next.has(id)) next.delete(id)
+    else next.add(id)
+  }
+  studio.selectedIds = [...next]
+  if (next.size > 1) tool.value = 'select'
+  else if (next.size === 1 && tool.value !== 'rotate' && tool.value !== 'scale')
+    tool.value = 'translate'
 }
 
 const error = ref('')
@@ -111,6 +160,14 @@ const attempt = (action: () => void) => {
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
+}
+
+/** 선택 객체의 상대 배치를 유지하며 입력한 X와 Y 이동량을 한 번에 적용 */
+const applyBatchOffset = () => {
+  attempt(() => {
+    studio.moveSelectionXY(Number(batchOffset.x), Number(batchOffset.y), map.document.ports)
+    Object.assign(batchOffset, { x: 0, y: 0 })
+  })
 }
 
 /**
@@ -263,6 +320,150 @@ const applyModel = (asset: FacilityAsset) => {
   error.value = ''
   studio.message =
     '사용자 모델을 적용했습니다. 포트를 선택해 배치할 수 있으며 같은 모델의 기존 배치에도 변경이 반영됩니다.'
+}
+
+/** 인테리어 모델을 라이브러리에 추가하고 맞는 바닥 배치 도구 활성화 */
+const startInteriorPlacement = (type: InteriorModel) => {
+  attempt(() => {
+    if (map.document.units !== 'mm') throw new Error('인테리어를 배치하기 전에 2D 맵 축척을 확정하세요.')
+    const model = createInteriorModel(type)
+    if (studio.document.assets.some((asset) => asset.id === model.id))
+      studio.selectedAssetId = model.id
+    else studio.setAsset(model, reference.value)
+    wallStart.value = undefined
+    floorId.value = ''
+    tool.value = type === 'wall' ? 'wall' : 'place'
+  })
+}
+
+/** 바닥 지점 입력을 시작하고 기존 경계를 다시 그리는 경우 수정 대상을 고정 */
+const startFloor = (shape: 'rectangle' | 'polygon', replaceId?: string) => {
+  attempt(() => {
+    if (map.document.units !== 'mm') throw new Error('바닥을 배치하기 전에 2D 맵 축척을 확정하세요.')
+    studio.selectedId = null
+    floorId.value = replaceId ?? ''
+    floorDraft.value = { shape, points: [], replaceId }
+    tool.value = 'floor'
+  })
+}
+
+/** 유효한 바닥 경계를 기존 3D 문서의 실행 취소 이력에 하나의 변경으로 기록 */
+const applyFloorBoundary = (points: FloorPoint[], replaceId?: string) => {
+  const floor = floorAreas.value.find((area) => area.id === replaceId)
+  const preset = floorMaterials[floorMaterial.value]
+  const area: FloorArea = floor
+    ? { ...floor, points }
+    : {
+        id: crypto.randomUUID(),
+        name: `바닥 영역 ${floorAreas.value.length + 1}`,
+        points,
+        material: floorMaterial.value,
+        color: preset.color,
+        repeatMm: preset.repeatMm,
+        rotation: 0,
+      }
+  studio.commit((document) => {
+    document.floors = floor
+      ? (document.floors ?? []).map((item) => item.id === floor.id ? area : item)
+      : [...(document.floors ?? []), area]
+    if (!document.mapRef.geometryKey) document.mapRef = reference.value
+  })
+  selectFloor(area.id)
+}
+
+/** 선택 바닥의 재질과 이름 및 반복 치수를 검증하고 적용 */
+const updateFloor = (area: FloorArea) => {
+  attempt(() => studio.commit((document) => {
+    document.floors = document.floors?.map((item) => item.id === area.id ? area : item)
+  }))
+}
+
+/** 인접 영역과 그리는 순서를 바꿔 겹치는 부분에서 표시할 재질 지정 */
+const moveFloor = (offset: number) => {
+  const index = floorAreas.value.findIndex((area) => area.id === floorId.value)
+  const next = index + offset
+  if (index < 0 || next < 0 || next >= floorAreas.value.length) return
+  attempt(() => studio.commit((document) => {
+    const areas = document.floors!
+    const area = areas[index]!
+    areas[index] = areas[next]!
+    areas[next] = area
+  }))
+}
+
+/** 선택 바닥을 제거하고 실행 취소로 복구할 수 있도록 이력 기록 */
+const removeFloor = () => {
+  attempt(() => studio.commit((document) => {
+    document.floors = document.floors?.filter((area) => area.id !== floorId.value)
+  }))
+  floorId.value = ''
+}
+
+/** 마지막 점을 첫 점과 연결하여 다각형을 완성 */
+const finishFloor = () => {
+  const draft = floorDraft.value
+  if (draft?.shape === 'polygon' && draft.points.length >= 3)
+    attempt(() => applyFloorBoundary(draft.points, draft.replaceId))
+}
+
+/** 캔버스에서 Enter가 입력되면 작성 중인 다각형을 확정 */
+const finishFloorOnEnter = (event: KeyboardEvent) => {
+  if (!(event.target instanceof HTMLCanvasElement) || event.isComposing || !floorDraft.value) return
+  if (floorDraft.value.shape !== 'polygon' || floorDraft.value.points.length < 3) return
+  event.preventDefault()
+  finishFloor()
+}
+
+/** 그리는 도중 마지막으로 찍은 꼭짓점을 제거 */
+const undoFloorPoint = () => {
+  const draft = floorDraft.value
+  if (draft) floorDraft.value = { ...draft, points: draft.points.slice(0, -1) }
+}
+
+/** 바닥의 두 지점 사이를 연결하는 벽이나 선택 모델 하나를 배치 */
+const placeOnFloor = (x: number, y: number) => {
+  attempt(() => {
+    const draft = floorDraft.value
+    if (tool.value === 'floor' && draft) {
+      const first = draft.points[0]
+      if (draft.shape === 'rectangle' && first) {
+        applyFloorBoundary([first, { x, y: first.y }, { x, y }, { x: first.x, y }], draft.replaceId)
+      } else {
+        if (draft.points.length >= MAX_FLOOR_POINTS) throw new Error('최대 꼭짓점 수에 도달했습니다.')
+        floorDraft.value = { ...draft, points: [...draft.points, { x, y }] }
+      }
+      return
+    }
+    if (tool.value === 'wall') {
+      if (!wallStart.value) {
+        wallStart.value = { x, y }
+        return
+      }
+      const start = wallStart.value
+      const model = studio.asset
+      if (!model) return
+      const dx = x - start.x
+      const dy = y - start.y
+      const length = Math.hypot(dx, dy)
+      if (length < 10) throw new Error('시작점과 다른 위치에서 벽을 끝내세요.')
+      studio.place((start.x + x) / 2, (start.y + y) / 2, undefined, {
+        rotation: (Math.atan2(dy, dx) * 180) / Math.PI,
+        scale: { x: length / facilityModelSize(model).x, y: 1, z: 1 },
+      })
+      wallStart.value = undefined
+    } else {
+      studio.place(x, y)
+    }
+    tool.value = 'translate'
+  })
+}
+
+/** 선택한 배치의 벽체에만 투명도를 지정하고 기존 편집 이력에 기록 */
+const setWallTransparency = (event: Event) => {
+  const instance = studio.selected
+  if (!instance || !wallPart.value) return
+  const opacity = (100 - (event.target as HTMLInputElement).valueAsNumber) / 100
+  attempt(() => studio.updateInstance(instance.id, { wallOpacity: opacity }))
 }
 
 /**
@@ -428,20 +629,17 @@ onMounted(() => {
       error: (message) => {
         error.value = message
       },
-      select: selectInstance,
-      place: (x, y) =>
-        attempt(() => {
-          studio.place(x, y)
-          tool.value = 'translate'
-        }),
+      select: selectInstances,
+      place: placeOnFloor,
+      finishFloor,
       placeAtPort,
       move: (id, position, rotation, scale) =>
         attempt(() => updatePose(id, { position, rotation, scale })),
     })
     scene.setMap(map.document, map.theme, props.layers ?? DEFAULT_LAYERS)
     scene.setDocument(studio.document)
-    scene.setSelected(studio.selectedId)
-    scene.setTool(tool.value)
+    scene.setSelected(studio.selectedIds)
+    scene.setTool(tool.value === 'wall' || tool.value === 'floor' ? 'place' : tool.value)
     scene.fit()
   } catch (e) {
     error.value = `3D 초기화 실패: ${e instanceof Error ? e.message : String(e)}`
@@ -457,11 +655,13 @@ watch(
 )
 
 watch(
-  () => studio.selectedId,
-  (id) => {
+  () => studio.selectedIds,
+  (ids) => {
     cancelQuickResize()
+    if (ids.length) floorId.value = ''
+    Object.assign(batchOffset, { x: 0, y: 0 })
     try {
-      scene?.setSelected(id)
+      scene?.setSelected(ids)
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
     }
@@ -480,6 +680,8 @@ watch(
     cancelQuickResize()
     error.value = ''
     placementPort.value = ''
+    floorId.value = ''
+    floorPlanVisible.value = undefined
     designerOpen.value = false
     editingAsset.value = null
     tool.value = 'select'
@@ -490,7 +692,25 @@ watch(
   { flush: 'post' },
 )
 
-watch(tool, (value) => scene?.setTool(value))
+watch(tool, (value) => {
+  if (value !== 'wall') wallStart.value = undefined
+  if (value !== 'floor') floorDraft.value = undefined
+  scene?.setTool(value === 'wall' || value === 'floor' ? 'place' : value)
+})
+watch([floorDraft, selectedFloor], ([draft, area]) => {
+  scene?.setFloorOutline(
+    draft?.points ?? area?.points ?? [],
+    !draft && !!area,
+    draft?.shape === 'polygon',
+  )
+})
+watch(floorPlanVisible, (value) => scene?.setFloorPlanVisible(value))
+watch(
+  () => studio.selectedAssetId,
+  (id) => {
+    if (tool.value === 'wall' && id !== 'interior-wall') tool.value = 'select'
+  },
+)
 onBeforeUnmount(() => scene?.dispose())
 </script>
 
@@ -498,6 +718,7 @@ onBeforeUnmount(() => scene?.dispose())
   <section
     class="facility-studio d-flex flex-column"
     aria-label="3D 시설 설계"
+    @keydown.esc="(tool === 'wall' || tool === 'floor') && (tool = 'select')"
   >
     <div class="facility-toolbar d-flex flex-wrap align-center ga-2">
       <div>
@@ -513,13 +734,13 @@ onBeforeUnmount(() => scene?.dispose())
       <v-btn
         :text="`설계 프로젝트 저장 ${studio.dirty ? ' *' : ''}`"
         data-testid="scene-save"
-        :disabled="studio.busy || mismatch || !studio.document.assets.length"
+        :disabled="studio.busy || mismatch || !hasSceneContent"
         @click="studio.save(map.projectToken)"
       />
       <v-btn
         text="3D 데이터 추출"
         data-testid="scene-export"
-        :disabled="studio.busy || mismatch || !studio.document.assets.length"
+        :disabled="studio.busy || mismatch || !hasSceneContent"
         @click="studio.exportRuntime(map.document.ports, map.projectToken)"
       />
       <v-btn
@@ -609,6 +830,19 @@ onBeforeUnmount(() => scene?.dispose())
         <small class="d-block mt-2">
           현장 치수에 맞게 배치한 모델의 가로·세로·높이를 설정할 수 있습니다.
         </small>
+        <h2>인테리어</h2>
+        <div class="d-flex flex-wrap ga-1">
+          <v-btn
+            v-for="(label, type) in interiorModels"
+            :key="type"
+            :text="type === 'wall' ? '벽 그리기' : label"
+            :data-testid="`interior-${type}`"
+            :disabled="studio.busy"
+            @click="startInteriorPlacement(type)"
+          />
+          <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
+          <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
+        </div>
         <h2>
           모델 라이브러리
           <small>{{ studio.document.assets.length }}</small>
@@ -637,7 +871,8 @@ onBeforeUnmount(() => scene?.dispose())
             ] as const"
             :key="value"
             :data-testid="`tool-${value}`"
-            :disabled="(value === 'place' || value === 'port') && !studio.asset"
+            :disabled="((value === 'place' || value === 'port') && !studio.asset) ||
+              (multiSelected && (value === 'translate' || value === 'rotate' || value === 'scale'))"
             :class="{ active: tool === value }"
             @click="tool = value"
           >
@@ -655,6 +890,16 @@ onBeforeUnmount(() => scene?.dispose())
             @click="scene?.fit()"
           >
             전체 보기
+          </v-btn>
+          <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
+          <v-btn
+            v-if="map.document.layout"
+            :class="{ active: showFloorPlan }"
+            :aria-pressed="showFloorPlan"
+            data-testid="interior-floor-plan"
+            @click="floorPlanVisible = !showFloorPlan"
+          >
+            배경 도면
           </v-btn>
         </div>
         <div class="facility-view-tools d-flex flex-wrap">
@@ -681,10 +926,43 @@ onBeforeUnmount(() => scene?.dispose())
           </v-btn>
         </div>
         <div
+          v-if="floorDraft"
+          class="facility-view-tools floor-drawing-tools d-flex align-center flex-wrap ga-2"
+        >
+          <span class="text-caption" role="status">
+            {{ floorGuide }}
+            <strong v-if="floorDraft.shape === 'polygon'">{{ floorDraft.points.length }}점</strong>
+          </span>
+          <select
+            v-if="!floorDraft.replaceId"
+            v-model="floorMaterial"
+            aria-label="새 바닥 재질"
+            data-testid="floor-draft-material"
+          >
+            <option v-for="(preset, type) in floorMaterials" :key="type" :value="type">
+              {{ preset.label }}
+            </option>
+          </select>
+          <v-btn
+            v-if="floorDraft.shape === 'polygon'"
+            :disabled="floorDraft.points.length < 3"
+            class="floor-drawing-apply"
+            text="바닥 적용"
+            data-testid="floor-finish"
+            @click="finishFloor"
+          />
+          <v-btn :disabled="!floorDraft.points.length" text="마지막 점 취소" @click="undoFloorPoint" />
+          <v-btn text="그리기 취소" @click="tool = 'select'" />
+        </div>
+        <div
           ref="host"
           class="facility-canvas position-relative overflow-hidden"
           data-testid="facility-canvas"
+          @keydown.enter="finishFloorOnEnter"
         ></div>
+        <p v-if="tool === 'wall'" class="px-3 py-2 text-caption" role="status">
+          {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
+        </p>
         <div
           v-if="studio.selected"
           class="facility-selection-tools"
@@ -754,7 +1032,7 @@ onBeforeUnmount(() => scene?.dispose())
           </small>
         </div>
         <div
-          v-if="!studio.document.instances.length && !map.document.nodes.length"
+          v-if="!studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !floorDraft"
           class="facility-empty position-absolute text-center"
         >
           모델 만들기 → 포트 클릭 또는 Port ID 선택 → 1개 배치
@@ -762,14 +1040,23 @@ onBeforeUnmount(() => scene?.dispose())
           <small>기존 MGS 노드·포트는 2D 맵에서 편집합니다.</small>
         </div>
         <div class="facility-hint position-absolute text-center">
-          오른쪽 드래그: 시점 회전 · Space + 왼쪽 드래그: 화면 이동 · 휠: 확대 · 이동 10mm / 회전
-          15° 스냅
+          왼쪽 드래그: 영역 선택 · Shift + 클릭: 추가 또는 해제 · Space + 왼쪽 드래그: 화면 이동
         </div>
       </div>
       <v-sheet
         tag="aside"
         class="facility-inspector overflow-auto"
       >
+        <FloorAreaEditor
+          :areas="floorAreas"
+          :selected="selectedFloor"
+          :busy="studio.busy || !!floorDraft"
+          @select="selectFloor"
+          @apply="updateFloor"
+          @order="moveFloor"
+          @remove="removeFloor"
+          @redraw="startFloor('polygon', floorId)"
+        />
         <h2>
           배치 목록
           <small data-testid="instance-count">{{ studio.document.instances.length }}</small>
@@ -779,8 +1066,9 @@ onBeforeUnmount(() => scene?.dispose())
             v-for="instance in studio.document.instances"
             :key="instance.id"
             class="facility-row w-100 text-start"
-            :class="{ active: studio.selectedId === instance.id }"
-            @click="selectInstance(instance.id)"
+            :class="{ active: selectedIds.has(instance.id) }"
+            :aria-pressed="selectedIds.has(instance.id)"
+            @click="selectInstances([instance.id], $event.shiftKey ? 'toggle' : 'replace')"
           >
             <strong>{{ instance.name }}</strong>
             <small>
@@ -788,6 +1076,28 @@ onBeforeUnmount(() => scene?.dispose())
             </small>
           </v-btn>
         </div>
+        <form
+          v-if="multiSelected"
+          class="facility-form"
+          data-testid="facility-batch-move"
+          @submit.prevent="applyBatchOffset"
+        >
+          <h2>{{ studio.selectedIds.length }}개 객체 이동</h2>
+          <div class="d-flex ga-2">
+            <label v-for="axis in ['x', 'y'] as const" :key="axis" class="flex-1-1">
+              {{ axis.toUpperCase() }} 이동량 (mm)
+              <v-text-field
+                v-model.number="batchOffset[axis]"
+                type="number"
+                step="any"
+                required
+                :data-testid="`facility-batch-${axis}`"
+              />
+            </label>
+          </div>
+          <v-btn type="submit" class="facility-primary" text="일괄 이동 적용" data-testid="facility-batch-apply" />
+          <v-btn type="button" text="선택 객체 보기" @click="scene?.focusSelected()" />
+        </form>
         <form
           v-if="studio.selected"
           class="facility-form"
@@ -844,6 +1154,17 @@ onBeforeUnmount(() => scene?.dispose())
             기본 크기 {{ displaySize(baseSize.x) }} × {{ displaySize(baseSize.y) }} ×
             {{ displaySize(baseSize.z) }} mm
           </small>
+          <label v-if="wallPart" class="d-flex flex-column mt-2">
+            벽 투명도 {{ wallTransparency }}%
+            <input
+              type="range"
+              min="0"
+              max="100"
+              data-testid="wall-transparency"
+              :value="wallTransparency"
+              @change="setWallTransparency"
+            />
+          </label>
           <label>
             연결 Node ID
             <v-text-field
@@ -1174,6 +1495,43 @@ select {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.facility-canvas :deep(.facility-marquee) {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+}
+.floor-drawing-tools select {
+  appearance: auto;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+}
+.facility-view-tools .floor-drawing-apply:not(:disabled) {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
+}
+.facility-canvas :deep(.facility-floor-first) {
+  position: absolute;
+  z-index: 3;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+.facility-canvas :deep(.facility-floor-first:disabled) {
+  cursor: default;
 }
 .facility-empty {
   top: 45%;

@@ -1,5 +1,7 @@
 import { decodeEmbeddedGlb, embeddedGlbPartCount } from './glbData'
 import { normalizeCargoDocument } from './cargo'
+import { parseFloorAreas, type FloorArea } from './floorAreas'
+export * from './floorAreas'
 export { normalizeCargoDocument, standardCargoAsset } from './cargo'
 export { decodeEmbeddedGlb, MAX_GLB_BYTES } from './glbData'
 /**
@@ -24,6 +26,8 @@ export interface FacilityPart {
   tiltX?: number
   tiltY?: number
   color: string
+  opacity?: number
+  wall?: true
 }
 export interface FacilityAsset {
   id: string
@@ -48,6 +52,7 @@ export interface FacilityInstance {
   position: Point3
   rotation: number
   scale?: Point3
+  wallOpacity?: number
   carrierRotation?: number
   portId?: string
   // 실제 포트 연결을 위한 상대 위치이며 구버전 포트 식별자만 있는 경우에는 메타데이터로 유지하는 정보
@@ -65,6 +70,7 @@ export interface FacilityDocument {
   }
   assets: FacilityAsset[]
   instances: FacilityInstance[]
+  floors?: FloorArea[]
 }
 export const MAX_SCENE_BYTES = 32 * 1024 * 1024
 export const MAX_PART_INSTANCES = 100000
@@ -233,6 +239,8 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
   const reference = record(data.mapRef)
   const result = emptyFacilityDocument()
   result.mapRef = { name: str(reference.name), geometryKey: str(reference.geometryKey) }
+  const floors = parseFloorAreas(data.floors)
+  if (floors?.length) result.floors = floors
   const assetCosts = new Map<string, number>()
   result.assets = list(data.assets, 500).map((value) => {
     const a = record(value)
@@ -242,6 +250,7 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
       const p = record(value)
       if (!['box', 'cylinder'].includes(p.shape))
         throw new Error('지원하지 않는 설비 부품 도형입니다.')
+      if (p.wall !== undefined && p.wall !== true) throw new Error('벽체 부품 표시가 잘못되었습니다.')
       return {
         id: identifier(p.id),
         name: str(p.name),
@@ -252,6 +261,8 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
         color: color(p.color),
         ...(p.tiltX === undefined ? {} : { tiltX: num(p.tiltX) }),
         ...(p.tiltY === undefined ? {} : { tiltY: num(p.tiltY) }),
+        ...(p.opacity === undefined ? {} : { opacity: num(p.opacity, 0, 1) }),
+        ...(p.wall === true ? { wall: true } : {}),
       } as FacilityPart
     })
     if (!parts.length && a.glb === undefined) throw new Error('부품 또는 GLB 모델이 필요합니다.')
@@ -301,6 +312,7 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
       }
     }
     if (!assets.has(instance.assetId)) throw new Error('배치된 시설의 모델이 없습니다.')
+    if (i.wallOpacity !== undefined) instance.wallOpacity = num(i.wallOpacity, 0, 1)
     if (i.portId !== undefined) instance.portId = str(i.portId)
     if (i.carrierRotation !== undefined) instance.carrierRotation = num(i.carrierRotation)
     if (i.portOffset !== undefined) {
@@ -567,6 +579,7 @@ export interface FacilityLayout {
     key: string
   }
   instances: FacilityInstance[]
+  floors?: FloorArea[]
 }
 /**
  * 정규화한 설비 모델 목록에서 배치 파일과 대조할 라이브러리 식별값을 생성하는 연결 키 계산
@@ -611,6 +624,7 @@ export const exportFacilityFiles = (
       mapRef: checked.mapRef,
       libraryRef: { fileName: libraryName, key: equipmentLibraryKey(checked.assets) },
       instances: checked.instances,
+      ...(checked.floors ? { floors: checked.floors } : {}),
     },
   }
 }
@@ -682,6 +696,7 @@ export const importFacilityFiles = (
       mapRef: layout.mapRef,
       assets: library.assets,
       instances: layout.instances,
+      floors: layout.floors,
     }),
   )
 }

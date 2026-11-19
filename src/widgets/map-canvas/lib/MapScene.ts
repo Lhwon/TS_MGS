@@ -14,6 +14,7 @@ import {
   DEFAULT_LAYERS,
   mgsFit,
   layoutCorners,
+  cropLayoutImage,
   mgsTheme,
   pickMgsNode,
   viewStep,
@@ -189,23 +190,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     image.onload = () => {
       if (disposed || drawingImageKey !== imageKey) return
       drawingPlane.material.map?.dispose()
-      const clipped = document.createElement('canvas')
-      const ratio = image.naturalWidth / drawing.sourceWidth
-      clipped.width = Math.max(1, Math.round(drawing.crop.width * ratio))
-      clipped.height = Math.max(1, Math.round(drawing.crop.height * ratio))
-      clipped
-        .getContext('2d')!
-        .drawImage(
-          image,
-          drawing.crop.x * ratio,
-          drawing.crop.y * ratio,
-          drawing.crop.width * ratio,
-          drawing.crop.height * ratio,
-          0,
-          0,
-          clipped.width,
-          clipped.height,
-        )
+      const clipped = cropLayoutImage(image, drawing)
       let source: HTMLImageElement | HTMLCanvasElement = clipped
       if (mapTheme.dark) {
         const canvas = document.createElement('canvas')

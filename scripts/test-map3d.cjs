@@ -61,6 +61,46 @@ const roundtrip = contract.importFacilityFiles(
 )
 assert.deepEqual(roundtrip.instances, document.instances)
 assert.equal(roundtrip.assets[0].glb.data, library.assets[0].glb.data)
+const { createInteriorModel } = load('src/entities/facility/interiorModels.ts')
+const interior = contract.emptyFacilityDocument()
+interior.assets = [createInteriorModel('doorway'), createInteriorModel('glass')]
+interior.instances = [
+  { ...document.instances[0], assetId: interior.assets[0].id, wallOpacity: 0.35 },
+]
+const interiorFiles = contract.exportFacilityFiles(interior)
+const restoredInterior = contract.importFacilityFiles(
+  JSON.stringify(interiorFiles.layout),
+  JSON.stringify(interiorFiles.library),
+)
+assert.equal(restoredInterior.instances[0].wallOpacity, 0.35)
+assert.equal(restoredInterior.assets[0].parts.filter((part) => part.wall).length, 3)
+assert.equal(restoredInterior.assets[0].parts.find((part) => part.name === '문짝').wall, undefined)
+assert.equal(restoredInterior.assets[1].parts.find((part) => part.name === '유리').opacity, 0.32)
+const floor = {
+  id: 'showroom-tile',
+  name: '관람 구역',
+  points: [{ x: 0, y: 0 }, { x: 2000, y: 0 }, { x: 2000, y: 1200 }, { x: 0, y: 1200 }],
+  material: 'tile',
+  color: '#c7c3b8',
+  repeatMm: 600,
+  rotation: 30,
+}
+const floorFiles = contract.exportFacilityFiles({ ...contract.emptyFacilityDocument(), floors: [floor] })
+assert.deepEqual(floorFiles.layout.floors, [floor])
+assert.deepEqual(
+  contract.importFacilityFiles(JSON.stringify(floorFiles.layout), JSON.stringify(floorFiles.library)).floors,
+  [floor],
+)
+assert.throws(() => contract.parseFloorAreas([{
+  ...floor,
+  points: [floor.points[0], floor.points[2], floor.points[1], floor.points[3]],
+}]), /교차/)
+assert.throws(() =>
+  contract.exportFacilityFiles({
+    ...interior,
+    instances: [{ ...interior.instances[0], wallOpacity: 1.01 }],
+  }),
+)
 assert.throws(() =>
   contract.parseFacilityDocument(
     JSON.stringify({

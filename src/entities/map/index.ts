@@ -40,6 +40,7 @@ export {
   mgsTheme,
 } from '@/entities/map/model/view.ts'
 export { createMapTopology, MAP_NODE_RADIUS_MM } from '@/entities/map/lib/createMapTopology.ts'
+export { cropLayoutImage } from '@/entities/map/lib/cropLayoutImage.ts'
 
 export {
   createMapLabels,

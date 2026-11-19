@@ -15,13 +15,18 @@ import type { FacilityDocument, FacilityInstance, FacilityPart } from '@/entitie
 import { resolveFacilityInstance } from '@/entities/facility/index.ts'
 import {
   createMapTopology,
+  cropLayoutImage,
   DEFAULT_LAYERS,
+  layoutCorners,
   type Layers,
   mgsTheme,
   MIN_MAP_LABEL_PIXELS,
 } from '@/entities/map/index.ts'
 import type { MapDocument } from '@/entities/map/index.ts'
 import { FACILITY_CYLINDER_SEGMENTS, facilityPartMatrix } from '@/entities/facility/index.ts'
+import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
+import { createFloorSurfaces } from '@/widgets/facility-studio/lib/floorSurfaces.ts'
+import type { FloorPoint } from '@/entities/facility/index.ts'
 /**
  * 기준 지도와 설비 모델을 합성하는 삼차원 렌더러 생성
  * 포트 기준 배치와 이동 핸들 및 시점 조작을 독립적으로 관리하는 편집 화면 구성
@@ -34,8 +39,9 @@ export const createFacilityScene = (
   host: HTMLElement,
   callbacks: {
     error(message: string): void
-    select(id: string | null): void
+    select(ids: string[], operation: 'replace' | 'add' | 'toggle'): void
     place(x: number, y: number): void
+    finishFloor(): void
     placeAtPort(id: string): void
     move(
       id: string,
@@ -54,6 +60,7 @@ export const createFacilityScene = (
   let scene = new THREE.Scene()
   let camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000000)
   let renderer = new THREE.WebGLRenderer({ antialias: true })
+  const wallOverlap = getWallOverlapPass(renderer)
   const room = new RoomEnvironment()
   const environmentGenerator = new THREE.PMREMGenerator(renderer)
   const reflections = environmentGenerator.fromScene(room, 0.06)
@@ -76,7 +83,51 @@ export const createFacilityScene = (
     material.opacity = 0.75
   }
   selection.renderOrder = 10
+  const batchOutline = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({
+      color: 0x57d4be,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.85,
+    }),
+  )
+  batchOutline.renderOrder = 10
+  batchOutline.visible = false
+  const marquee = document.createElement('div')
+  marquee.className = 'facility-marquee'
+  marquee.hidden = true
   let ground = new THREE.Group()
+  const floorSurfaces = createFloorSurfaces(0.001)
+  const floorOutline = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x25cfbb, depthWrite: false }),
+  )
+  floorOutline.visible = false
+  const firstFloorPoint = document.createElement('button')
+  firstFloorPoint.type = 'button'
+  firstFloorPoint.className = 'facility-floor-first'
+  firstFloorPoint.dataset.testid = 'facility-floor-first'
+  firstFloorPoint.textContent = '1'
+  firstFloorPoint.hidden = true
+  let floorStartPoint: FloorPoint | undefined
+  const floorStartScreen = new THREE.Vector3()
+  const floorPlan = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+      // 지도의 선과 시설보다 먼저 합성하면서 원본 도면의 투명도를 유지
+      blending: THREE.CustomBlending,
+    }),
+  )
+  floorPlan.visible = false
+  floorPlan.renderOrder = -180
+  let floorPlanImageKey = ''
+  let floorPlanGeneration = 0
+  let floorPlanVisible: boolean | undefined
   let mapDocument: MapDocument | undefined = undefined
   let portMeshes: THREE.Object3D[] = []
   let labels = document.createElement('canvas')
@@ -86,6 +137,7 @@ export const createFacilityScene = (
   const projectedLabel = new THREE.Vector3()
   const viewLabel = new THREE.Vector3()
   const instanceBounds = new Map<string, THREE.Box3>()
+  const seeThroughInstances = new Set<string>()
   const labelRay = new THREE.Ray()
   const labelIntersection = new THREE.Vector3()
   const labelFrustum = new THREE.Frustum()
@@ -108,11 +160,13 @@ export const createFacilityScene = (
   let documentGeneration = 0
   let facilityDocument: FacilityDocument | undefined
   let selectedId: string | null = null
+  let selectedIds: string[] = []
   let placing = false
   let toolMode: 'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale' = 'select'
   let animationFrame = 0
   let down = { x: 0, y: 0 }
   let downGizmo = false
+  let selectionDrag: { id: number; additive: boolean } | undefined
   let downWasSpace = false
   let uniformScaleStart: THREE.Vector3 | undefined
   let uniformScaleRatio = 1
@@ -137,6 +191,19 @@ export const createFacilityScene = (
     camera.updateProjectionMatrix()
     requestRender()
   }
+  /** 카메라가 이동해도 첫 점의 완료 버튼을 도면 좌표에 맞춰 표시 */
+  const drawFloorStart = () => {
+    if (!floorStartPoint) {
+      firstFloorPoint.hidden = true
+      return
+    }
+    const p = floorStartScreen.set(floorStartPoint.x / 1000, floorStartPoint.y / 1000, 0.02)
+    p.project(camera)
+    firstFloorPoint.hidden = Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1
+    if (firstFloorPoint.hidden) return
+    firstFloorPoint.style.left = `${((p.x + 1) / 2) * viewportHost.clientWidth}px`
+    firstFloorPoint.style.top = `${((1 - p.y) / 2) * viewportHost.clientHeight}px`
+  }
   /**
    * 중복 프레임 예약을 합치고 도형과 라벨을 함께 그리는 화면 갱신 예약
    */
@@ -153,8 +220,9 @@ export const createFacilityScene = (
         camera.far = far
         camera.updateProjectionMatrix()
       }
-      renderer.render(scene, camera)
+      wallOverlap.render(scene, camera)
       drawLabels()
+      drawFloorStart()
     })
   }
   /**
@@ -172,6 +240,48 @@ export const createFacilityScene = (
       if (object instanceof THREE.InstancedMesh) object.dispose()
     })
     ground.clear()
+  }
+  /** 잘라낸 원본 도면을 기준 맵의 좌표와 회전 그대로 3D 바닥에 표시 */
+  const updateFloorPlan = () => {
+    const layout = mapDocument?.layout
+    floorPlan.visible = false
+    if (!layout) {
+      floorPlanGeneration++
+      floorPlanImageKey = ''
+      floorPlan.material.map?.dispose()
+      floorPlan.material.map = null
+      return
+    }
+    const corners = layoutCorners(layout)
+    floorPlan.position.set(
+      (corners[0].x + corners[2].x) / 2000,
+      (corners[0].y + corners[2].y) / 2000,
+      -0.002,
+    )
+    floorPlan.scale.set(layout.width / 1000, layout.height / 1000, 1)
+    floorPlan.rotation.z = THREE.MathUtils.degToRad(layout.rotation)
+    floorPlan.material.opacity = layout.opacity
+
+    const key = `${layout.id}:${JSON.stringify(layout.crop)}`
+    if (key === floorPlanImageKey) {
+      floorPlan.visible = (floorPlanVisible ?? layout.visible) && !!floorPlan.material.map
+      return
+    }
+    floorPlanImageKey = key
+    const generation = ++floorPlanGeneration
+    floorPlan.material.map?.dispose()
+    floorPlan.material.map = null
+    const image = new Image()
+    image.onload = () => {
+      if (floorPlanGeneration !== generation) return
+      const texture = new THREE.CanvasTexture(cropLayoutImage(image, layout))
+      texture.colorSpace = THREE.SRGBColorSpace
+      floorPlan.material.map = texture
+      floorPlan.material.needsUpdate = true
+      floorPlan.visible = floorPlanVisible ?? !!mapDocument?.layout?.visible
+      requestRender()
+    }
+    image.src = layout.image
   }
   /**
    * 평면 지도 도형을 동일 좌표의 바닥으로 구성하고 표시 옵션을 적용하는 기준 맵 갱신
@@ -212,6 +322,7 @@ export const createFacilityScene = (
       (o) => o.visible && (o.userData.portIds || o.userData.portFaces),
     )
     grid.visible = layers.grid
+    updateFloorPlan()
     if (mapChanged && facilityDocument) setDocument(facilityDocument)
     requestRender()
   }
@@ -241,9 +352,11 @@ export const createFacilityScene = (
         if (!occluders) {
           labelProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
           labelFrustum.setFromProjectionMatrix(labelProjection)
-          occluders = [...instanceBounds.values()].filter((bounds) =>
-            labelFrustum.intersectsBox(bounds),
-          )
+          occluders = [...instanceBounds]
+            .filter(
+              ([id, bounds]) => !seeThroughInstances.has(id) && labelFrustum.intersectsBox(bounds),
+            )
+            .map(([, bounds]) => bounds)
         }
         viewLabel.set(label.x / 1000, label.y / 1000, 0.003)
         const distanceSquared = viewLabel.distanceToSquared(camera.position)
@@ -272,6 +385,7 @@ export const createFacilityScene = (
     const generation = ++documentGeneration
     models.visible = false
     selection.visible = false
+    batchOutline.visible = false
     const placedAssets = new Set(doc.instances.map((instance) => instance.assetId))
     let sources: Map<string, THREE.Group>
     try {
@@ -301,8 +415,10 @@ export const createFacilityScene = (
     }
     models.visible = true
     facilityDocument = doc
+    floorSurfaces.setAreas(doc.floors)
     transform.detach()
     for (const mesh of meshes) {
+      wallOverlap.setWall(mesh, false)
       mesh.dispose()
       if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
     }
@@ -310,6 +426,7 @@ export const createFacilityScene = (
     models.clear()
     instanceBindings.clear()
     instanceBounds.clear()
+    seeThroughInstances.clear()
     glbCache.retain(doc.assets)
     const assets = new Map(doc.assets.map((a) => [a.id, a]))
     const groups = new Map<
@@ -321,22 +438,32 @@ export const createFacilityScene = (
     >()
     for (const instance of doc.instances)
       for (const part of assets.get(instance.assetId)!.parts) {
-        const key = `${part.shape}:${part.color}`
+        const opacity = (part.wall ? instance.wallOpacity : undefined) ?? part.opacity ?? 1
+        // 반투명 부품은 월드 위치 기준으로 각각 정렬되도록 따로 렌더링
+        const key =
+          opacity < 1 ? JSON.stringify([instance.id, part.id]) : `${part.shape}:${part.color}`
+        if (opacity < 1) seeThroughInstances.add(instance.id)
         const list = groups.get(key) ?? []
         list.push({ instance, part })
         groups.set(key, list)
       }
     for (const list of groups.values()) {
       const first = list[0]!
+      const opacity =
+        (first.part.wall ? first.instance.wallOpacity : undefined) ?? first.part.opacity ?? 1
       const mesh = new THREE.InstancedMesh(
         first.part.shape === 'box' ? box : cylinder,
         new THREE.MeshStandardMaterial({
           color: first.part.color,
           roughness: 0.65,
           metalness: 0.2,
+          opacity,
+          transparent: opacity < 1,
+          depthWrite: opacity === 1,
         }),
         list.length,
       )
+      wallOverlap.setWall(mesh, first.part.wall === true && opacity > 0 && opacity < 1)
       mesh.userData.ids = list.map((item) => item.instance.id)
       list.forEach(({ instance, part }, index) => {
         const bindings = instanceBindings.get(instance.id) ?? []
@@ -374,7 +501,7 @@ export const createFacilityScene = (
       })
     }
     for (const instance of doc.instances) updateMatrices(instance)
-    setSelected(selectedId)
+    setSelected(selectedIds)
     requestRender()
   }
   /**
@@ -438,19 +565,38 @@ export const createFacilityScene = (
   /** 선택 설비의 부품 경계 캐시를 사용하는 선택 외곽 갱신 */
   const updateSelectionBounds = () => {
     selectionBounds.makeEmpty()
-    const bounds = instanceBounds.get(selectedId ?? '')
-    if (bounds) selectionBounds.copy(bounds)
-    selection.visible = !selectionBounds.isEmpty()
+    const points: number[] = []
+    for (const id of selectedIds) {
+      const bounds = instanceBounds.get(id)
+      if (!bounds) continue
+      selectionBounds.union(bounds)
+      if (selectedIds.length < 2) continue
+      const { min, max } = bounds
+      const corners = [
+        [min.x, min.y, min.z], [max.x, min.y, min.z], [max.x, max.y, min.z], [min.x, max.y, min.z],
+        [min.x, min.y, max.z], [max.x, min.y, max.z], [max.x, max.y, max.z], [min.x, max.y, max.z],
+      ]
+      for (const index of [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7])
+        points.push(...corners[index]!)
+    }
+    selection.visible = selectedIds.length === 1 && !selectionBounds.isEmpty()
+    batchOutline.visible = points.length > 0
+    if (points.length) {
+      batchOutline.geometry.dispose()
+      batchOutline.geometry = new THREE.BufferGeometry()
+      batchOutline.geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+    }
   }
   /**
    * 현재 선택 대상과 강조 표시 또는 이동 핸들을 갱신하는 렌더러 선택 반영
    *
-   * @param id 조회하거나 편집할 대상의 고유 식별자
+   * @param ids 선택된 설비 식별자 목록
    */
-  const setSelected = (id: string | null) => {
-    selectedId = id
+  const setSelected = (ids: string[]) => {
+    selectedIds = ids
+    selectedId = ids.length === 1 ? ids[0]! : null
     transform.detach()
-    const source = facilityDocument?.instances.find((i) => i.id === id)
+    const source = facilityDocument?.instances.find((i) => i.id === selectedId)
     const instance = source ? resolveFacilityInstance(source, mapDocument?.ports ?? []) : undefined
     if (instance) {
       proxy.position.set(
@@ -493,14 +639,19 @@ export const createFacilityScene = (
   /**
    * 지도와 표시 객체의 범위를 사용 가능한 화면에 맞추는 카메라 맞춤
    */
-  const fit = () => {
+  const fit = (fromAbove = false) => {
     models.updateMatrixWorld(true)
     ground.updateMatrixWorld(true)
     const bounds = new THREE.Box3().setFromObject(models)
     bounds.union(new THREE.Box3().setFromObject(ground))
+    bounds.union(new THREE.Box3().setFromObject(floorSurfaces.group))
+    if (mapDocument?.layout && (floorPlanVisible ?? mapDocument.layout.visible))
+      bounds.union(new THREE.Box3().setFromObject(floorPlan))
     if (bounds.isEmpty()) bounds.set(new THREE.Vector3(-5, -5, 0), new THREE.Vector3(5, 5, 5))
     const centre = bounds.getCenter(new THREE.Vector3())
-    const direction = new THREE.Vector3(1, -1, 0.85).normalize()
+    const direction = (
+      fromAbove ? new THREE.Vector3(0, -0.001, 1) : new THREE.Vector3(1, -1, 0.85)
+    ).normalize()
     const right = new THREE.Vector3(0, 0, 1).cross(direction).normalize()
     const up = direction.clone().cross(right).normalize()
     const tangent = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
@@ -551,7 +702,60 @@ export const createFacilityScene = (
     renderer.domElement.focus()
     downWasSpace = spacePan.active()
     down = { x: e.clientX, y: e.clientY }
-    downGizmo = transform.enabled && transform.axis !== null
+    downGizmo = transform.enabled && transform.axis !== null && !e.shiftKey
+    if (e.button !== 0 || !e.isPrimary || downWasSpace || downGizmo || placing || e.pointerType === 'touch') return
+    selectionDrag = { id: e.pointerId, additive: e.shiftKey }
+    renderer.domElement.setPointerCapture(e.pointerId)
+    e.stopImmediatePropagation()
+  }
+
+  /** 드래그 범위를 렌더러 안으로 제한한 화면 픽셀 영역 계산 */
+  const dragBounds = (e: PointerEvent) => {
+    const rect = renderer.domElement.getBoundingClientRect()
+    const x0 = THREE.MathUtils.clamp(down.x - rect.left, 0, rect.width)
+    const y0 = THREE.MathUtils.clamp(down.y - rect.top, 0, rect.height)
+    const x1 = THREE.MathUtils.clamp(e.clientX - rect.left, 0, rect.width)
+    const y1 = THREE.MathUtils.clamp(e.clientY - rect.top, 0, rect.height)
+    return {
+      left: Math.min(x0, x1),
+      top: Math.min(y0, y1),
+      width: Math.max(1, Math.abs(x1 - x0)),
+      height: Math.max(1, Math.abs(y1 - y0)),
+      viewport: rect,
+    }
+  }
+
+  /** 사각형에 해당하는 카메라 시야를 계산해 겹치는 설비 외곽 조회 */
+  const selectInArea = (bounds: ReturnType<typeof dragBounds>) => {
+    const { left, top, width, height, viewport } = bounds
+    if (!models.visible || !viewport.width || !viewport.height) return []
+    const sx = viewport.width / width
+    const sy = viewport.height / height
+    const crop = new THREE.Matrix4().set(
+      sx, 0, 0, (viewport.width - 2 * left - width) / width,
+      0, sy, 0, (2 * top + height - viewport.height) / height,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    )
+    camera.updateMatrixWorld()
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(
+      crop.multiply(camera.projectionMatrix).multiply(camera.matrixWorldInverse),
+    )
+    return [...instanceBounds]
+      .filter(([id, bounds]) =>
+        frustum.intersectsBox(bounds) &&
+        instanceBindings.get(id)?.some(({ mesh }) =>
+          Array.isArray(mesh.material) || mesh.material.opacity > 0,
+        ),
+      )
+      .map(([id]) => id)
+  }
+
+  /** 드래그 완료 및 캡처 해제에서 화면의 선택 박스를 정리 */
+  const clearMarquee = (event: PointerEvent) => {
+    if (event.pointerId !== selectionDrag?.id) return
+    selectionDrag = undefined
+    marquee.hidden = true
   }
   /** 중앙 크기 핸들의 시작점 특이점을 방지하는 화면 이동량 기반 균등 배율 계산 */
   const pointerMove = (e: PointerEvent) => {
@@ -559,6 +763,14 @@ export const createFacilityScene = (
       uniformScaleRatio = Math.exp(
         THREE.MathUtils.clamp((e.clientX - down.x - (e.clientY - down.y)) / 180, -8, 8),
       )
+    if (e.pointerId !== selectionDrag?.id || Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4)
+      return
+    const { left, top, width, height } = dragBounds(e)
+    marquee.style.left = `${left}px`
+    marquee.style.top = `${top}px`
+    marquee.style.width = `${width}px`
+    marquee.style.height = `${height}px`
+    marquee.hidden = false
   }
   /**
    * 드래그 상태와 이동량을 확인하여 화면 이동 또는 클릭과 영역 선택을 확정하는 입력 종료 처리
@@ -566,12 +778,20 @@ export const createFacilityScene = (
    * @param e 클릭 또는 드래그 판정에 사용하는 포인터 이벤트
    */
   const pointerUp = (e: PointerEvent) => {
+    const drag = e.pointerId === selectionDrag?.id ? selectionDrag : undefined
+    clearMarquee(e)
+    const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4
+    if (drag && moved && !spacePan.active() && !placing) {
+      events.select(selectInArea(dragBounds(e)), drag.additive ? 'add' : 'replace')
+      return
+    }
     if (
       e.button !== 0 ||
       downWasSpace ||
+      spacePan.active() ||
       downGizmo ||
       transform.dragging ||
-      Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4
+      moved
     )
       return
     const rect = renderer.domElement.getBoundingClientRect()
@@ -599,16 +819,19 @@ export const createFacilityScene = (
       if (p) events.place(Math.round(p.x * 100) * 10, Math.round(p.y * 100) * 10)
       return
     }
-    const hit = ray.intersectObjects(meshes)[0]
-    events.select(
-      hit && hit.instanceId !== undefined ? hit.object.userData.ids[hit.instanceId] : null,
-    )
+    const hit = ray.intersectObjects(meshes).find((item) => {
+      const material = (item.object as THREE.InstancedMesh).material
+      return Array.isArray(material) || material.opacity > 0
+    })
+    const id = hit?.instanceId === undefined ? undefined : hit.object.userData.ids[hit.instanceId]
+    events.select(id ? [id] : [], drag?.additive ? 'toggle' : 'replace')
   }
   /**
    * 이벤트와 관찰자 및 렌더링 버퍼를 해제하고 생성한 화면 요소를 제거하는 렌더러 자원 정리
    */
   const dispose = () => {
     spacePan.dispose()
+    wallOverlap.dispose()
     documentGeneration++
     glbCache.dispose()
     instanceBounds.clear()
@@ -620,6 +843,12 @@ export const createFacilityScene = (
     renderer.domElement.removeEventListener('pointerdown', pointerDown, true)
     renderer.domElement.removeEventListener('pointermove', pointerMove, true)
     renderer.domElement.removeEventListener('pointerup', pointerUp)
+    renderer.domElement.removeEventListener('pointercancel', clearMarquee)
+    renderer.domElement.removeEventListener('lostpointercapture', clearMarquee)
+    marquee.remove()
+    firstFloorPoint.remove()
+    batchOutline.geometry.dispose()
+    batchOutline.material.dispose()
     for (const mesh of meshes) {
       mesh.dispose()
       if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
@@ -632,7 +861,14 @@ export const createFacilityScene = (
       material.dispose()
     cylinder.dispose()
     clearGround()
+    floorSurfaces.dispose()
+    floorOutline.geometry.dispose()
+    floorOutline.material.dispose()
     labels.remove()
+    floorPlanGeneration++
+    floorPlan.geometry.dispose()
+    floorPlan.material.map?.dispose()
+    floorPlan.material.dispose()
     grid.geometry.dispose()
     for (const material of Array.isArray(grid.material) ? grid.material : [grid.material]) {
       if (material instanceof THREE.MeshBasicMaterial) material.map?.dispose()
@@ -648,12 +884,18 @@ export const createFacilityScene = (
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.domElement.setAttribute(
     'aria-label',
-    '3D 시설 설계: 왼쪽 클릭 선택과 배치, 오른쪽 드래그 회전, 스페이스와 왼쪽 드래그 화면 이동, 휠 확대',
+    '3D 시설 설계: 왼쪽 드래그 영역 선택, Shift 클릭 선택 추가 또는 해제, 오른쪽 드래그 회전, Space와 왼쪽 드래그 화면 이동, 휠 확대',
   )
   renderer.domElement.tabIndex = 0
   host.append(renderer.domElement)
   labels.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
   host.append(labels)
+  host.append(marquee)
+  host.append(firstFloorPoint)
+  firstFloorPoint.addEventListener('click', () => {
+    callbacks.finishFloor()
+    renderer.domElement.focus()
+  })
   controls = new OrbitControls(camera, renderer.domElement)
   // TS_UI의 바닥 기준 패닝과 지면 아래로 내려가지 않는 회전 범위를 Z 높이 좌표에 적용하는 카메라 제어
   controls.enableRotate = true
@@ -726,7 +968,11 @@ export const createFacilityScene = (
   scene.add(
     models,
     selection,
+    batchOutline,
     ground,
+    floorSurfaces.group,
+    floorOutline,
+    floorPlan,
     grid,
     proxy,
     transform.getHelper(),
@@ -736,12 +982,35 @@ export const createFacilityScene = (
   renderer.domElement.addEventListener('pointerdown', pointerDown, true)
   renderer.domElement.addEventListener('pointermove', pointerMove, true)
   renderer.domElement.addEventListener('pointerup', pointerUp)
+  renderer.domElement.addEventListener('pointercancel', clearMarquee)
+  renderer.domElement.addEventListener('lostpointercapture', clearMarquee)
   observer = new ResizeObserver(() => resizeViewport())
   observer.observe(host)
   window.addEventListener('resize', resizeViewport)
   resizeViewport()
   return {
     setMap: setMap,
+    /** 지정 중이거나 목록에서 선택한 바닥 경계를 지도 위에 표시 */
+    setFloorOutline: (points: FloorPoint[], closed = false, polygonDraft = false) => {
+      const outline = closed && points.length ? [...points, points[0]!] : points
+      floorStartPoint = polygonDraft ? points[0] : undefined
+      firstFloorPoint.disabled = points.length < 3
+      const label = firstFloorPoint.disabled ? '다각형 시작점' : '첫 점에 연결해 바닥 적용'
+      firstFloorPoint.setAttribute('aria-label', label)
+      firstFloorPoint.title = label
+      floorOutline.geometry.dispose()
+      floorOutline.geometry = new THREE.BufferGeometry().setFromPoints(
+        outline.map((p) => new THREE.Vector3(p.x / 1000, p.y / 1000, 0.02)),
+      )
+      floorOutline.visible = outline.length > 1
+      requestRender()
+    },
+    /** 3D 편집 화면에서 도면 배경의 표시 상태를 독립적으로 설정 */
+    setFloorPlanVisible: (visible?: boolean) => {
+      floorPlanVisible = visible
+      updateFloorPlan()
+      requestRender()
+    },
     /** 선택 도구를 전환하지 않고 배치 크기를 미리 표시하거나 원래 크기를 복원 */
     previewScale: (id: string, scale?: FacilityInstance['scale']) => {
       const instance = facilityDocument?.instances.find((item) => item.id === id)

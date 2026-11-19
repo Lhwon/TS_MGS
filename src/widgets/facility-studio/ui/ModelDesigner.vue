@@ -21,10 +21,13 @@ import { useEditor } from '@/features/map-editor/index.ts'
 import {
   designConveyor,
   designRack,
+  createInteriorModel,
+  interiorModels,
   emptyFacilityDocument,
   parseFacilityDocument,
   type FacilityAsset,
   type FacilityPart,
+  type InteriorModel,
 } from '@/entities/facility/index.ts'
 import { createModelPreview } from '@/widgets/facility-studio/lib/ModelPreview.ts'
 
@@ -260,7 +263,7 @@ const duplicate = (count = 1) => {
  * 기존 설비 형상을 자유 편집 가능한 부품으로 불러오는 시작 도면 구성
  * @param kind 처음 구성할 설비 형상
  */
-const starter = (kind: 'rack' | 'shelf' | 'conveyor') => {
+const starter = (kind: 'rack' | 'shelf' | 'conveyor' | InteriorModel) => {
   const design = {
     width: kind === 'conveyor' ? 3000 : 2400,
     depth: 1000,
@@ -271,9 +274,11 @@ const starter = (kind: 'rack' | 'shelf' | 'conveyor') => {
     color: '#416e9d',
   }
   const asset =
-    kind === 'conveyor'
-      ? designConveyor(crypto.randomUUID(), '컨베이어', design)
-      : designRack(crypto.randomUUID(), kind === 'rack' ? '랙' : '선반', kind, design)
+    kind === 'wall' || kind === 'doorway' || kind === 'glass'
+      ? createInteriorModel(kind)
+      : kind === 'conveyor'
+        ? designConveyor(crypto.randomUUID(), '컨베이어', design)
+        : designRack(crypto.randomUUID(), kind === 'rack' ? '랙' : '선반', kind, design)
   change(() => {
     draft.name = asset.name
     draft.parts = asset.parts
@@ -321,6 +326,27 @@ const textValue = (field: 'model' | 'part' | 'color', value: unknown) => {
     else if (selected.value)
       selected.value[field === 'part' ? 'name' : 'color'] = String(value ?? '')
   }, `${selectedId.value}:${field}`)
+}
+
+/** 선택 부품의 재질 투명도를 실시간으로 미리 보고 연속 조작을 하나의 이력으로 기록 */
+const setPartTransparency = (event: Event) => {
+  const part = selected.value
+  if (!part) return
+  const opacity = (100 - (event.target as HTMLInputElement).valueAsNumber) / 100
+  change(() => {
+    if (opacity === 1) delete part.opacity
+    else part.opacity = opacity
+  }, `${part.id}:opacity`)
+}
+
+/** 배치별 벽 투명도에 포함할 사용자 제작 부품 지정 */
+const setWallPart = (value: boolean | null) => {
+  const part = selected.value
+  if (!part) return
+  change(() => {
+    if (value) part.wall = true
+    else delete part.wall
+  })
 }
 /**
  * 선택 부품의 바닥 정렬을 독립적인 제작 이력으로 적용하는 정렬 명령
@@ -537,6 +563,13 @@ onBeforeUnmount(() => {
               @click="starter('conveyor')"
               >컨베이어</v-btn
             >
+            <v-btn
+              v-for="(label, type) in interiorModels"
+              :key="type"
+              :text="label"
+              :data-testid="`starter-${type}`"
+              @click="starter(type)"
+            />
           </div>
         </div>
         <h3 class="text-subtitle-2 mb-2">
@@ -758,6 +791,25 @@ onBeforeUnmount(() => {
               data-testid="part-color"
               @input="textValue('color', ($event.target as HTMLInputElement).value)"
           /></label>
+          <label class="d-flex flex-column text-caption ga-1">
+            부품 투명도 {{ Math.round(100 * (1 - (selected.opacity ?? 1))) }}%
+            <input
+              type="range"
+              min="0"
+              max="100"
+              data-testid="part-transparency"
+              :value="Math.round(100 * (1 - (selected.opacity ?? 1)))"
+              @input="setPartTransparency"
+              @change="historyKey = ''"
+            />
+          </label>
+          <v-checkbox
+            label="벽체 부품"
+            :model-value="selected.wall === true"
+            hide-details
+            density="compact"
+            @update:model-value="setWallPart"
+          />
           <v-btn
             class="w-100 mb-2"
             variant="outlined"

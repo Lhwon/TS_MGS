@@ -10,6 +10,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { FacilityPart } from '@/entities/facility/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
 import { mgsTheme } from '@/entities/map/index.ts'
+import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
 
 /**
  * 지도 배치와 독립된 부품 선택 및 이동과 회전 및 크기 조절 화면 생성
@@ -30,6 +31,7 @@ export const createModelPreview = (
   camera.up.set(0, 0, 1)
   camera.position.set(6, -8, 6)
   const renderer = new THREE.WebGLRenderer({ antialias: true })
+  const wallOverlap = getWallOverlapPass(renderer)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.domElement.tabIndex = 0
   renderer.domElement.setAttribute(
@@ -87,7 +89,7 @@ export const createModelPreview = (
       const root = selected ? roots.get(selected) : undefined
       outline.visible = !!root
       if (root) outline.setFromObject(root)
-      renderer.render(scene, camera)
+      wallOverlap.render(scene, camera)
     })
   }
   /**
@@ -140,6 +142,7 @@ export const createModelPreview = (
           THREE.BufferGeometry,
           THREE.MeshStandardMaterial
         >
+        wallOverlap.setWall(mesh, false)
         mesh.material.dispose()
         model.remove(root)
         roots.delete(id)
@@ -173,6 +176,14 @@ export const createModelPreview = (
       const mesh = root.children[0] as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
       mesh.geometry = part.shape === 'box' ? box : cylinder
       mesh.material.color.set(part.color)
+      const opacity = part.opacity ?? 1
+      if (mesh.material.transparent !== (opacity < 1)) {
+        mesh.material.transparent = opacity < 1
+        mesh.material.depthWrite = opacity === 1
+        mesh.material.needsUpdate = true
+      }
+      mesh.material.opacity = opacity
+      wallOverlap.setWall(mesh, part.wall === true && opacity > 0 && opacity < 1)
       mesh.material.emissive.set(batchSelected.has(part.id) ? 0x087e70 : 0)
       mesh.material.emissiveIntensity = 0.5
       root.position.set(part.position.x / 1000, part.position.y / 1000, part.position.z / 1000)
@@ -361,6 +372,7 @@ export const createModelPreview = (
    */
   const dispose = () => {
     disposed = true
+    wallOverlap.dispose()
     spacePan.dispose()
     cancelAnimationFrame(frame)
     observer.disconnect()

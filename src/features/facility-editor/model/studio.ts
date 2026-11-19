@@ -30,7 +30,13 @@ import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
 export const useFacilityEditor = defineStore('facility-editor', () => {
   const document = shallowRef(emptyFacilityDocument())
   const saved = shallowRef(document.value)
-  const selectedId = ref<string | null>(null)
+  const selectedIds = shallowRef<string[]>([])
+  const selectedId = computed({
+    get: () => selectedIds.value.length === 1 ? selectedIds.value[0]! : null,
+    set: (id: string | null) => {
+      selectedIds.value = id ? [id] : []
+    },
+  })
   const selectedAssetId = ref<string | null>(null)
   const filename = ref('Untitled.map3d.json')
   const message = ref('사용자 모델을 디자인한 뒤 포트 또는 지도 위에 배치하세요.')
@@ -79,8 +85,14 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param x 지도 또는 모델 기준 가로 좌표
    * @param y 지도 또는 모델 기준 세로 좌표
    * @param portId 설비 배치의 기준이 되는 원본 포트 식별자
+   * @param transform 바닥 배치에서 시작 좌표와 끝 좌표로 계산한 회전과 크기
    */
-  const place = (x: number, y: number, portId?: string) => {
+  const place = (
+    x: number,
+    y: number,
+    portId?: string,
+    transform?: Pick<FacilityInstance, 'rotation' | 'scale'>,
+  ) => {
     if (!asset.value) return
     const model = asset.value
     const id = crypto.randomUUID()
@@ -91,6 +103,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
         name: `${model.name} ${doc.instances.filter((i) => i.assetId === model.id).length + 1}`,
         position: { x, y, z: 0 },
         rotation: 0,
+        ...transform,
         ...(portId ? { portId, portOffset: { x: 0, y: 0, z: 0 } } : {}),
       }),
     )
@@ -107,6 +120,30 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     commit((doc) => {
       const instance = doc.instances.find((i) => i.id === id)
       if (instance) Object.assign(instance, patch, { id })
+    })
+  }
+
+  /**
+   * 여러 설비를 같은 평면 거리만큼 이동하고 포트 기준 오프셋도 함께 갱신
+   * @param x 밀리미터 단위의 X 이동량
+   * @param y 밀리미터 단위의 Y 이동량
+   * @param ports 현재 맵에서 위치를 조회할 연결 포트 목록
+   */
+  const moveSelectionXY = (x: number, y: number, ports: FacilityPort[]) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('이동할 X와 Y 값을 확인하세요.')
+    if (selectedIds.value.length < 2 || (x === 0 && y === 0)) return
+    const ids = new Set(selectedIds.value)
+    commit((doc) => {
+      for (const instance of doc.instances) {
+        if (!ids.has(instance.id)) continue
+        const { position } = resolveFacilityInstance(instance, ports)
+        instance.position.x = position.x + x
+        instance.position.y = position.y + y
+        if (instance.portOffset) {
+          instance.portOffset.x += x
+          instance.portOffset.y += y
+        }
+      }
     })
   }
 
@@ -430,7 +467,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const captureSession = () => ({
     document: document.value,
     saved: saved.value,
-    selectedId: selectedId.value,
+    selectedIds: [...selectedIds.value],
     selectedAssetId: selectedAssetId.value,
     filename: filename.value,
     message: message.value,
@@ -445,7 +482,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     copied = undefined
     document.value = snapshot.document
     saved.value = snapshot.saved
-    selectedId.value = snapshot.selectedId
+    selectedIds.value = snapshot.selectedIds
     selectedAssetId.value = snapshot.selectedAssetId
     filename.value = snapshot.filename
     message.value = snapshot.message
@@ -458,6 +495,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     captureSession,
     restoreSession,
     selectedId,
+    selectedIds,
     selectedAssetId,
     selected,
     asset,
@@ -470,6 +508,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     setAsset,
     place,
     updateInstance,
+    moveSelectionXY,
     remove,
     duplicate,
     copySelection,

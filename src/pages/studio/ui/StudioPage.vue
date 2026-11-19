@@ -142,7 +142,8 @@ const loadProjectScene = async () => {
     facility.dirty ||
     modelDraftDirty.value ||
     facility.document.assets.length ||
-    facility.document.instances.length
+    facility.document.instances.length ||
+    facility.document.floors?.length
   )
     return
   const snapshot = facility.document
@@ -192,7 +193,7 @@ watch(
       facility.document.mapRef.geometryKey !== reference.geometryKey
     )
       return
-    if (facility.document.assets.length || facility.document.instances.length)
+    if (facility.document.assets.length || facility.document.instances.length || facility.document.floors?.length)
       facility.bindMap(reference)
     else facility.resetForMap(reference)
   },

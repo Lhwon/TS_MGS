@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url)
 const {
   chromium,
 } = require('C:/Users/BEM/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright')
-const output = path.resolve('artifacts/glb-e2e')
+const output = path.resolve(process.env.TS_MGS_GLB_TEST_OUT || 'artifacts/glb-e2e')
 await fs.mkdir(output, { recursive: true })
 const browser = await chromium.launch({ headless: true, channel: 'msedge' })
 const errors = []
@@ -56,21 +56,39 @@ try {
     )
   })
   await page.getByTestId('mode-facility').click()
-  await page.getByTestId('ceram-catalog').click()
+  await page.getByRole('button', { name: '기본 모델', exact: true }).click()
   await page.waitForFunction(
     async () =>
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document
-        .assets.length === 19,
+        .assets.length === 23,
   )
+  const libraryRow = page.locator('.facility-library .facility-row').first()
+  const alignment = await libraryRow.evaluate((row) => {
+    const title = row.querySelector('strong')
+    const detail = row.querySelector('small')
+    return {
+      leftGap: title.getBoundingClientRect().left - row.getBoundingClientRect().left,
+      aligned: title.getBoundingClientRect().left === detail.getBoundingClientRect().left,
+    }
+  })
+  assert.ok(alignment.aligned && alignment.leftGap < 20, JSON.stringify(alignment))
   await page.getByTestId('placement-port').selectOption('PORT-1')
   await page.getByTestId('place-port').click()
   await page.getByTestId('selection-tools').waitFor()
   assert.ok(
     await page.getByTestId('selection-translate').evaluate((el) => el.classList.contains('active')),
   )
+  await page.waitForFunction(() => {
+    let loaded = false
+    window.__facilityView?.scene.traverse((object) => {
+      const material = object.material
+      if (material?.name === 'rackDeck' && material.map?.image?.width === 128) loaded = true
+    })
+    return loaded
+  })
   await page.waitForTimeout(500)
   await page.getByTestId('selection-focus').click()
-  await page.screenshot({ path: path.join(output, 'mp5-rack-two-floors.png') })
+  await page.screenshot({ path: path.join(output, 'rack-two-tiers.png') })
   const modelPoint = await page.evaluate(async () => {
     const { THREE, scene, camera, renderer } = window.__facilityView
     const control = scene.children.find((object) => object.isTransformControlsRoot).controls
@@ -140,9 +158,11 @@ try {
   )
   assert.ok(scaled.scale.x > 1 && scaled.scale.x < 3, JSON.stringify(scaled))
   assert.ok(Math.abs(scaled.scale.x - scaled.scale.y) < 0.00001)
-  assert.equal(
-    Number(await page.getByTestId('instance-sx').locator('input').inputValue()),
-    scaled.scale.x,
+  assert.ok(
+    Math.abs(
+      Number(await page.getByTestId('instance-size-x').locator('input').inputValue()) -
+        scaled.scale.x * 2500,
+    ) < 0.00001,
   )
   await dragHandle('X', 40, 0)
   const axisScaled = await page.evaluate(async () =>
@@ -161,23 +181,23 @@ try {
     ).useFacilityEditor()
     store.setAsset({ ...store.document.assets[0], name: '기존 보관랙' }, store.document.mapRef)
   })
-  await page.getByTestId('ceram-catalog').click()
+  await page.getByTestId('default-catalog').click()
   const refreshed = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document,
     ),
   )
-  assert.equal(refreshed.assets.length, 19)
-  assert.match(refreshed.assets[0].name, /MP5 보관랙/)
+  assert.equal(refreshed.assets.length, 23)
+  assert.equal(refreshed.assets[0].name, '보관 랙 · 2단')
   assert.deepEqual(refreshed.instances[0], axisScaled)
   await page.locator('.facility-instance-list button').first().click()
   for (const [field, value] of [
     ['x', '2500'],
     ['y', '8000'],
     ['z', '100'],
-    ['sx', '1.5'],
-    ['sy', '0.8'],
-    ['sz', '1.2'],
+    ['size-x', '3750'],
+    ['size-y', '2000'],
+    ['size-z', '4620'],
   ])
     await page.getByTestId(`instance-${field}`).locator('input').fill(value)
   await page
@@ -202,7 +222,7 @@ try {
   await page.waitForFunction(
     async () =>
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document
-        .assets.length === 20,
+        .assets.length === 24,
   )
   await page.getByTestId('place-center').click()
   await page.waitForTimeout(500)
@@ -234,16 +254,129 @@ try {
   const layout = JSON.parse(await fs.readFile(path.join(output, 'map3d.json'), 'utf8'))
   const library = JSON.parse(await fs.readFile(path.join(output, 'equipment.json'), 'utf8'))
   assert.deepEqual(layout.instances[0].scale, first.scale)
-  assert.equal(library.assets.length, 20)
+  assert.equal(library.assets.length, 24)
   await fs.writeFile(
     path.join(output, 'expected.json'),
     JSON.stringify({ firstId: first.id, center: [-465, 72.3, 120], size: [60, 138.6, 112.5] }),
   )
+  await page.locator('.facility-instance-list button').first().click()
+  await page.keyboard.press('Control+c')
+  await page.keyboard.press('Control+v')
+  await page.keyboard.press('Control+v')
+  const copies = await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    return structuredClone(useFacilityEditor().document.instances.slice(2))
+  })
+  assert.equal(copies.length, 2)
+  for (const [index, copy] of copies.entries()) {
+    assert.notEqual(copy.id, first.id)
+    assert.equal(copy.assetId, first.assetId)
+    assert.equal(copy.rotation, first.rotation)
+    assert.deepEqual(copy.scale, first.scale)
+    assert.deepEqual(copy.position, { x: 2500 + (index + 1) * 2300, y: 8000, z: 100 })
+    assert.equal(copy.portId, undefined)
+  }
+  await page.keyboard.press('Control+z')
+  await page.keyboard.press('Control+z')
+  assert.equal(await page.getByTestId('instance-count').textContent(), '2')
+  await page.locator('.facility-instance-list button').first().click()
+  await page.getByTestId('instance-x').locator('input').focus()
+  await page.keyboard.press('Control+v')
+  assert.equal(await page.getByTestId('instance-count').textContent(), '2')
+  await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const studio = useFacilityEditor()
+    studio.setAsset(
+      {
+        id: 'dimensions-fixture',
+        name: '사용자 모델 치수 검증',
+        kind: 'equipment',
+        parts: [
+          {
+            id: 'box',
+            name: 'Box',
+            shape: 'box',
+            position: { x: 0, y: 0, z: 500 },
+            size: { x: 1000, y: 2000, z: 1000 },
+            rotation: 90,
+            color: '#dddddd',
+          },
+          {
+            id: 'cylinder',
+            name: 'Cylinder',
+            shape: 'cylinder',
+            position: { x: 1250, y: 0, z: 250 },
+            size: { x: 500, y: 1000, z: 500 },
+            rotation: 0,
+            color: '#dddddd',
+          },
+        ],
+      },
+      studio.document.mapRef,
+    )
+    studio.place(4000, 4000)
+  })
+  for (const [axis, mm] of [
+    ['x', 2500],
+    ['y', 1000],
+    ['z', 1000],
+  ])
+    assert.equal(
+      Number(await page.getByTestId(`instance-size-${axis}`).locator('input').inputValue()),
+      mm,
+    )
+  await page.getByTestId('instance-size-x').locator('input').fill('3750')
+  await page.getByTestId('instance-apply').click()
+  const partScale = await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    return useFacilityEditor().selected.scale
+  })
+  assert.equal(partScale.x, 1.5)
+  assert.equal(partScale.y, 1)
+  assert.equal(partScale.z, 1)
+  const sizeHandle = page.getByTestId('quick-size-z')
+  const heightControl = await sizeHandle.boundingBox()
+  const dragX = heightControl.x + heightControl.width / 2
+  const dragY = heightControl.y + heightControl.height / 2
+  await page.mouse.move(dragX, dragY)
+  await page.mouse.down()
+  await page.mouse.move(dragX + 25, dragY, { steps: 5 })
+  assert.equal(await sizeHandle.getAttribute('aria-label'), '높이 1250 mm')
+  const placed = () =>
+    page.evaluate(async () => {
+      const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+      return structuredClone(useFacilityEditor().selected)
+    })
+  const beforeQuickResize = await placed()
+  assert.equal(beforeQuickResize.scale.z, 1)
+  await page.mouse.up()
+  const resized = await placed()
+  assert.deepEqual(resized.scale, { x: 1.5, y: 1, z: 1.25 })
+  assert.deepEqual(resized.position, beforeQuickResize.position)
+  assert.equal(resized.rotation, beforeQuickResize.rotation)
+  assert.ok(
+    await page.getByTestId('selection-translate').evaluate((el) => el.classList.contains('active')),
+  )
+  assert.equal(await page.getByTestId('instance-size-z').locator('input').inputValue(), '1250')
+  await page.getByTestId('scene-undo').click()
+  await page
+    .locator('.facility-instance-list')
+    .getByRole('button', { name: /사용자 모델 치수 검증/ })
+    .click()
+  assert.deepEqual(await placed(), beforeQuickResize)
+  await sizeHandle.press('Shift+ArrowRight')
+  assert.equal((await placed()).scale.z, 1.1)
+  await page.mouse.move(dragX, dragY)
+  await page.mouse.down()
+  await page.mouse.move(dragX + 20, dragY)
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  assert.equal((await placed()).scale.z, 1.1)
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify({
       editor: true,
-      catalog: 19,
+      catalog: 23,
       importedGlb: true,
       scaled: true,
       mouseSelectionMoveScale: true,

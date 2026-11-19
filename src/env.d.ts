@@ -5,6 +5,15 @@
  * 작성일자: 2026-11-18
  */
 /// <reference types="vite/client" />
+interface DesktopMapProject {
+  name?: string
+  content?: string
+  theme?: string
+  token: string
+  project: string
+  areaFiles?: Record<string, string>
+  portGroups?: string
+}
 interface Window {
   desktop?: {
     apiVersion?: number
@@ -30,14 +39,9 @@ interface Window {
       areaFiles?: Record<string, string>
       portGroups?: string
     } | null>
-    openMapFolder(): Promise<{
-      name: string
-      content: string
-      theme?: string
-      token?: string
-      areaFiles?: Record<string, string>
-      portGroups?: string
-    } | null>
+    openMapFolder(): Promise<DesktopMapProject | null>
+    restoreMapProject?(): Promise<DesktopMapProject | null>
+    selectSaveProject?(): Promise<string | null>
     showProjectFolder(token: string): Promise<void>
     saveMap(
       content: string,
@@ -47,8 +51,9 @@ interface Window {
         groups?: string
         auxiliary?: Record<string, string>
         saveAs?: boolean
+        backup?: boolean
       },
-    ): Promise<{ name: string; token?: string } | null>
+    ): Promise<{ name: string; token?: string; warning?: string } | null>
     openScene(): Promise<{
       name: string
       content: string

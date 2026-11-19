@@ -13,6 +13,20 @@ import { legacyColor, mgsTheme, displayMapPorts } from '@/entities/map/model/vie
 export const MAP_NODE_RADIUS_MM = 25
 // 원형 실제 노드와 곡선 보간점을 구분하는 표시 반경
 const MAP_CURVE_NODE_RADIUS_MM = 17.5
+const MGS_NODE_RADIUS_MM = 50
+const MGS_VIRTUAL_NODE_RADIUS_MM = 30
+
+/** 원본 편집 화면에서 노드 종류와 방향에 맞는 채움 색상 */
+const mgsNodeFill = (node: MapDocument['nodes'][number], theme: ReturnType<typeof mgsTheme>) =>
+  node.virtual || node.curve
+    ? theme.virtual
+    : node.noSendGoal
+      ? 0x000000
+      : node.direction === 1
+        ? theme.bothWays
+        : node.direction === undefined || node.direction === 0
+          ? theme.oneWay
+          : 0xff0000
 
 // 평면 편집기와 삼차원 바닥에서 같은 좌표와 형상을 재사용하는 지도 도형 생성
 /**
@@ -21,9 +35,10 @@ const MAP_CURVE_NODE_RADIUS_MM = 17.5
  *
  * @param document 기준 노드와 경로 및 포트를 포함하는 지도 문서
  * @param theme 원본 지도 색상과 크기 및 선 두께 설정
+ * @param mgs2d 원본 편집 화면의 노드와 방향 표식 규칙 적용 여부
  * @returns 도형 그룹과 노드 및 포트 인스턴스 참조
  */
-export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => {
+export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs2d = false) => {
   // 큰 현장 좌표를 GPU 정점에 직접 기록할 때 발생하는 떨림과 모서리 손실을 막는 지역 좌표 변환
   const origin = document.nodes[0] ??
     document.ports[0] ?? {
@@ -54,8 +69,10 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
   const matrix = new THREE.Matrix4()
   let nodeMesh: THREE.InstancedMesh
   let portMesh: THREE.Mesh
+  const baseRadius = mgs2d ? MGS_NODE_RADIUS_MM : MAP_NODE_RADIUS_MM
+  const strokeWidth = mgs2d ? 10 : 5
   const borders = new THREE.InstancedMesh(
-    new THREE.CircleGeometry(MAP_NODE_RADIUS_MM, 32),
+    new THREE.CircleGeometry(baseRadius, 32),
     new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
     Math.max(map.nodes.length, 1),
   )
@@ -138,7 +155,25 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
     if (!length) continue
     const angle = Math.atan2(dy, dx)
     const size = Math.min(length * 0.14, theme.arrowSize / 3)
-    if (size > 0 && (!a.curve || !b.curve)) {
+    if (mgs2d && theme.arrowSize > 0 && !a.curve) {
+      const side = theme.arrowSize
+      const ux = dx / length
+      const uy = dy / length
+      const fill = new THREE.Color(
+        mgsNodeFill({ ...a, direction: edge.direction ?? a.direction }, theme),
+      )
+      const sides = [
+        [a.x + uy * side, a.y - ux * side],
+        [a.x - uy * side, a.y + ux * side],
+      ]
+      const triangles = [[sides[0]!, [a.x - ux * side * 3, a.y - uy * side * 3], sides[1]!]]
+      if (both) triangles.push([sides[0]!, sides[1]!, [a.x + ux * side * 3, a.y + uy * side * 3]])
+      for (const triangle of triangles)
+        for (const [x, y] of triangle) {
+          arrowPositions.push(x!, y!, 2)
+          arrowColors.push(fill.r, fill.g, fill.b)
+        }
+    } else if (!mgs2d && size > 0 && (!a.curve || !b.curve)) {
       const t = both ? 0.67 : 0.5
       directionMarker(arrowPositions, arrowColors, a.x + dx * t, a.y + dy * t, angle, size, color)
       if (both)
@@ -212,15 +247,26 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
   group.add(vehicleHeadings)
 
   nodeMesh = new THREE.InstancedMesh(
-    new THREE.CircleGeometry(MAP_NODE_RADIUS_MM - 5, 32),
+    new THREE.CircleGeometry(baseRadius - strokeWidth, 32),
     new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
     Math.max(map.nodes.length, 1),
   )
   nodeMesh.count = map.nodes.length
+  if (mgs2d) {
+    nodeMesh.frustumCulled = false
+    borders.frustumCulled = false
+  }
 
   map.nodes.forEach((node, index) => {
-    const radius = node.curve ? MAP_CURVE_NODE_RADIUS_MM : MAP_NODE_RADIUS_MM
-    const borderScale = radius / MAP_NODE_RADIUS_MM
+    const virtual = node.virtual || node.curve
+    const radius = mgs2d
+      ? virtual
+        ? MGS_VIRTUAL_NODE_RADIUS_MM
+        : MGS_NODE_RADIUS_MM
+      : node.curve
+        ? MAP_CURVE_NODE_RADIUS_MM
+        : MAP_NODE_RADIUS_MM
+    const borderScale = radius / baseRadius
     matrix.makeScale(borderScale, borderScale, 1).setPosition(node.x, node.y, 4)
     borders.setMatrixAt(index, matrix)
     const color =
@@ -233,18 +279,20 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme()) => 
           : node.direction === 1
             ? theme.bothWays
             : theme.oneWay
-    borders.setColorAt(index, new THREE.Color(color))
+    borders.setColorAt(index, new THREE.Color(mgs2d ? (virtual ? theme.virtual : 0xc0c0c0) : color))
 
     // 일반 노드는 중앙을 밝게 유지하고 가상 노드는 속을 비워 경로 위에서 구분하는 표현
-    const fillScale = (radius - 5) / (MAP_NODE_RADIUS_MM - 5)
+    const fillScale = (radius - strokeWidth) / (baseRadius - strokeWidth)
     matrix.makeScale(fillScale, fillScale, 1).setPosition(node.x, node.y, 5)
     nodeMesh.setMatrixAt(index, matrix)
     nodeMesh.setColorAt(
       index,
-      new THREE.Color(theme.background).lerp(
-        new THREE.Color(color),
-        node.virtual || node.curve ? 0 : 0.24,
-      ),
+      mgs2d
+        ? new THREE.Color(mgsNodeFill(node, theme))
+        : new THREE.Color(theme.background).lerp(
+            new THREE.Color(color),
+            node.virtual || node.curve ? 0 : 0.24,
+          ),
     )
   })
   nodeMesh.instanceMatrix.needsUpdate = true

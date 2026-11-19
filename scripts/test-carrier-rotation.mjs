@@ -28,7 +28,7 @@ try {
     )
   })
   await page.getByTestId('mode-facility').click()
-  await page.getByTestId('ceram-catalog').click()
+  await page.getByTestId('default-catalog').click()
   await page
     .locator('.facility-library button')
     .filter({ hasText: '나무 박스 적재물 · 단품' })

@@ -37,4 +37,8 @@ export {
   alignDrawingToLayout,
 } from '@/features/drawing-import/model/layout.ts'
 export type { LayoutOptions } from '@/features/drawing-import/model/layout.ts'
+export {
+  planDrawingRoute,
+  supportedDimensionLine,
+} from '@/features/drawing-import/model/routePlan.ts'
 export { default as DrawingLayout } from '@/features/drawing-import/ui/DrawingLayout.vue'

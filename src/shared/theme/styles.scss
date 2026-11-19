@@ -190,6 +190,18 @@ textarea:disabled {
 .v-table {
   color: var(--text);
 }
+
+.popup-drag-handle,
+.v-dialog > .v-overlay__content > .v-card > .v-card-item {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
 ::selection {
   background: var(--accent-soft);
   color: var(--text);

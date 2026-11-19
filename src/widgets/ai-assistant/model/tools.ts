@@ -33,6 +33,7 @@ import {
   createLayout,
   recognizeDrawing,
   calibrateDrawingMap,
+  supportedDimensionLine,
   type DrawingAttachment,
   type LayoutOptions,
   type DrawingFinding,
@@ -386,7 +387,18 @@ export const executeAgentTool = async (
       }
     }
     drawing.vision ??= await analyzeDrawing(drawing.visionImage, request.signal)
-    return { ...drawing.vision, mapChanged: false }
+    const candidates = drawing.vision.references ?? []
+    const references = candidates.filter((reference) => supportedDimensionLine(drawing, reference))
+    return {
+      ...drawing.vision,
+      references,
+      dimensionCandidatesRejected: candidates.length - references.length,
+      dimensionReview:
+        candidates.length !== references.length
+          ? '치수선 후보가 원본 픽셀과 일치하지 않습니다. 기준 길이를 확인하거나 px 초안을 생성하세요.'
+          : '치수선 위치와 인쇄 치수 후보입니다. 숫자가 애매하면 확인 후 적용하세요.',
+      mapChanged: false,
+    }
   }
   if (editor.readOnly && !['inspect_map', 'validate_drawing'].includes(name))
     throw new Error('읽기 전용 지도는 변경할 수 없습니다.')
@@ -540,7 +552,12 @@ export const executeAgentTool = async (
     options.generated()
     return { calibrated: true, realWidthMm: width }
   }
-  const drawing = ['generate_drawing_map', 'recognize_drawing', 'validate_drawing'].includes(name)
+  const drawing = [
+    'plan_drawing_route',
+    'generate_drawing_map',
+    'recognize_drawing',
+    'validate_drawing',
+  ].includes(name)
     ? await options.drawing()
     : undefined
   return executeDrawingTool(name, args, request, drawing, {

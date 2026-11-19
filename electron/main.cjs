@@ -5,18 +5,19 @@
  * 작성일자: 2026-11-18
  */
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
-const { writeFile, rename, unlink } = require('node:fs/promises')
+const { readFile, writeFile, rename, unlink, mkdir } = require('node:fs/promises')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { randomUUID } = require('node:crypto')
 const { readMapFile, openMapFolder } = require('./map-files.cjs')
-const { saveMapVersion } = require('./save-map.cjs')
+const { saveMapVersion, backupMapVersion } = require('./save-map.cjs')
 const { saveSceneFiles, readSceneProject } = require('./scene-files.cjs')
 const { aiStatus, aiPropose, cancelAi, aiAnalyzeDrawing } = require('./ai-service.cjs')
 const mapLocations = new Map()
 const MAX_BYTES = 32 * 1024 * 1024
 let window
 let dirty = false
+let activeProject
 const fileURL = pathToFileURL(path.join(__dirname, '../dist/index.html')).href
 const devURL = process.env.TS_MGS_DEV_URL
 if (devURL && !/^http:\/\/127\.0\.0\.1:\d+\/$/.test(devURL))
@@ -56,15 +57,50 @@ ipcMain.on('map:dirty', (event, value) => {
   trusted(event)
   dirty = value === true
 })
+/** 선택한 프로젝트의 최신 지도 또는 빈 상태에 접근할 수 있는 편집 세션 발급 */
+const selectProject = async (folder, remember = true) => {
+  const { directory, ...data } = await openMapFolder(folder, true)
+  if (remember) {
+    const settingsDirectory = app.getPath('userData')
+    await mkdir(settingsDirectory, { recursive: true })
+    await writeFile(
+      path.join(settingsDirectory, 'map-project.json'),
+      JSON.stringify({ folder }),
+      'utf8',
+    )
+  }
+  const token = randomUUID()
+  mapLocations.set(token, directory)
+  activeProject = { directory, token }
+  return { ...data, token, project: path.basename(path.dirname(directory)) }
+}
+ipcMain.handle('map:restore-project', async (event) => {
+  trusted(event)
+  try {
+    const state = JSON.parse(
+      await readFile(path.join(app.getPath('userData'), 'map-project.json'), 'utf8'),
+    )
+    if (typeof state.folder === 'string' && path.isAbsolute(state.folder))
+      return await selectProject(state.folder, false)
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
+  }
+  return null
+})
 ipcMain.handle('map:open', async (event) => {
   trusted(event)
   const result = await dialog.showOpenDialog(window, {
-    title: '지도 열기',
+    title: 'Select a Map',
+    defaultPath: activeProject?.directory,
     properties: ['openFile'],
-    filters: [{ name: 'TS_MGS / 기존 MGS 지도', extensions: ['json', 'jmapx'] }],
+    filters: [
+      { name: 'MGS 지도', extensions: ['jmapx'] },
+      { name: 'TS_MGS JSON 지도', extensions: ['json'] },
+    ],
   })
   if (result.canceled) return null
   const file = await readMapFile(result.filePaths[0])
+  if (activeProject) return { ...file, token: activeProject.token }
   const token = randomUUID()
   mapLocations.set(token, path.dirname(result.filePaths[0]))
   return { ...file, token }
@@ -76,11 +112,22 @@ ipcMain.handle('map:open-folder', async (event) => {
     properties: ['openDirectory'],
   })
   if (result.canceled) return null
-  const file = await openMapFolder(result.filePaths[0])
+  return selectProject(result.filePaths[0])
+})
+ipcMain.handle('map:select-save-project', async (event) => {
+  trusted(event)
+  const result = await dialog.showOpenDialog(window, {
+    title: 'Project Select · RCS 또는 MAP 폴더',
+    defaultPath: activeProject && path.dirname(activeProject.directory),
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled) return null
+  const folder = result.filePaths[0]
+  const directory =
+    path.basename(folder).toLowerCase() === 'map' ? folder : path.join(folder, 'MAP')
   const token = randomUUID()
-  mapLocations.set(token, file.directory)
-  const { directory, ...data } = file
-  return { ...data, token }
+  mapLocations.set(token, directory)
+  return token
 })
 ipcMain.handle('map:show-folder', async (event, token) => {
   trusted(event)
@@ -96,7 +143,10 @@ ipcMain.handle('map:save', async (event, content, name, options = {}) => {
   if (typeof content !== 'string' || Buffer.byteLength(content) > MAX_BYTES)
     throw new Error('저장 데이터가 유효하지 않습니다.')
   if (content.replace(/^\uFEFF/, '').startsWith('Ver.')) {
-    let directory = typeof options.token === 'string' ? mapLocations.get(options.token) : undefined
+    let directory =
+      (typeof options.token === 'string' ? mapLocations.get(options.token) : undefined) ??
+      activeProject?.directory
+    let selectedFolder
     if (!directory || options.saveAs === true) {
       const result = await dialog.showOpenDialog(window, {
         title: 'MGS 프로젝트 저장 위치 선택 · RCS 또는 MAP 폴더',
@@ -104,6 +154,7 @@ ipcMain.handle('map:save', async (event, content, name, options = {}) => {
       })
       if (result.canceled) return null
       const folder = result.filePaths[0]
+      selectedFolder = folder
       directory = path.basename(folder).toLowerCase() === 'map' ? folder : path.join(folder, 'MAP')
     }
     const savedName = await saveMapVersion(
@@ -112,9 +163,26 @@ ipcMain.handle('map:save', async (event, content, name, options = {}) => {
       options.groups ?? '',
       options.auxiliary ?? {},
     )
-    const token = randomUUID()
+    let warning
+    if (options.backup !== false) {
+      try {
+        await backupMapVersion(directory, savedName)
+      } catch {
+        warning = '지도 저장 완료 · !COMPRESSED 압축 백업 실패'
+      }
+    }
+    if (selectedFolder || activeProject?.directory !== directory) {
+      const folder = selectedFolder ?? path.dirname(directory)
+      try {
+        const project = await selectProject(folder)
+        return { name: savedName, token: project.token, warning }
+      } catch {
+        warning = warning ?? '지도 저장 완료 · 최근 프로젝트 기억 실패'
+      }
+    }
+    const token = activeProject?.directory === directory ? activeProject.token : randomUUID()
     mapLocations.set(token, directory)
-    return { name: savedName, token }
+    return { name: savedName, token, warning }
   }
   const parsed = JSON.parse(content)
   if (parsed.format !== 'ts-mgs' || parsed.version !== 1)

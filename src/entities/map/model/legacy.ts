@@ -324,6 +324,12 @@ export const previewLegacy = (content: string, name: string, groupContent = ''):
           height: number(fields, 4, index + 1),
           strokeColor: number(fields, 11, index + 1),
           fillColor: number(fields, 12, index + 1),
+          fontColor: number(fields, 13, index + 1),
+          fontSize: number(fields, 14, index + 1),
+          nameDistance: number(fields, 15, index + 1),
+          namePosition: number(fields, 16, index + 1),
+          nameDirection: number(fields, 17, index + 1),
+          nameAlign: number(fields, 18, index + 1),
           portIds: Array.from({ length: count }, (_, offset) =>
             portUids.get(number(fields, 20 + offset, index + 1)),
           ).filter((id): id is string => id !== undefined),

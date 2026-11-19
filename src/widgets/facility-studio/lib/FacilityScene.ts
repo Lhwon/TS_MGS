@@ -10,6 +10,7 @@ import * as THREE from 'three'
 import { GlbModelCache } from '@bem/map3d/glb'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { FacilityDocument, FacilityInstance, FacilityPart } from '@/entities/facility/index.ts'
 import { resolveFacilityInstance } from '@/entities/facility/index.ts'
 import {
@@ -20,6 +21,7 @@ import {
   MIN_MAP_LABEL_PIXELS,
 } from '@/entities/map/index.ts'
 import type { MapDocument } from '@/entities/map/index.ts'
+import { FACILITY_CYLINDER_SEGMENTS, facilityPartMatrix } from '@/entities/facility/index.ts'
 /**
  * 기준 지도와 설비 모델을 합성하는 삼차원 렌더러 생성
  * 포트 기준 배치와 이동 핸들 및 시점 조작을 독립적으로 관리하는 편집 화면 구성
@@ -52,6 +54,13 @@ export const createFacilityScene = (
   let scene = new THREE.Scene()
   let camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000000)
   let renderer = new THREE.WebGLRenderer({ antialias: true })
+  const room = new RoomEnvironment()
+  const environmentGenerator = new THREE.PMREMGenerator(renderer)
+  const reflections = environmentGenerator.fromScene(room, 0.06)
+  room.dispose()
+  environmentGenerator.dispose()
+  scene.environment = reflections.texture
+  scene.environmentIntensity = 0.55
   let controls: OrbitControls
   let transform: TransformControls
   let proxy = new THREE.Object3D()
@@ -83,7 +92,7 @@ export const createFacilityScene = (
   const labelProjection = new THREE.Matrix4()
   let grid = new THREE.GridHelper(500, 100, 0x304d5a, 0x1e313d)
   let box = new THREE.BoxGeometry(1, 1, 1)
-  let cylinder = new THREE.CylinderGeometry(0.5, 0.5, 1, 24)
+  let cylinder = new THREE.CylinderGeometry(0.5, 0.5, 1, FACILITY_CYLINDER_SEGMENTS)
   let observer: ResizeObserver
   let meshes: THREE.InstancedMesh[] = []
   let instanceBindings = new Map<
@@ -398,30 +407,7 @@ export const createFacilityScene = (
         continue
       }
       if (!part) continue
-      const q = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 0, 1),
-        THREE.MathUtils.degToRad(part.rotation),
-      )
-      q.multiply(
-        new THREE.Quaternion().setFromEuler(
-          new THREE.Euler(
-            THREE.MathUtils.degToRad(part.tiltX ?? 0),
-            THREE.MathUtils.degToRad(part.tiltY ?? 0),
-            0,
-          ),
-        ),
-      )
-      if (part.shape === 'cylinder')
-        q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2))
-      const scale =
-        part.shape === 'box'
-          ? new THREE.Vector3(part.size.x, part.size.y, part.size.z)
-          : new THREE.Vector3(part.size.x, part.size.z, part.size.y)
-      const local = new THREE.Matrix4().compose(
-        new THREE.Vector3(part.position.x / 1000, part.position.y / 1000, part.position.z / 1000),
-        q,
-        scale.multiplyScalar(0.001),
-      )
+      const local = facilityPartMatrix(part)
       mesh.setMatrixAt(index, new THREE.Matrix4().multiplyMatrices(root, local))
       mesh.instanceMatrix.needsUpdate = true
       // 이동한 설비가 이전 경계 영역 밖에 배치될 수 있으므로 가시성 경계를 다시 계산하는 캐시 초기화
@@ -652,6 +638,7 @@ export const createFacilityScene = (
       if (material instanceof THREE.MeshBasicMaterial) material.map?.dispose()
       material.dispose()
     }
+    reflections.dispose()
     renderer.dispose()
     renderer.domElement.remove()
   }
@@ -755,6 +742,13 @@ export const createFacilityScene = (
   resizeViewport()
   return {
     setMap: setMap,
+    /** 선택 도구를 전환하지 않고 배치 크기를 미리 표시하거나 원래 크기를 복원 */
+    previewScale: (id: string, scale?: FacilityInstance['scale']) => {
+      const instance = facilityDocument?.instances.find((item) => item.id === id)
+      if (!instance) return
+      updateMatrices(scale ? { ...instance, scale } : instance)
+      requestRender()
+    },
     setDocument: setDocument,
     setSelected: setSelected,
     setTool: setTool,

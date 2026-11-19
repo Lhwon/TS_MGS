@@ -411,6 +411,7 @@ const toolLabel = (name: string) =>
     inspect_drawing: '도면 확인',
     layout_drawing: '배경 도면 편집',
     generate_drawing_map: '경로 생성',
+    plan_drawing_route: '주행 맵 설계',
     calibrate_drawing: '도면 비율 맞추기',
     recognize_drawing: '시설 인식',
     round_drawing_paths: '곡선 편집',
@@ -683,7 +684,10 @@ onBeforeUnmount(() => cancel())
   >
     <header class="d-flex align-center justify-space-between px-4 py-3 flex-shrink-0">
       <div>
-        <strong>AI 에이전트 <span>{{ selectedModel }}</span></strong>
+        <strong>
+          AI 에이전트
+          <span>{{ selectedModel }}</span>
+        </strong>
         <span
           class="connection-state d-block"
           :class="{ connected }"

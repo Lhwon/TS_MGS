@@ -205,6 +205,67 @@ try {
     const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
     const { emptyDocument } = await import('/src/entities/map/model/map.ts')
     const map = emptyDocument()
+    map.nodes = [
+      { id: 1, name: 'N1', x: 90000000, y: 90000000, direction: 0 },
+      { id: 2, name: 'N2', x: 90030000, y: 90000000, direction: 1 },
+      { id: 3, name: 'N3', x: 90060000, y: 90000000, virtual: true },
+      { id: 4, name: 'N4', x: 90090000, y: 90000000, curve: true },
+    ]
+    useEditor().load(JSON.stringify(map), 'node-pointer.tsmgs.json')
+  })
+  await page.evaluate(() => {
+    window.__mapView.zoomBy(0.001)
+    window.__mapView.camera.updateMatrixWorld()
+  })
+  const nodePoint = (index) =>
+    page.evaluate((index) => {
+      const { camera, scene, renderer } = window.__mapView
+      const mesh = scene.getObjectByName('nodes')
+      const matrix = mesh.instanceMatrix.array
+      const point = mesh.position.clone()
+      point.x += matrix[index * 16 + 12]
+      point.y += matrix[index * 16 + 13]
+      point.project(camera)
+      const rect = renderer.domElement.getBoundingClientRect()
+      return {
+        x: rect.left + ((point.x + 1) * rect.width) / 2,
+        y: rect.top + ((1 - point.y) * rect.height) / 2,
+      }
+    }, index)
+  const selected = () =>
+    page.evaluate(async () => {
+      const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
+      const { selectedId, selectedIds } = useEditor()
+      return { id: selectedId, ids: [...selectedIds] }
+    })
+  const firstNode = await nodePoint(0)
+  await page.mouse.click(firstNode.x + 3, firstNode.y)
+  assert.deepEqual(await selected(), { id: 1, ids: [] })
+  const secondNode = await nodePoint(1)
+  await page.mouse.move(secondNode.x - 2, secondNode.y)
+  await page.mouse.down()
+  await page.mouse.move(secondNode.x, secondNode.y, { steps: 2 })
+  await page.mouse.up()
+  assert.deepEqual(await selected(), { id: 2, ids: [] })
+  const virtualNode = await nodePoint(2)
+  const curveNode = await nodePoint(3)
+  await page.mouse.click(virtualNode.x, virtualNode.y)
+  await page.mouse.click(curveNode.x, curveNode.y)
+  assert.deepEqual(await selected(), { id: 3, ids: [] })
+  await page.mouse.move(firstNode.x - 8, firstNode.y - 12)
+  await page.mouse.down()
+  await page.mouse.move(secondNode.x + 8, secondNode.y + 12, { steps: 6 })
+  await page.mouse.up()
+  assert.deepEqual(await selected(), { id: null, ids: [1, 2] })
+  await page.mouse.move(secondNode.x + 8, secondNode.y - 12)
+  await page.mouse.down()
+  await page.mouse.move(secondNode.x - 8, secondNode.y + 12, { steps: 6 })
+  await page.mouse.up()
+  assert.deepEqual(await selected(), { id: null, ids: [1] })
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
+    const { emptyDocument } = await import('/src/entities/map/model/map.ts')
+    const map = emptyDocument()
     for (let id = 1; id <= 8000; id++) {
       const x = ((id - 1) % 100) * 1000,
         y = Math.floor((id - 1) / 100) * 1000
@@ -351,7 +412,7 @@ try {
       labels: view.labelCanvas.width,
     }
   })
-  assert.equal(topology.radius, 25)
+  assert.equal(topology.radius, 50)
   assert.equal(topology.nodes, 8000)
   assert.equal(topology.canvas, topology.labels)
   assert.equal(topology.far, 20000)

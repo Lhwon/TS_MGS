@@ -17,6 +17,26 @@ const root = path.resolve(import.meta.dirname, '..'),
   server = await createServer({
     root,
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false },
+    plugins: [
+      {
+        name: 'map-context-pointer-positions',
+        enforce: 'pre',
+        transform: (code, id) =>
+          id.replaceAll('\\', '/').endsWith('/map-canvas/lib/MapScene.ts')
+            ? code.replace(
+                '  return {\n    capture,',
+                `
+  ;(window as any).__contextPoint = (x: number, y: number) => {
+    const projected = new THREE.Vector3(x, y, 0).project(camera)
+    const box = renderer.domElement.getBoundingClientRect()
+    return { x: box.left + (1 + projected.x) * box.width / 2, y: box.top + (1 - projected.y) * box.height / 2 }
+  }
+  return {
+    capture,`,
+              )
+            : undefined,
+      },
+    ],
   })
 await server.listen()
 const browser = await chromium.launch({ headless: true, channel: 'msedge' })
@@ -87,6 +107,49 @@ try {
     const original = serializeLegacy(map)
     const e = useEditor()
     e.load(original.content, 'test.jmapx')
+    e.insertPathNodes(
+      e.document.edges.find((edge) => edge.from === 1 && edge.to === 2).id,
+      2,
+      [1000, 2000],
+    )
+    const split = previewLegacy(serializeLegacy(e.document, e.legacySource).content, 'test.jmapx')
+    if (
+      split.nodes.length !== 5 ||
+      split.nodes.find((node) => node.id === 4).x !== 500 ||
+      split.nodes.find((node) => node.id === 5).x !== 1500 ||
+      shortestMapPath(split, 1, 3).distance !== 4500 ||
+      split.edges
+        .filter((edge) => edge.from === 1 || edge.from >= 4)
+        .some((edge) => edge.direction !== 1 || edge.controls?.forward?.vehicleDegree !== 12345)
+    )
+      throw Error('context repeat insertion native round trip: ' + JSON.stringify(split.edges))
+    e.undo()
+    e.fitAndConnect(1, 3, { x: 2400, y: 1900 }, false)
+    if (
+      e.document.nodes.find((node) => node.id === 3).x !== 2400 ||
+      e.document.ports[0].x !== 2500 ||
+      !e.document.edges.some((edge) => edge.from === 3 && edge.to === 1)
+    )
+      throw Error('context fit and connect with anchored port')
+    e.undo()
+    const { readRouteSetting, patchRouteSetting, readScheduleGroups, patchScheduleGroup } =
+      await import('/src/features/map-editor/model/contextFiles.ts')
+    const route = patchRouteSetting('2\t4\t5\t6\t0\t12\t90\t\r\n', [1, 1, 2, 3], [8, 10])
+    if (
+      readRouteSetting(route, [1, 1, 2, 3]).join(',') !== '2,8,10' ||
+      readRouteSetting(route, [2, 4, 5, 6]).join(',') !== '0,12,90'
+    )
+      throw Error('connected path sidecar preservation')
+    const command = ['1', '2', '0', '3', '3', '0', '0', '0', '0', '0', '1', 'FUNC', '100', '1']
+    const firstSchedule = patchScheduleGroup('0\t\r\n'.repeat(4), 0, 21, [command, command])
+    const secondSchedule = patchScheduleGroup(firstSchedule, 2, 22, [command])
+    const groups = readScheduleGroups(secondSchedule)
+    if (
+      groups[0].get(21).length !== 2 ||
+      groups[0].get(21)[0].join(',') !== command.join(',') ||
+      groups[2].get(22)[0][11] !== 'FUNC'
+    )
+      throw Error('SCMD sidecar preservation')
     e.commit((m) => {
       m.nodes = m.nodes.filter((n) => n.id !== 2)
       m.edges = []
@@ -119,6 +182,8 @@ try {
           height: 500,
           strokeColor: 0,
           fillColor: 0,
+          fontSize: 40,
+          nameAlign: 2,
           portIds: ['P1'],
         },
       ]
@@ -129,7 +194,12 @@ try {
     })
     const control = serializeLegacy(e.document, e.legacySource),
       read = previewLegacy(control.content, 'test.jmapx', control.groups)
-    if (read.ports[0].settings.lu_shift !== 125 || read.portGroups[0].id !== 'PG1')
+    if (
+      read.ports[0].settings.lu_shift !== 125 ||
+      read.portGroups[0].id !== 'PG1' ||
+      read.portGroups[0].fontSize !== 40 ||
+      read.portGroups[0].nameAlign !== 2
+    )
       throw Error('port settings/group roundtrip')
     if (
       read.nodes[0].noSendGoalLoaded !== true ||
@@ -453,6 +523,133 @@ try {
   })
   assert.equal(appearance.outline, 'none')
   assert.equal(appearance.color, appearance.accent)
+  await selectedEditor.getByRole('button', { name: '닫기' }).click()
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    const { emptyDocument, serializeLegacy } = await import('/src/entities/map/index.ts')
+    const map = emptyDocument()
+    map.nodes = [
+      { id: 1, name: 'N1', x: 0, y: 0 },
+      { id: 2, name: 'N2', x: 3000, y: 0 },
+    ]
+    map.edges = [{ id: 'route', from: 1, to: 2, direction: 1 }]
+    map.ports = [{ id: 'P1', name: 'Port 1', nodeId: 1, x: 0, y: 1600, width: 500, height: 500 }]
+    map.shapes = [
+      {
+        id: 1,
+        description: '작업 구역',
+        text: '',
+        type: 1,
+        x1: 2200,
+        y1: 1000,
+        x2: 2600,
+        y2: 1400,
+        centerX: 2400,
+        centerY: 1200,
+        radius: 0,
+        width: 400,
+        height: 400,
+        strokeColor: 0,
+        strokeStyle: 0,
+        strokeWidth: 1,
+        fillColor: 0,
+        fontColor: 0,
+        fontAlign: 0,
+        fontDirection: 0,
+        fillStyle: 0,
+      },
+    ]
+    const editor = useEditor()
+    editor.load(serializeLegacy(map).content, 'context.jmapx')
+  })
+  await page.waitForFunction(() => !!window.__contextPoint)
+  const point = (x, y) => page.evaluate(([x, y]) => window.__contextPoint(x, y), [x, y])
+  const rightClick = async (x, y) => {
+    const screen = await point(x, y)
+    await page.mouse.click(screen.x, screen.y, { button: 'right' })
+  }
+  await rightClick(1500, 0)
+  const context = page.getByRole('menu')
+  await context.getByRole('menuitem', { name: 'Insert (1)' }).click()
+  assert.equal(
+    await page.evaluate(async () => {
+      const { useEditor } = await import('/src/features/map-editor/index.ts')
+      const editor = useEditor()
+      const count = editor.document.nodes.length
+      editor.undo()
+      return count
+    }),
+    3,
+  )
+  await rightClick(0, 0)
+  await context.getByRole('menuitem', { name: 'Repeat Insert' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '삽입', exact: true }).click()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
+  assert.equal(
+    await page.evaluate(async () => {
+      const { useEditor } = await import('/src/features/map-editor/index.ts')
+      return useEditor().document.nodes.length
+    }),
+    4,
+  )
+  await rightClick(0, 0)
+  await context.getByRole('menuitem', { name: 'Setting (Connected Path)' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '빈 파일로 시작' }).click()
+  await page.getByLabel('제한 사이트 코드 목록').fill('7, 8')
+  const routeDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '파일 내보내기', exact: true }).click()
+  const routeFile = await routeDownload
+  assert.equal(routeFile.suggestedFilename(), 'conn_path_setting.data')
+  assert.match(await fs.readFile(await routeFile.path(), 'utf8'), /^1\t\d+\t\d+\t\d+\t2\t7\t8\t/)
+  await page.getByRole('dialog').getByRole('button', { name: '닫기' }).click()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    useEditor().portMode = true
+  })
+  await rightClick(0, 1600)
+  await context.getByRole('menuitem', { name: '포트 SCMD 설정' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '빈 파일로 시작' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '명령 추가' }).click()
+  await page.getByLabel('상위 메시지', { exact: true }).fill('FUNC\t100\t1')
+  const scheduleDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '파일 내보내기', exact: true }).click()
+  const scheduleFile = await scheduleDownload
+  assert.equal(scheduleFile.suggestedFilename(), 'scmd_group.dat')
+  assert.match(await fs.readFile(await scheduleFile.path(), 'utf8'), /\t1\tFUNC\t100\t1\t/)
+  await page.getByRole('dialog').getByRole('button', { name: '닫기' }).click()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
+  await rightClick(0, 1600)
+  await context.getByRole('menuitem', { name: '포트 그룹 추가' }).click()
+  await page.getByTestId('object-add').click()
+  const group = await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    return useEditor().document.portGroups[0]
+  })
+  assert.equal(group.nodeId, 1)
+  assert.deepEqual(group.portIds, ['P1'])
+  await page.getByRole('dialog').getByRole('button', { name: '닫기' }).click()
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
+  await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    useEditor().portMode = false
+  })
+  await rightClick(2400, 1200)
+  await context.getByRole('menuitem', { name: '도형 이동' }).click()
+  const destination = await point(2000, 1200)
+  await page.mouse.click(destination.x, destination.y)
+  const movedShape = await page.evaluate(async () => {
+    const { useEditor } = await import('/src/features/map-editor/index.ts')
+    return useEditor().document.shapes[0]
+  })
+  assert.ok(Math.abs(movedShape.centerX - 2000) < 10)
+  assert.equal(movedShape.x2 - movedShape.x1, 400)
+  await rightClick(0, 0)
+  await context.getByText('차량 배치 미리보기', { exact: true }).click()
+  await context.getByRole('menuitem', { name: '우클릭 노드에 배치' }).click()
+  await rightClick(0, 0)
+  await context.getByText('차량 배치 미리보기', { exact: true }).click()
+  await context.getByRole('menuitem', { name: '차량 미리보기 지우기' }).click()
   console.log('Migration core and UI checks OK')
 } finally {
   await browser.close()

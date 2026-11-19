@@ -7,6 +7,8 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
 const MAX_BYTES = 32 * 1024 * 1024
 
 /**
@@ -118,4 +120,42 @@ const saveMapVersion = async (directory, content, groups = '', auxiliary = {}) =
   throw new Error('동일 시각의 지도 파일이 너무 많습니다. 잠시 후 저장하세요.')
 }
 
-module.exports = { saveMapVersion }
+/** 저장한 버전의 지도와 부가 파일을 원본 폴더 구조로 압축 */
+const backupMapVersion = async (directory, name) => {
+  if (!/^\d{8}_\d{6}\.jmapx$/.test(name)) throw new Error('백업할 지도 파일명을 확인하세요.')
+  const root = path.dirname(directory)
+  const data = path.join(root, 'DATA')
+  const stem = path.parse(name).name
+  const optionalEntries = (folder) =>
+    fs.readdir(folder, { withFileTypes: true }).catch((error) => {
+      if (error.code === 'ENOENT') return []
+      throw error
+    })
+  const [entries, traffic] = await Promise.all([
+    optionalEntries(data),
+    optionalEntries(path.join(data, 'TRAFFIC')),
+  ])
+  const files = [
+    path.relative(root, path.join(directory, name)),
+    ...entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(stem + '_'))
+      .map((entry) => path.join('DATA', entry.name)),
+    ...traffic
+      .filter((entry) => entry.isFile() && entry.name === stem + '.aesx')
+      .map((entry) => path.join('DATA', 'TRAFFIC', entry.name)),
+  ]
+  const output = path.join(root, '!COMPRESSED')
+  await fs.mkdir(output, { recursive: true })
+  const temporary = path.join(output, `${stem}.${randomUUID()}.zip`)
+  try {
+    await promisify(execFile)(
+      process.platform === 'win32' ? 'tar.exe' : 'bsdtar',
+      ['-a', '-cf', temporary, '-C', root, ...files],
+      { windowsHide: true, timeout: 120000 },
+    )
+    await fs.link(temporary, path.join(output, stem + '.zip'))
+  } finally {
+    await fs.unlink(temporary).catch(() => {})
+  }
+}
+module.exports = { saveMapVersion, backupMapVersion }

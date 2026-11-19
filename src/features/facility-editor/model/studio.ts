@@ -7,8 +7,10 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  defaultModelLabel,
   emptyFacilityDocument,
   exportFacilityFiles,
+  facilityModelSize,
   type FacilityPort,
   parseEquipmentLibrary,
   parseFacilityDocument,
@@ -33,6 +35,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const filename = ref('Untitled.map3d.json')
   const message = ref('사용자 모델을 디자인한 뒤 포트 또는 지도 위에 배치하세요.')
   const busy = ref(false)
+  let copied: { instance: FacilityInstance; nextX: number; gap: number } | undefined
   const past = shallowRef<FacilityDocument[]>([]),
     future = shallowRef<FacilityDocument[]>([])
   const dirty = computed(() => document.value !== saved.value)
@@ -121,15 +124,53 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   /**
    * 선택 배치를 새로운 식별자로 복제하고 포트 기준 오프셋을 함께 이동하는 배치 복사
    */
-  const duplicate = () => {
-    if (!selected.value) return
-    const copy = structuredClone(selected.value)
-    copy.id = crypto.randomUUID()
-    copy.name += ' 복사'
-    copy.position.x += 1000
-    if (copy.portOffset) copy.portOffset.x += 1000
+  const insertCopy = (source: FacilityInstance, x: number) => {
+    const copy = {
+      ...structuredClone(source),
+      id: crypto.randomUUID(),
+      name: `${source.name.slice(0, 297)} 복사`,
+      position: { ...source.position, x },
+    }
+    if (copy.portOffset) copy.portOffset.x += x - source.position.x
     commit((doc) => doc.instances.push(copy))
     selectedId.value = copy.id
+  }
+
+  /** 선택 시설을 기존 복제 버튼의 포트 연결 규칙으로 추가 */
+  const duplicate = () => {
+    if (selected.value) insertCopy(selected.value, selected.value.position.x + 1000)
+  }
+
+  /** 실제 배치 좌표를 복사하고 원본과 분리되는 붙여넣기 위치를 계산 */
+  const copySelection = (ports: FacilityPort[]) => {
+    const source = selected.value
+    const model = document.value.assets.find((item) => item.id === source?.assetId)
+    if (!source || !model) return false
+    const instance = structuredClone(resolveFacilityInstance(source, ports))
+    delete instance.portId
+    delete instance.portOffset
+    delete instance.nodeId
+    delete instance.carrierRotation
+    const size = facilityModelSize(model)
+    const angle = (instance.rotation * Math.PI) / 180
+    const width =
+      Math.abs(Math.cos(angle)) * size.x * (instance.scale?.x ?? 1) +
+      Math.abs(Math.sin(angle)) * size.y * (instance.scale?.y ?? 1)
+    const gap = Math.ceil((width + 300) / 10) * 10
+    copied = { instance, gap, nextX: instance.position.x + gap }
+    message.value = `${instance.name} 복사 완료`
+    return true
+  }
+
+  /** 복사한 모델을 기준 지도 위에 한 개 추가하고 다음 복제 위치를 이동 */
+  const pasteSelection = () => {
+    if (!copied || busy.value) return false
+    if (!document.value.assets.some((item) => item.id === copied?.instance.assetId))
+      throw new Error('복사한 시설의 모델이 현재 라이브러리에 없습니다.')
+    insertCopy(copied.instance, copied.nextX)
+    copied.nextX += copied.gap
+    message.value = '복사한 시설을 배치했습니다.'
+    return true
   }
 
   /**
@@ -175,6 +216,12 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    */
   const load = (content: string, name: string) => {
     const doc = parseFacilityDocument(content)
+    for (const asset of doc.assets)
+      if (asset.id.startsWith('ceram-mp5-'))
+        asset.name = defaultModelLabel(asset.name) || '기본 모델'
+    for (const item of doc.instances)
+      if (item.assetId.startsWith('ceram-mp5-')) item.name = defaultModelLabel(item.name) || '시설'
+    copied = undefined
     document.value = doc
     saved.value = doc
     filename.value = name
@@ -319,6 +366,8 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
       commit((doc) => {
         if (!doc.mapRef.geometryKey) doc.mapRef = mapRef
         for (const asset of library.assets) {
+          if (asset.id.startsWith('ceram-mp5-'))
+            asset.name = defaultModelLabel(asset.name) || '기본 모델'
           const old = doc.assets.find((a) => a.id === asset.id)
           if (old && JSON.stringify(old) !== JSON.stringify(asset))
             throw new Error(`같은 ID의 다른 모델이 있습니다: ${asset.name}`)
@@ -393,6 +442,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param snapshot 이전 설비 편집 세션
    */
   const restoreSession = (snapshot: ReturnType<typeof captureSession>) => {
+    copied = undefined
     document.value = snapshot.document
     saved.value = snapshot.saved
     selectedId.value = snapshot.selectedId
@@ -422,6 +472,8 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     updateInstance,
     remove,
     duplicate,
+    copySelection,
+    pasteSelection,
     bindMap,
     undo,
     redo,

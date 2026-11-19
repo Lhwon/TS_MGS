@@ -103,6 +103,7 @@ export const useEditor = defineStore('editor', () => {
   const shapeTool = ref<number | null>(null)
   const nodeEditorOpen = ref(false)
   const objectEditor = ref<'ports' | 'edges' | 'shapes' | 'portGroups' | null>(null)
+  const objectEditorTarget = ref<{ id?: string; nodeId?: number; add?: boolean }>()
   const legacySource = shallowRef<LegacySource | null>(null)
 
   /**
@@ -139,6 +140,7 @@ export const useEditor = defineStore('editor', () => {
 
   const sourceName = ref('Untitled.jmapx')
   const projectToken = ref<string | undefined>()
+  const generatedDraft = ref(false)
   const message = ref(
     'Map Open 또는 Project Select로 지도를 여세요. 새 노드는 지도 우클릭 Add로 추가합니다.',
   )
@@ -156,6 +158,7 @@ export const useEditor = defineStore('editor', () => {
       theme: string
       saveState: { saved: MapDocument }
       readOnly: boolean
+      generated: boolean
     }
   >()
   /** 문서 교체를 되돌릴 때 원래 저장 위치와 원본 형식을 함께 복원하는 상태 기록 */
@@ -167,6 +170,7 @@ export const useEditor = defineStore('editor', () => {
       theme: themeSource.value,
       saveState,
       readOnly: readOnly.value,
+      generated: generatedDraft.value,
     })
   /** 문서 이력에 대응하는 파일과 테마 및 저장 기준 복원 */
   const restoreContext = (previous: MapDocument) => {
@@ -181,6 +185,7 @@ export const useEditor = defineStore('editor', () => {
     saveState = context.saveState
     saved.value = saveState.saved
     readOnly.value = context.readOnly
+    generatedDraft.value = context.generated
   }
   const operationsOpen = ref(false)
   const operationTab = ref('nodes')
@@ -260,7 +265,11 @@ export const useEditor = defineStore('editor', () => {
     let validated = parseDocument(JSON.stringify(next))
     let nextSource = legacySource.value
     let references: { before: number; after: number }[] | undefined
-    if (legacySource.value || sourceName.value.endsWith('.jmapx')) {
+    if (
+      !generatedDraft.value &&
+      validated.units === 'mm' &&
+      (legacySource.value || sourceName.value.endsWith('.jmapx'))
+    ) {
       const sorted = validated.nodes.map((node) => node.id).sort((a, b) => a - b)
       if (sorted.some((id, index) => id !== index + 1)) {
         const reordered = renumberMap(validated)
@@ -304,6 +313,7 @@ export const useEditor = defineStore('editor', () => {
     projectToken.value = undefined
     readOnly.value = false
     legacySource.value = null
+    generatedDraft.value = false
     selectedId.value = null
     selectedIds.value = []
     objectEditor.value = null
@@ -332,8 +342,8 @@ export const useEditor = defineStore('editor', () => {
     operationsOpen.value = areaEditorOpen.value = teachingOpen.value = false
     saveState = { saved: saved.value }
     mapRevision.value++
-    sourceName.value = `${next.name}.tsmgs.json`
-    projectToken.value = undefined
+    sourceName.value = `${next.name}.jmapx`
+    generatedDraft.value = true
     legacySource.value = null
     themeSource.value = ''
     readOnly.value = false
@@ -486,6 +496,164 @@ export const useEditor = defineStore('editor', () => {
         applyNodePatch(map, id, { x: node.x + dx, y: node.y + dy })
       }
     })
+  }
+  /**
+   * 직선 경로를 같은 주행 속성의 여러 구간으로 나누는 노드 삽입
+   * @param edgeId 분할할 직선 경로 식별자
+   * @param startId 반복 간격을 측정할 기준 노드 식별자
+   * @param offsets 기준 노드에서 각 삽입 위치까지의 거리
+   */
+  const insertPathNodes = (edgeId: string, startId: number, offsets: number[]) => {
+    if (readOnly.value) return
+    const edge = document.value.edges.find((item) => item.id === edgeId)
+    const from = document.value.nodes.find((node) => node.id === edge?.from)
+    const to = document.value.nodes.find((node) => node.id === edge?.to)
+    if (!edge || !from || !to || from.curve || to.curve || [2, 3].includes(edge.drivingType ?? 1))
+      throw new Error('일반 노드 사이의 직선 경로를 선택하세요.')
+    if (startId !== from.id && startId !== to.id)
+      throw new Error('삽입 기준 노드는 경로 양 끝 중 하나여야 합니다.')
+    if (!offsets.length || document.value.nodes.length + offsets.length > MAX_NODES)
+      throw new Error('삽입할 노드 수를 확인하세요.')
+    const length = Math.hypot(to.x - from.x, to.y - from.y)
+    const distances = offsets
+      .map((offset) => (startId === from.id ? offset : length - offset))
+      .sort((a, b) => a - b)
+    const ordered = [0, ...distances, length]
+    if (
+      ordered.some(
+        (distance, index) =>
+          !Number.isFinite(distance) || (index > 0 && distance <= ordered[index - 1]!),
+      )
+    )
+      throw new Error('삽입 위치는 경로 양 끝 사이여야 합니다.')
+    const occupied = new Set(document.value.nodes.map((node) => `${node.x},${node.y}`))
+    const directionEdges = document.value.edges.filter(
+      (item) =>
+        item.id === edgeId ||
+        (item.from === to.id && item.to === from.id && ![2, 3].includes(item.drivingType ?? 1)),
+    )
+    let selection: number | null = null
+    commit((map) => {
+      let id = Math.max(0, ...map.nodes.map((node) => node.id))
+      let uid = Math.max(0, ...map.nodes.map((node) => node.uid ?? node.id))
+      let realId = Math.max(
+        0,
+        ...map.nodes
+          .filter((node) => !node.virtual && !node.curve)
+          .map((node) => node.realId ?? node.id),
+      )
+      const inserts = distances.map((distance) => {
+        const ratio = distance / length
+        const x = Math.round(from.x + (to.x - from.x) * ratio)
+        const y = Math.round(from.y + (to.y - from.y) * ratio)
+        const key = `${x},${y}`
+        if (occupied.has(key)) throw new Error('삽입 위치에 기존 노드가 있습니다.')
+        occupied.add(key)
+        id++
+        return {
+          id,
+          uid: ++uid,
+          realId: ++realId,
+          name: `N${id}`,
+          x,
+          y,
+          direction: edge.direction ?? 0,
+        }
+      })
+      map.nodes.push(...inserts)
+      selection = (startId === from.id ? inserts[0] : inserts.at(-1))!.id
+      const points = [from, ...inserts, to]
+      map.edges = map.edges.flatMap((item) => {
+        if (!directionEdges.some((route) => route.id === item.id)) return [item]
+        const chain = item.from === from.id ? points : [...points].reverse()
+        return chain.slice(1).map((end, index) => {
+          const start = chain[index]!
+          return {
+            ...structuredClone(item),
+            id: `E${start.id}-${end.id}`,
+            from: start.id,
+            to: end.id,
+            realConnection: end.id,
+            distance: Math.trunc(Math.hypot(end.x - start.x, end.y - start.y)),
+          }
+        })
+      })
+    })
+    selectedId.value = selection
+    message.value = `노드 ${offsets.length}개 삽입 완료`
+  }
+  /**
+   * 우클릭에서 생성할 경로의 끝점을 기준으로 기존 노드를 맞춘 뒤 경로를 연결하는 편집
+   * @param current 작업 시작점으로 선택한 노드
+   * @param target 우클릭한 대상 노드
+   * @param point 마그넷 적용 전 우클릭 좌표
+   * @param moveCurrent 현재 노드를 이동하는 옵션
+   */
+  const fitAndConnect = (
+    current: number,
+    target: number,
+    point: { x: number; y: number },
+    moveCurrent: boolean,
+  ) => {
+    if (readOnly.value) return
+    const start = document.value.nodes.find((node) => node.id === current)
+    const end = document.value.nodes.find((node) => node.id === target)
+    if (
+      !start ||
+      !end ||
+      start.id === end.id ||
+      start.curve ||
+      end.curve ||
+      start.virtual ||
+      end.virtual
+    )
+      throw new Error('서로 다른 일반 노드 두 개를 선택하세요.')
+    if (
+      document.value.edges.some(
+        (edge) =>
+          (edge.from === target && edge.to === current) ||
+          (edge.from === current && edge.to === target && edge.direction === 1),
+      )
+    )
+      throw new Error('이미 연결된 경로입니다.')
+    const candidate = snapPoint(point.x, point.y, current)
+    const moving = moveCurrent ? start : end
+    const dx = Math.trunc(moveCurrent ? end.x - candidate.x : candidate.x - end.x)
+    const dy = Math.trunc(moveCurrent ? end.y - candidate.y : candidate.y - end.y)
+    const next = { x: moving.x + dx, y: moving.y + dy }
+    if (
+      document.value.nodes.some(
+        (node) => node.id !== moving.id && node.x === next.x && node.y === next.y,
+      )
+    )
+      throw new Error('이동할 좌표에 기존 노드가 있습니다.')
+    commit((map) => {
+      for (const id of expandCurveSelection(map, [moving.id])) {
+        const node = map.nodes.find((item) => item.id === id)!
+        applyNodePatch(map, id, { x: node.x + dx, y: node.y + dy })
+      }
+      const endpoint = map.nodes.find((node) => node.id === target)!
+      const curve = calculateCurve(map, current, endpoint, curveOptions)
+      if (curve) {
+        const maxUid = Number(
+          legacySource.value?.content
+            .replace(/^\uFEFF/, '')
+            .split(/\r?\n/)[1]
+            ?.split('\t')[6] ?? 0,
+        )
+        appendCurve(map, current, curve, curveOptions.direction, maxUid, target)
+      } else {
+        map.edges.push({
+          id: `E${target}-${current}`,
+          from: target,
+          to: current,
+          direction: 0,
+          drivingType: 1,
+        })
+      }
+    })
+    selectedId.value = target
+    message.value = `N${target} → N${current} 정렬 및 연결 완료`
   }
   /**
    * 기준 노드와 원본 표시 기본값을 사용하는 포트 생성
@@ -764,7 +932,7 @@ export const useEditor = defineStore('editor', () => {
       y: number
     },
   ) => {
-    selectedIds.value = mgsAreaSelection(document.value.nodes, selectedIds.value, start, end)
+    selectedIds.value = mgsAreaSelection(visibleDocument.value.nodes, selectedIds.value, start, end)
     if (start.x < end.x && selectedIds.value.length) selectedId.value = null
     message.value = `선택 노드: ${selectedIds.value.length}개`
   }
@@ -843,6 +1011,9 @@ export const useEditor = defineStore('editor', () => {
     drawingOptions,
     snapPoint,
     objectEditor,
+    objectEditorTarget,
+    insertPathNodes,
+    fitAndConnect,
     selectedId,
     selectedIds,
     selectedNode,

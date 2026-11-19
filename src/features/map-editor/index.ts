@@ -6,6 +6,7 @@
  */
 export { useEditor } from '@/features/map-editor/model/editor.ts'
 export { default as SelectedMapEditor } from '@/features/map-editor/ui/SelectedMapEditor.vue'
+export { default as ContextDataEditor } from '@/features/map-editor/ui/ContextDataEditor.vue'
 export { findFeatureBoundaries } from '@/features/map-editor/model/featureBoundaries.ts'
 export { makeLotDistance } from '@/features/map-editor/model/lotDistance.ts'
 export { auditPortReferences } from '@/features/map-editor/model/portAudit.ts'

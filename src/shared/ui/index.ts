@@ -6,3 +6,4 @@
  */
 export { default as AppIcon } from '@/shared/ui/AppIcon.vue'
 export { default as TextAction } from '@/shared/ui/TextAction.vue'
+export { enablePopupDragging } from '@/shared/ui/draggablePopups.ts'

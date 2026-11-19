@@ -10,7 +10,6 @@ import * as THREE from 'three'
 import type { Layers, MapDocument } from '@/entities/map/index.ts'
 import {
   createMapTopology,
-  MAP_NODE_RADIUS_MM,
   MIN_MAP_LABEL_PIXELS,
   DEFAULT_LAYERS,
   mgsFit,
@@ -28,6 +27,7 @@ interface Callbacks {
     screenX: number,
     screenY: number,
     distance: number,
+    unitsPerPixel: number,
   ): void
   area(
     start: {
@@ -59,6 +59,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let grid: THREE.LineSegments
   let topologyGroup = new THREE.Group()
   let nodeMesh: THREE.InstancedMesh | null = null
+  let nodeBorders: THREE.InstancedMesh | null = null
+  let nodeDisplayScale = 1
   let portMesh: THREE.Mesh | null = null
   let selectedPortId: string | null = null
   const portOutline = new THREE.LineLoop(
@@ -69,9 +71,9 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     new THREE.LineBasicMaterial({ color: 0xff9900, depthTest: false, depthWrite: false }),
   )
   let highlightMesh = new THREE.Mesh(
-    new THREE.RingGeometry(MAP_NODE_RADIUS_MM * 1.8, MAP_NODE_RADIUS_MM * 2.2, 32),
+    new THREE.RingGeometry(120, 150, 32),
     new THREE.MeshBasicMaterial({
-      color: 0xff9900,
+      color: 0xff0000,
       side: THREE.DoubleSide,
       depthTest: false,
       depthWrite: false,
@@ -89,6 +91,48 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   )
   curvePreview.visible = false
   curvePreview.renderOrder = 20
+  const vehiclePreviews = new THREE.Group()
+  const vehicleOutline = new THREE.LineBasicMaterial({
+    color: 0xff9900,
+    depthTest: false,
+    depthWrite: false,
+  })
+  /** 지도 이력과 별도로 차량 외곽과 전진 방향 화살표를 배치하는 미리보기 */
+  const addVehiclePreview = (
+    x: number,
+    y: number,
+    degree: number,
+    dimensions: { width: number; height: number; leftWidth: number; topHeight: number },
+  ) => {
+    const { width, height, leftWidth, topHeight } = dimensions
+    const right = width - leftWidth
+    const top = height - topHeight
+    const arrow = Math.min(width, height) / 5
+    const points = [
+      [-leftWidth, -topHeight],
+      [right, -topHeight],
+      [right, top],
+      [-leftWidth, top],
+      [-leftWidth, -topHeight],
+      [0, 0],
+      [right, 0],
+      [right - arrow, arrow],
+      [right, 0],
+      [right - arrow, -arrow],
+    ].map(([px, py]) => new THREE.Vector3(px, py, 0))
+    const outline = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), vehicleOutline)
+    outline.position.set(x, y, 0)
+    outline.rotation.z = (degree * Math.PI) / 180
+    outline.renderOrder = 20
+    vehiclePreviews.add(outline)
+    requestRender()
+  }
+  /** 배치한 차량 미리보기와 지도 그래픽 자원을 정리 */
+  const clearVehiclePreviews = () => {
+    for (const preview of vehiclePreviews.children) (preview as THREE.Line).geometry.dispose()
+    vehiclePreviews.clear()
+    requestRender()
+  }
   /**
    * 원본 커브 설계점을 로컬 좌표로 바꾸어 실제 맵 위에 표시하는 점선 미리보기
    * @param points 계산한 커브 좌표 또는 미리보기 해제용 빈 목록
@@ -217,12 +261,11 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let viewportWidth = 1
   let viewportHeight = 1
   let drag: {
+    pointerId: number
     pan: boolean
     anchor: THREE.Vector3
     startX: number
     startY: number
-    currentX: number
-    currentY: number
     moved: boolean
   } | null = null
   let selectionBox = document.createElement('div')
@@ -285,9 +328,13 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       .set(mapTheme.grid)
       .lerp(new THREE.Color(mapTheme.background), 0.5)
     clearTopology()
-    const topology = createMapTopology(map, mapTheme)
+    const topology = createMapTopology(map, mapTheme, true)
     topologyGroup.add(...[...topology.group.children])
     nodeMesh = topology.nodeMesh
+    nodeBorders =
+      (topologyGroup.getObjectByName('node-borders') as THREE.InstancedMesh | undefined) ?? null
+    nodeDisplayScale = 1
+    updateNodeDisplaySize()
     portMesh = topology.portMesh
     setLayers(visibleLayers)
     setSelected(selectedId)
@@ -309,14 +356,13 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    */
   const setLayers = (layers: Layers) => {
     visibleLayers = { ...layers }
-    mapLabels = mapDocument ? createMapLabels(mapDocument, visibleLayers, mapTheme) : []
+    mapLabels = mapDocument ? createMapLabels(mapDocument, visibleLayers, mapTheme, true) : []
     grid.visible = layers.grid
     if (nodeMesh) nodeMesh.visible = layers.nodes
     if (portMesh) portMesh.visible = layers.ports
     const captions = topologyGroup.getObjectByName('port-captions')
     if (captions) captions.visible = layers.ports && !!layers.portCaptions
-    const borders = topologyGroup.getObjectByName('node-borders')
-    if (borders) borders.visible = layers.nodes
+    if (nodeBorders) nodeBorders.visible = layers.nodes
     const edges = topologyGroup.getObjectByName('edges')
     if (edges) edges.visible = layers.edges
     const arrows = topologyGroup.getObjectByName('arrows')
@@ -333,6 +379,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    * @param readOnly 현재 지도에서 편집 도구의 사용을 제한하는 상태
    */
   const setTool = (tool: 'select' | 'add' | 'connect', readOnly: boolean) => {
+    if (tool !== toolMode) cancelDrag()
     toolMode = tool
     renderer.domElement.style.cursor = spacePan.active()
       ? 'grab'
@@ -430,6 +477,22 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   const getScale = () => {
     return (camera.zoom * viewportHeight) / 800
   }
+  /** 축소해도 원형 노드와 선택 표시가 화면에서 사라지지 않도록 공용 도형 크기 보정 */
+  const updateNodeDisplaySize = () => {
+    const pixelsPerUnit = getScale() / 10
+    const scale = Math.max(1, 2.5 / (50 * pixelsPerUnit))
+    if (scale !== nodeDisplayScale) {
+      const ratio = scale / nodeDisplayScale
+      for (const mesh of [nodeMesh, nodeBorders]) {
+        if (!mesh) continue
+        mesh.geometry.scale(ratio, ratio, 1)
+        mesh.boundingBox = null
+        mesh.boundingSphere = null
+      }
+      nodeDisplayScale = scale
+    }
+    highlightMesh.scale.setScalar(Math.max(1, 8 / (150 * pixelsPerUnit)))
+  }
   /**
    * 원본 지도 배율 범위를 적용하고 카메라 및 확대 표시를 갱신하는 배율 반영
    *
@@ -438,6 +501,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   const setScale = (value: number) => {
     camera.zoom = (Math.max(0.01, Math.min(5, value)) * 800) / viewportHeight
     camera.updateProjectionMatrix()
+    updateNodeDisplaySize()
     events.zoom(getScale())
   }
   /**
@@ -461,9 +525,12 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    * @param event 브라우저 또는 데스크톱에서 전달한 입력 이벤트
    * @returns 캔버스 원점 기준 입력 좌표
    */
-  const getPointerPosition = (event: PointerEvent | WheelEvent) => {
+  const getPointerPosition = (event: MouseEvent) => {
     const rect = renderer.domElement.getBoundingClientRect()
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    return {
+      x: ((event.clientX - rect.left) * viewportWidth) / (rect.width || 1),
+      y: ((event.clientY - rect.top) * viewportHeight) / (rect.height || 1),
+    }
   }
   /**
    * 마우스 버튼과 현재 도구에 맞는 선택 또는 드래그 시작 상태를 기록하는 입력 시작 처리
@@ -477,28 +544,36 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       world = screenToWorld(p.x, p.y)
     renderer.domElement.focus()
     if (event.button === 2) {
-      const target = pickMgsNode(mapDocument?.nodes ?? [], world, 'right')
-      events.context(target.node?.id ?? null, world.x, world.y, p.x, p.y, target.distance)
+      const unitsPerPixel = 10 / getScale()
+      const target = pickMgsNode(
+        visibleLayers.nodes ? (mapDocument?.nodes ?? []) : [],
+        world,
+        'right',
+        unitsPerPixel,
+      )
+      events.context(
+        target.node?.id ?? null,
+        world.x,
+        world.y,
+        p.x,
+        p.y,
+        target.distance,
+        unitsPerPixel,
+      )
       return
     }
     // 스페이스 입력 상태에서만 카메라 이동을 허용하는 드래그 분기
     const pan = spacePan.active()
     renderer.domElement.setPointerCapture(event.pointerId)
-    if (!pan) {
-      const target = pickMgsNode(mapDocument?.nodes ?? [], world, 'left')
-      events.click(target.node?.id ?? null, world.x, world.y)
-    }
     // 선택 조작으로 좌표를 변경하지 않고 속성 입력에서만 위치를 편집하는 원본 동작
-    if (pan || toolMode === 'select')
-      drag = {
-        pan,
-        anchor: world,
-        startX: p.x,
-        startY: p.y,
-        currentX: p.x,
-        currentY: p.y,
-        moved: false,
-      }
+    drag = {
+      pointerId: event.pointerId,
+      pan,
+      anchor: world,
+      startX: p.x,
+      startY: p.y,
+      moved: false,
+    }
   }
   /**
    * 클릭한 지도 위치를 중심으로 원본 기본 배율을 적용하는 더블 클릭 확대
@@ -510,8 +585,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     if (event.button !== 0) return
     event.preventDefault()
     cancelDrag()
-    const rect = renderer.domElement.getBoundingClientRect()
-    const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top)
+    const pointer = getPointerPosition(event)
+    const world = screenToWorld(pointer.x, pointer.y)
     const centre = screenToWorld(viewportWidth / 2, viewportHeight / 2)
     camera.position.x += world.x - centre.x
     camera.position.y += world.y - centre.y
@@ -527,17 +602,15 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     const p = getPointerPosition(event),
       world = screenToWorld(p.x, p.y)
     events.cursor(world.x, world.y)
-    if (!drag) return
-    drag.moved ||= p.x !== drag.startX || p.y !== drag.startY
+    if (!drag || drag.pointerId !== event.pointerId) return
+    drag.moved ||= Math.hypot(p.x - drag.startX, p.y - drag.startY) >= (drag.pan ? 1 : 4)
     if (!drag.moved) return
-    drag.currentX = p.x
-    drag.currentY = p.y
     if (drag.pan) {
       // 포인터 아래 지도 좌표를 고정하여 드래그 중 즉시 화면을 옮기는 이동 처리
       camera.position.x += drag.anchor.x - world.x
       camera.position.y += drag.anchor.y - world.y
       renderer.domElement.style.cursor = 'grabbing'
-    } else {
+    } else if (toolMode === 'select') {
       Object.assign(selectionBox.style, {
         left: `${Math.min(p.x, drag.startX)}px`,
         top: `${Math.min(p.y, drag.startY)}px`,
@@ -556,18 +629,32 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    */
   const pointerUp = (event: PointerEvent) => {
     const previousDrag = drag
+    if (!previousDrag || previousDrag.pointerId !== event.pointerId || event.button !== 0) return
     const p = getPointerPosition(event),
       world = screenToWorld(p.x, p.y)
     cancelDrag()
     if (renderer.domElement.hasPointerCapture(event.pointerId))
       renderer.domElement.releasePointerCapture(event.pointerId)
-    if (previousDrag?.moved && previousDrag.pan) {
+    if (previousDrag.moved && previousDrag.pan) {
       camera.position.x += previousDrag.anchor.x - world.x
       camera.position.y += previousDrag.anchor.y - world.y
       requestRender()
     }
-    if (previousDrag && !previousDrag.pan && previousDrag.moved)
-      events.area(previousDrag.anchor, world)
+    if (previousDrag.pan) return
+    if (
+      previousDrag.moved ||
+      Math.hypot(p.x - previousDrag.startX, p.y - previousDrag.startY) >= 4
+    ) {
+      if (toolMode === 'select') events.area(previousDrag.anchor, world)
+      return
+    }
+    const target = pickMgsNode(
+      visibleLayers.nodes ? (mapDocument?.nodes ?? []) : [],
+      previousDrag.anchor,
+      'left',
+      10 / getScale(),
+    )
+    events.click(target.node?.id ?? null, previousDrag.anchor.x, previousDrag.anchor.y)
   }
   /**
    * 진행 중인 드래그 상태와 선택 상자를 초기화하는 조작 취소
@@ -575,7 +662,11 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   const cancelDrag = () => {
     drag = null
     selectionBox.hidden = true
-    renderer.domElement.style.cursor = spacePan.active() ? 'grab' : 'default'
+    renderer.domElement.style.cursor = spacePan.active()
+      ? 'grab'
+      : toolMode === 'select'
+        ? 'default'
+        : 'crosshair'
     requestRender()
   }
   /**
@@ -754,6 +845,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     })
     topologyGroup.clear()
     nodeMesh = null
+    nodeBorders = null
     portMesh = null
   }
   /**
@@ -766,6 +858,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     drawingPlane.material.dispose()
     curvePreview.geometry.dispose()
     curvePreview.material.dispose()
+    clearVehiclePreviews()
+    vehicleOutline.dispose()
     spacePan.dispose()
     cancelAnimationFrame(animationFrame)
     observer.disconnect()
@@ -827,7 +921,15 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   highlightMesh.visible = false
   portOutline.visible = false
   portOutline.renderOrder = 11
-  scene.add(grid, topologyGroup, highlightMesh, portOutline, curvePreview, drawingPlane)
+  scene.add(
+    grid,
+    topologyGroup,
+    highlightMesh,
+    portOutline,
+    curvePreview,
+    drawingPlane,
+    vehiclePreviews,
+  )
   const canvas = renderer.domElement
   canvas.addEventListener('pointerdown', pointerDown)
   canvas.addEventListener('dblclick', doubleClick)
@@ -859,6 +961,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   }
   return {
     capture,
+    addVehiclePreview,
+    clearVehiclePreviews,
     /** 문서와 편집 상태를 유지하며 화면 갱신만 중단하거나 재개하는 렌더링 전환 */
     setRenderPaused: (paused: boolean) => {
       renderPaused = paused

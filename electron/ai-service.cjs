@@ -202,7 +202,7 @@ const aiPropose = async (payload, signal) => {
           {
             role: 'system',
             content: supportsTools
-              ? system
+              ? system()
               : '한국어로 대화하세요. 현재 선택한 모델은 도구 호출을 지원하지 않습니다. 맵 조회·편집을 실행하거나 실행했다고 말하지 마세요. 작업 요청에는 도구 호출을 지원하는 모델을 선택하도록 안내하세요.',
           },
           {
@@ -280,6 +280,34 @@ const aiAnalyzeDrawing = async (payload, signal) => {
         },
         summary: { type: 'string' },
         uncertainty: { type: 'string' },
+        references: {
+          type: 'array',
+          maxItems: 2,
+          items: {
+            type: 'object',
+            properties: {
+              axis: { type: 'string', enum: ['x', 'y'] },
+              start: { type: 'number' },
+              end: { type: 'number' },
+              cross: { type: 'number' },
+              mm: { type: 'number' },
+            },
+            required: ['axis', 'start', 'end', 'cross', 'mm'],
+          },
+        },
+        doors: {
+          type: 'array',
+          maxItems: 12,
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+            },
+            required: ['label', 'x', 'y'],
+          },
+        },
         objects: {
           type: 'array',
           maxItems: payload.task === 'objects' ? 32 : 0,
@@ -324,7 +352,15 @@ const aiAnalyzeDrawing = async (payload, signal) => {
           },
         },
       },
-      required: ['routeColor', 'summary', 'uncertainty', 'objects', 'routes'],
+      required: [
+        'routeColor',
+        'summary',
+        'uncertainty',
+        'objects',
+        'routes',
+        'references',
+        'doors',
+      ],
     }
     const data = await requestJson('/api/chat', {
       method: 'POST',
@@ -352,14 +388,14 @@ Only return visible objects, confidence 0..1. No inferred heights or dimensions.
 Identify thick connected travel corridor color. For monochrome plans use unknown unless an explicit dark route line is distinguished from walls.
 Routes are centerline polylines through clearly open travel aisles, never through equipment or walls. Include junction coordinates in all connected polylines.
 For colored corridor plans return routes=[] since deterministic extraction handles them.
-For uncertain or occluded connections leave gaps, explain uncertainty. Never infer real numeric scale from this image.`,
+For uncertain or occluded connections leave gaps and explain uncertainty. In overview return references only for a legible horizontal or vertical dimension line: start and end are its normalized endpoints along that axis, cross is its constant coordinate along the other axis, and mm is the printed actual length converted to millimetres. Never guess missing dimensions. Return clearly visible door opening centres in doors; describe positions without guessing inbound or outbound use. In objects tiles use empty references and doors.`,
           },
           {
             role: 'user',
             content:
               payload.task === 'objects'
                 ? '확대한 도면 구역입니다. 가장 명확한 객체를 최대 24개까지만 반환하세요. 설비와 랙·선반·컨베이어, 도킹 포트, 장애물과 문자를 각각 인식하고 실제 위치의 경계 상자를 반환하세요. 식별 문자는 원문 그대로 작성하세요. 불명확한 것은 낮은 confidence로 표시하세요.'
-                : '전체 현장 도면입니다. 주행 경로 색상과 도면 구성을 분석하세요. 흑백 도면이면 명확한 통로의 중심선을 routes로 반환하세요. objects는 확대 구역에서 분석하므로 빈 배열을 반환하세요.',
+                : '전체 현장 도면입니다. 주행 경로 색상과 도면 구성을 분석하세요. 읽을 수 있는 가장 긴 가로 및 세로 치수선의 끝 좌표와 인쇄된 실제 길이를 references에, 식별한 출입구 중심을 doors에 반환하세요. 흑백 도면이면 명확한 통로의 중심선을 routes로 반환하세요. objects는 빈 배열로 반환하세요.',
             images: [payload.image.split(',')[1]],
           },
         ],
@@ -368,6 +404,30 @@ For uncertain or occluded connections leave gaps, explain uncertainty. Never inf
     if (!data.done || data.done_reason === 'length' || !data.message?.content)
       throw new Error('도면 의미 분석이 완료되지 않았습니다.')
     const result = JSON.parse(data.message.content)
+    result.references = (Array.isArray(result.references) ? result.references : [])
+      .filter(
+        (item) =>
+          item &&
+          ['x', 'y'].includes(item.axis) &&
+          [item.start, item.end, item.cross, item.mm].every(Number.isFinite) &&
+          item.cross >= 0 &&
+          item.cross <= 1000 &&
+          Math.min(item.start, item.end) >= 0 &&
+          Math.max(item.start, item.end) <= 1000 &&
+          Math.abs(item.end - item.start) >= 1 &&
+          item.mm > 0 &&
+          item.mm <= 1e7,
+      )
+      .slice(0, 2)
+    result.doors = (Array.isArray(result.doors) ? result.doors : [])
+      .filter(
+        (item) =>
+          item &&
+          typeof item.label === 'string' &&
+          item.label.length <= 120 &&
+          [item.x, item.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1000),
+      )
+      .slice(0, 12)
     if (
       !['green', 'magenta', 'cyan', 'blue', 'red', 'black', 'unknown'].includes(
         result.routeColor,
@@ -451,6 +511,8 @@ For uncertain or occluded connections leave gaps, explain uncertainty. Never inf
       uncertainty: result.uncertainty.slice(0, 2000),
       objects: result.objects,
       routes: result.routes,
+      references: result.references,
+      doors: result.doors,
     }
   } finally {
     requests.delete(payload.id)

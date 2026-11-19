@@ -97,20 +97,27 @@ const timestamp = (name) => {
  * @param folder 최신 지도 탐색을 시작할 기준 폴더
  * @returns 최신 지도 파일의 내용과 테마 정보
  */
-const openMapFolder = async (folder) => {
+const openMapFolder = async (folder, allowEmpty = false) => {
   let directory = folder
+  if (!(await fs.stat(folder)).isDirectory()) throw new Error('프로젝트 폴더를 선택하세요.')
+  if (allowEmpty && path.basename(folder).toLowerCase() !== 'map')
+    directory = path.join(folder, 'MAP')
   try {
     if ((await fs.stat(path.join(folder, 'MAP'))).isDirectory())
       directory = path.join(folder, 'MAP')
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
-  const entries = await fs.readdir(directory, { withFileTypes: true })
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => {
+    if (allowEmpty && error.code === 'ENOENT') return []
+    throw error
+  })
   const maps = entries
     .filter((entry) => entry.isFile())
     .map((entry) => ({ name: entry.name, time: timestamp(entry.name) }))
     .filter((entry) => entry.time !== null)
     .sort((a, b) => b.time - a.time)
+  if (!maps.length && allowEmpty) return { directory }
   if (!maps.length)
     throw new Error('MAP 폴더 또는 RCS 폴더를 선택하세요. YYYYMMDD_HHmmss.jmapx 파일이 필요합니다.')
   return { ...(await readMapFile(path.join(directory, maps[0].name))), directory }

@@ -840,6 +840,12 @@ export const serializeLegacy = (
           height: 4,
           strokeColor: 11,
           fillColor: 12,
+          fontColor: 13,
+          fontSize: 14,
+          nameDistance: 15,
+          namePosition: 16,
+          nameDirection: 17,
+          nameAlign: 18,
         })
         const anchor = nodes.get(Number(row[7]))
         if (!anchor) throw new Error('포트 그룹의 기준 노드를 확인하세요.')

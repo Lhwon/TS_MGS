@@ -26,6 +26,7 @@ import {
   drawingObjectBounds,
   roundDrawingPaths,
   validateDrawingMap,
+  planDrawingRoute,
   type DrawingAttachment,
   type RouteColor,
   type DrawingFinding,
@@ -49,6 +50,30 @@ export const executeDrawingTool = async (
     facility = useFacilityEditor(),
     map = editor.document,
     scene = facility.document
+  if (name === 'plan_drawing_route') {
+    if (!drawing) throw new Error('맵을 설계할 도면을 첨부하세요.')
+    const { map: draft, rounded, dimensionAxes } = planDrawingRoute(drawing, args)
+    if (request.signal.aborted || editor.document !== map)
+      throw new Error('지도 변경으로 작업을 중단했습니다.')
+    options.internal(true)
+    try {
+      editor.importGeneratedMap(draft)
+    } finally {
+      options.internal(false)
+    }
+    options.findings.value = []
+    options.generated()
+    return {
+      applied: true,
+      saved: false,
+      nodes: draft.nodes.length,
+      ports: draft.ports.length,
+      rounded,
+      units: draft.units,
+      dimensionAxes,
+      message: '지도에 초안을 반영했습니다. 파일 저장은 Map Save에서 실행하세요.',
+    }
+  }
   const context = assistantContext(
     map,
     scene,
@@ -223,7 +248,7 @@ export const executeDrawingTool = async (
     updateMessage(replyId, result, 'applied')
 
     editor.message = `도면 맵 생성 완료 · 노드 ${editor.document.nodes.length}개 · ${editor.document.units} 좌표`
-    return { message: lastMessage }
+    return { message: lastMessage, saved: false }
   }
 
   if (

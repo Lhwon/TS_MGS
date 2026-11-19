@@ -1,8 +1,15 @@
+/**
+ * 파일명: generate-ceram-models.mjs
+ * 설명: 기본 설비와 보관 랙의 재현 가능한 GLB 모델 및 라이브러리 생성
+ * 작성자: 이희원
+ * 작성일자: 2026-11-19
+ */
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import fs from 'node:fs/promises'
 import { appendHandlingModels } from './material-handling-models.mjs'
-import { embedWoodTexture } from './wood-texture.mjs'
+import { embedSurfaceTextures } from './wood-texture.mjs'
 
 /** 내장 바이너리 내보내기의 파일 읽기 어댑터 */
 class ExportReader {
@@ -44,6 +51,7 @@ const materials = Object.fromEntries(
     rackBeam: '#D87932',
     rackDeck: '#A5ADB2',
     rackFoot: '#414A50',
+    fastener: '#9aa5ad',
     woodLight: '#C69B64',
     woodMedium: '#B68B56',
     woodDark: '#8E673F',
@@ -60,7 +68,9 @@ const materials = Object.fromEntries(
   }).map(([name, color]) => [
     name,
     new THREE.MeshStandardMaterial({
-      name: /^(rack|wood|machine|steelBand|rubber|warning|button|shutter)/.test(name) ? name : '',
+      name: /^(rack|wood|machine|steelBand|fastener|rubber|warning|button|shutter)/.test(name)
+        ? name
+        : '',
       color,
       transparent: name === 'shutterWindow',
       opacity: name === 'shutterWindow' ? 0.5 : 1,
@@ -68,7 +78,7 @@ const materials = Object.fromEntries(
       metalness:
         name.startsWith('wood') || name === 'rubber' || name.startsWith('shutter')
           ? 0
-          : name === 'steel'
+          : name === 'steel' || name === 'fastener'
             ? 0.7
             : name === 'rackDeck'
               ? 0.65
@@ -113,7 +123,7 @@ const save = async (id, name, kind, model) => {
   if (cargoOnly && !cargoIds.has(id)) return
   if (handlingOnly && !handlingIds.has(id)) return
   const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3())
-  const buffer = embedWoodTexture(
+  const buffer = embedSurfaceTextures(
     Buffer.from(await new GLTFExporter().parseAsync(model, { binary: true })),
   )
   await fs.writeFile(`${output}/${id}.glb`, buffer)
@@ -137,40 +147,92 @@ const save = async (id, name, kind, model) => {
 const cabinet = (w, d, h, doors = 1) => {
   const root = new THREE.Group()
   box(root, 'dark', 0, 0, 80, w, d, 160)
-  box(root, 'paint', 0, 0, h / 2, w - 60, d - 60, h - 120)
+  const enclosure = new THREE.Mesh(
+    new RoundedBoxGeometry((w - 60) / 1000, (h - 120) / 1000, (d - 60) / 1000, 2, 0.015),
+    materials.paint,
+  )
+  enclosure.position.copy(point(0, 0, h / 2))
+  root.add(enclosure)
   for (let i = 0; i < doors; i++) {
     const x = ((i - (doors - 1) / 2) * (w - 100)) / doors
     box(root, 'dark', x, -d / 2, h * 0.55, (w - 160) / doors, 35, h * 0.62)
     box(root, 'blue', x, -d / 2 - 20, h * 0.62, (w - 280) / doors, 10, h * 0.35)
     box(root, 'steel', x + (w - 300) / doors / 2, -d / 2 - 28, h * 0.46, 22, 22, 180)
+    for (const elevation of [0.31, 0.74])
+      box(root, 'fastener', x - (w - 190) / doors / 2, -d / 2 - 13, h * elevation, 25, 14, 66)
+    for (let louver = 0; louver < 5; louver++)
+      box(root, 'steel', x, -d / 2 - 19, h * 0.27 + louver * 16, (w - 320) / doors, 5, 7)
   }
   box(root, 'screen', w * 0.3, -d / 2 - 32, h * 0.82, 220, 18, 160)
+  box(root, 'buttonGreen', w * 0.27, -d / 2 - 30, h * 0.82 - 102, 25, 16, 22)
+  box(root, 'buttonRed', w * 0.33, -d / 2 - 30, h * 0.82 - 102, 25, 16, 22)
   return root
 }
-const rack = new THREE.Group(),
-  w = 2500,
-  d = 2500,
-  h = 3850
-for (const x of [-1200, 1200])
-  for (const y of [-1200, 1200]) {
-    box(rack, 'rackFrame', x, y, h / 2, 90, 90, h).name = `rack-upright-${x}-${y}`
-    box(rack, 'rackFoot', x, y, 20, 100, 100, 40).name = `rack-foot-${x}-${y}`
-  }
-// 하단 바닥과 적재물 없이 중간판과 최상단판만 배치하는 랙 구조
-for (const [floor, z] of [1915, 3785].entries()) {
-  for (const y of [-1205, 1205])
-    box(rack, 'rackBeam', 0, y, z, w, 90, 110).name = `rack-beam-${floor + 1}-${y}`
-  const deck = box(rack, 'rackDeck', 0, 0, z + 55, w - 110, d - 110, 20)
-  deck.name = `storage-deck-${floor + 1}`
+
+/** 양 끝점을 잇는 철제 보강재 생성 */
+const brace = (root, start, end) => {
+  const a = point(...start)
+  const b = point(...end)
+  const direction = b.clone().sub(a)
+  const mesh = new THREE.Mesh(unitBox, materials.rackFrame)
+  mesh.name = 'rack-diagonal-brace'
+  mesh.position.copy(a).lerp(b, 0.5)
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), direction.clone().normalize())
+  mesh.scale.set(direction.length(), 0.045, 0.035)
+  root.add(mesh)
 }
-await save('storage-rack', 'MP5 보관랙 2500×2500×3850', 'rack', rack)
+
+/** 층마다 독립된 데크와 보강대를 가진 산업용 보관 랙 생성 */
+const storageRack = (levels) => {
+  const rack = new THREE.Group()
+  const pitch = 1870
+  const height = levels * pitch + 110
+  for (const x of [-1200, 1200]) {
+    for (const y of [-1200, 1200]) {
+      box(rack, 'rackFrame', x, y, height / 2, 90, 90, height).name = `rack-upright-${x}-${y}`
+      box(rack, 'rackFoot', x, y, 20, 100, 100, 40).name = `rack-foot-${x}-${y}`
+      for (const offset of [-33, 33])
+        cylinder(rack, 'fastener', x + offset, y - offset, 43, 12, 6).name = 'rack-anchor-bolt'
+    }
+    for (let floor = 0; floor < levels; floor++) {
+      const base = floor * pitch
+      brace(rack, [x, -1145, base + 160], [x, 1145, base + pitch - 145])
+    }
+  }
+  for (let floor = 0; floor < levels; floor++) {
+    const z = (floor + 1) * pitch + 45
+    for (const y of [-1205, 1205])
+      box(rack, 'rackBeam', 0, y, z, 2500, 90, 110).name = `rack-beam-${floor + 1}-${y}`
+    for (const x of [-790, 0, 790])
+      box(rack, 'rackFrame', x, 0, z + 16, 55, 2310, 64).name = 'rack-deck-support'
+    box(rack, 'rackDeck', 0, 0, z + 55, 2390, 2390, 20).name = `storage-deck-${floor + 1}`
+    for (const x of [-1200, 1200])
+      for (const y of [-1180, 1180])
+        box(rack, 'fastener', x, y, z - 65, 25, 38, 16).name = 'rack-beam-connector'
+  }
+  return rack
+}
+// 이전 배치와 연결되는 2단 랙 식별자 보존
+for (const levels of [2, 1, 3, 4])
+  await save(
+    levels === 2 ? 'storage-rack' : `storage-rack-${levels}-tier`,
+    `보관 랙 · ${levels}단`,
+    'rack',
+    storageRack(levels),
+  )
 const conveyor = new THREE.Group()
 for (const x of [-500, 500])
   for (const y of [-1350, 1350]) box(conveyor, 'dark', x, y, 350, 70, 70, 700)
 for (const x of [-520, 520]) box(conveyor, 'steel', x, 0, 740, 60, 3000, 120)
 for (let i = 0; i < 20; i++)
   cylinder(conveyor, 'steel', 0, -1400 + (i * 2800) / 19, 790, 60, 1000, true)
-await save('roller-conveyor', '기본 롤러 컨베이어 · 개략', 'conveyor', conveyor)
+for (const x of [-500, 500]) {
+  box(conveyor, 'machineFrame', x, 0, 440, 42, 2700, 45)
+  for (const y of [-1350, 1350]) box(conveyor, 'rackFoot', x, y, 12, 100, 130, 24)
+}
+box(conveyor, 'machineGray', 470, -1170, 706, 140, 240, 130)
+for (let rib = 0; rib < 4; rib++) box(conveyor, 'dark', 540, -1250 + rib * 50, 706, 12, 18, 100)
+await save('roller-conveyor', '롤러 컨베이어', 'conveyor', conveyor)
 for (const [id, name, w, d, h, doors] of [
   ['rapid-cooling', 'Rapid cooling chambers · 개략', 2800, 3200, 3200, 2],
   ['discrete-spray', 'Discrete Spray 설비 · 개략', 2600, 3600, 3000, 2],
@@ -181,7 +243,7 @@ for (const [id, name, w, d, h, doors] of [
   ['agv-power-220', 'AGV 전원·충전 스테이션 220V · 개략', 600, 450, 1200, 1],
   ['agv-power-440', 'AGV 전원·충전 스테이션 440V · 개략', 600, 450, 1200, 1],
 ])
-  await save(id, name, 'equipment', cabinet(w, d, h, doors))
+  await save(id, name.replace(' · 개략', ''), 'equipment', cabinet(w, d, h, doors))
 const robot = new THREE.Group()
 box(robot, 'dark', 0, 0, 100, 1000, 1000, 200)
 cylinder(robot, 'steel', 0, 0, 380, 650, 560)
@@ -190,19 +252,33 @@ cylinder(robot, 'steel', 0, 0, 1400, 420, 440, true)
 box(robot, 'beam', 0, -450, 1500, 300, 1100, 260)
 cylinder(robot, 'dark', 0, -950, 1500, 260, 300, true)
 box(robot, 'steel', 0, -1050, 1300, 220, 200, 400)
-await save('robot', 'Robot 작업 로봇 · 개략', 'equipment', robot)
+box(robot, 'warning', 173, 0, 970, 18, 240, 360)
+cylinder(robot, 'dark', 0, -1050, 1140, 150, 120)
+await save('robot', '산업용 작업 로봇', 'equipment', robot)
 const loader = new THREE.Group()
 for (const x of [-900, 900])
   for (const y of [-1300, 1300]) box(loader, 'steel', x, y, 950, 100, 100, 1900)
 box(loader, 'dark', 0, 0, 100, 2000, 3000, 200)
 box(loader, 'paint', 0, 0, 1200, 1700, 2200, 100)
 box(loader, 'beam', 0, 0, 1950, 2000, 3000, 100)
-await save('dummy-crate-loader', 'Dummy Crate Loading Unit · 개략', 'equipment', loader)
+await save('dummy-crate-loader', '박스 적재 설비', 'equipment', loader)
 const crate = new THREE.Group()
 box(crate, 'dark', 0, 0, 80, 1100, 1100, 160)
 for (const x of [-520, 520]) box(crate, 'paint', x, 0, 500, 60, 1100, 800)
 for (const y of [-520, 520]) box(crate, 'paint', 0, y, 500, 1100, 60, 800)
-await save('crate', 'Crate 운반 용기 · 개략', 'equipment', crate)
+await save('crate', '산업용 운반 용기', 'equipment', crate)
+const workbench = new THREE.Group()
+for (const x of [-835, 835])
+  for (const y of [-330, 330]) {
+    box(workbench, 'machineFrame', x, y, 448, 60, 60, 884)
+    box(workbench, 'rackFoot', x, y, 8, 85, 85, 16)
+  }
+for (const y of [-325, 325]) box(workbench, 'machineFrame', 0, y, 857, 1720, 50, 54)
+box(workbench, 'woodMedium', 0, 0, 915, 1800, 760, 45)
+box(workbench, 'rackDeck', 0, 0, 230, 1670, 615, 35)
+box(workbench, 'machineGray', 490, 0, 749, 485, 620, 175)
+box(workbench, 'fastener', 490, -314, 755, 140, 18, 20)
+await save('industrial-workbench', '산업용 작업대', 'equipment', workbench)
 await appendHandlingModels({ box, cylinder, save })
 const library = {
   format: 'bem-equipment-library',

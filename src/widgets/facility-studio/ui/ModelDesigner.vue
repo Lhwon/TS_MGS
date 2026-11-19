@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
     @keydown.stop="keyboard"
     @focusout="historyKey = ''"
   >
-    <header class="d-flex align-center ga-3 px-5 py-3 border-b">
+    <header class="popup-drag-handle d-flex align-center ga-3 px-5 py-3 border-b">
       <div class="mr-auto">
         <h2
           id="model-designer-title"

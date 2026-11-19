@@ -90,21 +90,41 @@ const files = useMapFiles(
       )),
 )
 const saveDialogOpen = ref(false),
-  saveToNewProject = ref(false)
+  saveToNewProject = ref(false),
+  saveProjectToken = ref<string>()
 /** 원본 지도는 저장 항목을 구성하고 전용 JSON은 기존 방식으로 저장하는 파일 명령 */
-const requestSave = (saveAs = false) => {
+const requestSave = async (saveAs = false) => {
   if (files.busy.value || editor.readOnly) return
+  if (editor.document.units === 'px') {
+    editor.message = '도면의 기준 길이로 축척을 확정한 후 JMAPX를 저장하세요.'
+    return
+  }
   if (
     mode.value === 'map' &&
     (editor.legacySource || editor.sourceName.toLowerCase().endsWith('.jmapx'))
   ) {
     saveToNewProject.value = saveAs
+    saveProjectToken.value = undefined
+    if (window.desktop?.selectSaveProject && (saveAs || !editor.projectToken)) {
+      files.busy.value = true
+      try {
+        const target = await window.desktop.selectSaveProject()
+        if (!target) return
+        saveProjectToken.value = target
+      } catch (cause) {
+        editor.message = cause instanceof Error ? cause.message : String(cause)
+        return
+      } finally {
+        files.busy.value = false
+      }
+    }
     saveDialogOpen.value = true
   } else void files.save(saveAs)
 }
 /** 같은 문서 스냅샷의 부가 데이터를 생성하고 새 버전의 저장 성공 후 창을 닫는 저장 실행 */
 const saveWithOptions = async (options: NativeSaveOptions) => {
-  if (await files.save(saveToNewProject.value, false, options)) saveDialogOpen.value = false
+  if (await files.save(saveToNewProject.value, false, options, saveProjectToken.value))
+    saveDialogOpen.value = false
 }
 watch(
   () => editor.mapRevision,
@@ -186,7 +206,10 @@ const mapZoom = ref(1)
 const objectOpen = computed({
   get: () => editor.objectEditor !== null,
   set: (value: boolean) => {
-    if (!value) editor.objectEditor = null
+    if (!value) {
+      editor.objectEditor = null
+      editor.objectEditorTarget = undefined
+    }
   },
 })
 const mapShortcuts = [
@@ -210,6 +233,7 @@ const shortcuts = computed(() =>
         ['이동 / 회전 도구', '선택 시설에 핸들 표시 (10mm / 15° 스냅)'],
         ['Ctrl+O / Ctrl+S', '지도 열기 / 3D 설계 저장'],
         ['Ctrl+Z / Ctrl+Shift+Z', '3D 설계 실행 취소 / 다시 실행'],
+        ['Ctrl+C / Ctrl+V', '선택한 3D 시설 복사 / 붙여넣기'],
         ['Delete / Escape', '선택 시설 삭제 / 선택 해제'],
       ],
 )
@@ -236,8 +260,23 @@ const keyboard = (event: KeyboardEvent) => {
       void files.open()
       return
     }
-    if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select'))
+    if (
+      event.target instanceof HTMLElement &&
+      (event.target.closest('input, textarea, select') || event.target.isContentEditable)
+    )
       return
+    if (mod && (key === 'c' || key === 'v')) {
+      if (key === 'c' && window.getSelection()?.isCollapsed === false) return
+      try {
+        const handled =
+          key === 'c' ? facility.copySelection(editor.document.ports) : facility.pasteSelection()
+        if (handled) event.preventDefault()
+      } catch (cause) {
+        event.preventDefault()
+        facility.message = cause instanceof Error ? cause.message : String(cause)
+      }
+      return
+    }
     if (mod && key === 'z') {
       event.preventDefault()
       event.shiftKey ? facility.redo() : facility.undo()
@@ -312,6 +351,7 @@ const beforeUnload = (event: BeforeUnloadEvent) => {
 onMounted(() => {
   window.addEventListener('keydown', keyboard)
   window.addEventListener('beforeunload', beforeUnload)
+  void files.restoreProject()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', keyboard)
@@ -379,7 +419,7 @@ onBeforeUnmount(() => {
           :active="assistantOpen"
           @activate="assistantOpen = !assistantOpen"
         >
-          AI 도우미
+          AI 에이전트
         </TextAction>
         <span class="workspace-version">v0.6.0</span>
       </div>
@@ -459,6 +499,7 @@ onBeforeUnmount(() => {
     <MapObjectEditor
       v-model="objectOpen"
       :initial-category="editor.objectEditor ?? 'ports'"
+      :target="editor.objectEditorTarget"
     />
     <MapSaveDialog
       v-model="saveDialogOpen"
@@ -478,7 +519,7 @@ onBeforeUnmount(() => {
         }
       "
     >
-      <div class="dialog-heading d-flex align-center">
+      <div class="dialog-heading popup-drag-handle d-flex align-center">
         <div class="dialog-glyph">
           <AppIcon
             name="help"

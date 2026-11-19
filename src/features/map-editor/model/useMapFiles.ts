@@ -10,6 +10,7 @@ import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
 import { useEditor } from '@/features/map-editor/model/editor.ts'
 import { makeAroundData } from '@/features/map-editor/model/around.ts'
 import { makeAesData, type AesVehicle } from '@/features/map-editor/model/aes.ts'
+import { renumberMap } from '@/features/map-editor/model/operations.ts'
 export interface NativeSaveOptions {
   includeAreas: boolean
   includeAround: boolean
@@ -26,13 +27,6 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
   const editor = useEditor()
   const busy = ref(false)
 
-  watch(
-    () => editor.mapRevision,
-    () => {
-      editor.projectToken = undefined
-    },
-    { flush: 'sync' },
-  )
   /**
    * 저장하지 않은 변경의 폐기 여부를 사용자에게 확인하는 문서 교체 사전 확인
    * @returns 현재 문서의 교체를 진행할 수 있는지 여부
@@ -53,13 +47,29 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
    * @param sample 빈 문서 대신 내장 샘플 지도의 사용 여부
    */
   const create = (sample = false) => {
-    if (!busy.value && discardAllowed()) editor.newMap(sample)
+    if (busy.value) return
+    if (window.desktop && !sample) {
+      if (
+        !window.confirm('모든 지도 데이터를 초기화하시겠습니까?') ||
+        !window.confirm('현재 편집 데이터를 지우고 새 맵을 시작하시겠습니까?') ||
+        !beforeReplace()
+      )
+        return
+    } else if (!discardAllowed()) return
+    const token = editor.projectToken
+    editor.newMap(sample)
+    editor.projectToken = token
   }
   /**
    * 현재 실행 환경의 파일 선택기를 사용하여 문서를 검증하고 여는 비동기 파일 작업
    */
   const open = async () => {
-    if (busy.value || !discardAllowed()) return
+    if (
+      busy.value ||
+      !discardAllowed() ||
+      (window.desktop && !window.confirm('맵 파일을 여시겠습니까?'))
+    )
+      return
     busy.value = true
     try {
       const file = window.desktop ? await window.desktop.openMap() : await pickMapFile()
@@ -82,7 +92,12 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
   /**
    * 작업 시작 시점의 문서를 저장하고 완료된 스냅샷만 저장 기준으로 표시하는 비동기 저장
    */
-  const save = async (saveAs = false, forceNative = false, options?: NativeSaveOptions) => {
+  const save = async (
+    saveAs = false,
+    forceNative = false,
+    options?: NativeSaveOptions,
+    token?: string,
+  ) => {
     if (busy.value || editor.readOnly) return
     const snapshot = editor.document
     const revision = editor.mapRevision
@@ -90,23 +105,29 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
     try {
       const native =
         forceNative || !!editor.legacySource || editor.sourceName.toLowerCase().endsWith('.jmapx')
-      const serialized = native ? serializeLegacy(snapshot, editor.legacySource) : undefined
+      const needsSequentialIds =
+        native &&
+        !editor.legacySource &&
+        [...snapshot.nodes].sort((a, b) => a.id - b.id).some((node, index) => node.id !== index + 1)
+      const output = needsSequentialIds ? renumberMap(snapshot).map : snapshot
+      const serialized = native ? serializeLegacy(output, editor.legacySource) : undefined
       const content = serialized?.content ?? JSON.stringify(snapshot, null, 2)
       const auxiliary: Record<string, string> = {}
       if (native && !forceNative) {
         if (snapshot.areas && options?.includeAreas !== false)
           Object.assign(auxiliary, serializeAreas(snapshot.areas))
         if (options?.includeAround)
-          auxiliary.path_around = makeAroundData(snapshot, options.aroundRadius).content
+          auxiliary.path_around = makeAroundData(output, options.aroundRadius).content
         if (options?.includeAes)
-          auxiliary.aes = makeAesData(snapshot, options.vehicle, editor.legacySource).content
+          auxiliary.aes = makeAesData(output, options.vehicle, editor.legacySource).content
       }
       if (window.desktop?.apiVersion === 2) {
         const result = await window.desktop.saveMap(content, editor.sourceName, {
-          token: editor.projectToken,
+          token: token ?? editor.projectToken,
           groups: serialized?.groups,
           auxiliary,
-          saveAs,
+          saveAs: saveAs && !token,
+          backup: native && !forceNative,
         })
         if (result) {
           if (editor.mapRevision === revision) {
@@ -115,6 +136,7 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
               editor.sourceName = result.name
               editor.message = `${result.name} 지도 저장 완료 · 영역 설정은 저장 항목에서 제외`
             } else editor.markSaved(snapshot, result.name)
+            if (result.warning) editor.message = result.warning
           }
           return true
         }
@@ -165,20 +187,50 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
   /**
    * 원본 프로그램의 지도 폴더에서 최신 지도를 찾아 여는 데스크톱 파일 작업
    */
+  const applyProject = (project: DesktopMapProject) => {
+    if (project.content !== undefined && project.name)
+      editor.load(
+        project.content,
+        project.name,
+        project.theme,
+        project.portGroups,
+        project.areaFiles,
+      )
+    else {
+      editor.newMap()
+      editor.message = `${project.project} · 새 맵 작업을 시작합니다.`
+    }
+    editor.projectToken = project.token
+  }
+  /** 프로젝트를 선택하고 최신 지도를 읽거나 빈 편집 화면을 여는 파일 작업 */
   const openFolder = async () => {
     if (busy.value || !window.desktop || !discardAllowed()) return
     busy.value = true
     try {
       const file = await window.desktop.openMapFolder()
-      if (file) {
-        editor.load(file.content, file.name, file.theme, file.portGroups, file.areaFiles)
-        editor.projectToken = file.token
+      if (file) applyProject(file)
+    } catch (error) {
+      report(error)
+    } finally {
+      busy.value = false
+    }
+  }
+  /** 앱 시작 시 마지막 프로젝트를 복원하고 설정이 없으면 프로젝트 선택을 표시 */
+  const restoreProject = async () => {
+    if (!window.desktop?.restoreMapProject || busy.value) return
+    busy.value = true
+    try {
+      const project = await window.desktop.restoreMapProject()
+      if (project) {
+        applyProject(project)
+        return
       }
     } catch (error) {
       report(error)
     } finally {
       busy.value = false
     }
+    await openFolder()
   }
   /**
    * 현재 지도를 불러오거나 저장한 프로젝트 위치를 탐색기로 표시하는 폴더 열기
@@ -194,5 +246,5 @@ export const useMapFiles = (beforeReplace: () => boolean = () => true) => {
       report(error)
     }
   }
-  return { busy, create, open, openFolder, showFolder, save }
+  return { busy, create, open, openFolder, restoreProject, showFolder, save }
 }

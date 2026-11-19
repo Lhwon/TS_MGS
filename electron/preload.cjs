@@ -10,6 +10,8 @@ const { contextBridge, ipcRenderer } = require('electron')
  * @returns 파일 내용과 선택적인 테마를 포함하는 비동기 열기 결과
  */
 const openMap = () => ipcRenderer.invoke('map:open')
+const restoreMapProject = () => ipcRenderer.invoke('map:restore-project')
+const selectSaveProject = () => ipcRenderer.invoke('map:select-save-project')
 /**
  * 지도 폴더에서 최신 원본 지도를 찾는 요청
  * @returns 선택한 최신 지도 파일의 비동기 읽기 결과
@@ -74,6 +76,8 @@ contextBridge.exposeInMainWorld('desktop', {
   aiAnalyzeDrawing,
   cancelAi,
   openMap,
+  restoreMapProject,
+  selectSaveProject,
   openMapFolder,
   showProjectFolder,
   saveMap,

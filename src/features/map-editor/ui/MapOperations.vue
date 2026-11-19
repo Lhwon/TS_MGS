@@ -358,7 +358,7 @@ const applyOperation = () => {
       class="pa-4"
       data-testid="map-operations"
     >
-      <div class="d-flex align-center justify-space-between">
+      <div class="popup-drag-handle d-flex align-center justify-space-between">
         <strong>지도 일괄 편집</strong>
         <v-btn @click="editor.operationsOpen = false">닫기</v-btn>
       </div>

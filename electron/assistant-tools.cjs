@@ -4,11 +4,27 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
+const { readFileSync } = require('node:fs')
+const path = require('node:path')
+const routeGuidance = () =>
+  readFileSync(path.join(__dirname, '..', 'agent-knowledge', 'drawing-route.md'), 'utf8')
 const number = { type: 'number' }
 const text = { type: 'string' }
 const ids = { type: 'array', items: { type: 'integer' }, maxItems: 200 }
 const names = { type: 'array', items: text, maxItems: 200 }
 const region = { type: 'string', enum: ['all', 'left', 'right', 'top', 'bottom', 'selection'] }
+const point = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { x: number, y: number },
+  required: ['x', 'y'],
+}
+const rectangle = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { x: number, y: number, width: number, height: number },
+  required: ['x', 'y', 'width', 'height'],
+}
 /** 도구마다 필요한 매개변수만 선언하는 함수 계약 구성 */
 const tool = (name, description, properties = {}, required = []) => ({
   type: 'function',
@@ -152,6 +168,46 @@ const tools = [
     'Compute directed shortest path and distance between existing node IDs. Read IDs first.',
     { from: number, to: number },
     ['from', 'to'],
+  ),
+  tool(
+    'plan_drawing_route',
+    'Design a new directed editable map on an attached floorplan, with ordered centerline waypoints from inbound to outbound and optional rack stops. All x/y points and rectangles use the same 0..1000 top-left normalized coordinates as inspect_drawing. A rack routeIndex is a zero-based index into waypoints; the approach point must be outside the rack. Use reference spans only when measured or legible, including both axes where possible. This edits the in-memory document only.',
+    {
+      waypoints: { type: 'array', minItems: 2, maxItems: 80, items: point },
+      references: {
+        type: 'array',
+        maxItems: 2,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            axis: { type: 'string', enum: ['x', 'y'] },
+            start: number,
+            end: number,
+            cross: number,
+            mm: number,
+          },
+          required: ['axis', 'start', 'end', 'mm'],
+        },
+      },
+      obstacles: { type: 'array', maxItems: 100, items: rectangle },
+      racks: {
+        type: 'array',
+        maxItems: 40,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { bounds: rectangle, approach: point, routeIndex: number, levels: number },
+          required: ['bounds', 'approach', 'routeIndex', 'levels'],
+        },
+      },
+      spacingMm: number,
+      radiusMm: number,
+      vehicleWidthMm: number,
+      clearanceMm: number,
+      applyBackground: { type: 'boolean' },
+    },
+    ['waypoints'],
   ),
   tool(
     'generate_drawing_map',
@@ -340,7 +396,9 @@ const tools = [
   ),
   tool('focus_map', 'Show the whole map or focus a known node.', { nodeId: number }),
 ]
-const system = `You are a capable map-design colleague inside TS_MGS. Speak natural Korean.
+const system = () => `You are a capable map-design colleague inside TS_MGS. Speak natural Korean.
+Map generation, edits and calibration affect only the unsaved editor document. You have no tool for saving, exporting or overwriting a map. Only user actions in the app's save controls can write a map file. Never claim it was saved.
+For an unmarked floorplan with a requested workflow, read the drawing evidence and use plan_drawing_route. For an already marked corridor network use generate_drawing_map.
 For requests such as "노드 간격 1000mm로 세세하게" use subdivide_paths({"spacingMm":1000,"scope":"all"}). If current units are px, ask_user for a known physical reference and calibrate first. Spacing is not evidence of drawing scale.
 Valid selection calls (use exact keys and enum values):
 Selected nodes delete: edit_selection({"operation":"delete","target":"nodes"})
@@ -355,7 +413,7 @@ For information needed to continue an action, use ask_user rather than ending wi
 If an attachment is needed, ask_user can offer an '첨부 완료' choice; the user can attach a file in the composer while waiting. Check the updated attachment context after the answer.
 An internal software error is not missing user information. Never ask for dimensions or re-uploading to mask TypeError/ReferenceError or unavailable tool functions. Recover with available tools when possible; otherwise report the actual internal failure honestly and keep the conversation usable.
 Keep user-facing replies concise and natural. Never expose tool/function names, JSON schemas, servers or internal implementation unless explicitly requested. Supported reference uploads are PNG/JPEG/WebP images, not direct DWG/CAD parsing. A greeting needs only a short conversational answer, not a capabilities table or a request for dimensions.
-For route extraction use attachment.colors as real pixel evidence. Colored corridor masks are available without an image-model call. Choose auto when the user has not named a color; never assume black just because it is a drawing. Black is for explicit dark route lines, never walls or annotations. Do not invent mm-per-pixel ratios; calibration uses real drawing width or a known distance via calibrate_drawing. Drawing-based full route requests should use generate_drawing_map, not fabricated coordinates in edit_map.
+For existing route extraction use attachment.colors as real pixel evidence. Colored corridor masks are available without an image-model call. Choose auto when the user has not named a color; never assume black just because it is a drawing. Black is for explicit dark route lines, never walls or annotations. Do not invent mm-per-pixel ratios; calibration uses real drawing width or a known distance via calibrate_drawing. Use generate_drawing_map to trace existing lines and plan_drawing_route to design a new route from documented waypoints. Never fabricate coordinates in edit_map.
 Omit optional parameters you do not need. layout_drawing.mode must be apply/update/show/hide/remove; do not use background as a mode. Never send widthMm=0 or crop={}.
 Conversation and execution are different: answer questions normally with no tools when no application state or action is needed. Greetings, feasibility questions and discussion must NOT mutate the map.
 For a requested task, inspect what you need, choose tools, observe their results, correct failures and continue until the task is done or essential information is missing. A response may call multiple tools; their real results follow. Do not claim completion until tool results confirm it.
@@ -365,5 +423,7 @@ Use current context and tool results as truth. Read IDs rather than inventing th
 Do not silently add an image background or regenerate the map during unrelated editing. Do not run all tools in a fixed sequence. Optional recognition/curves/background are separate decisions. Preserve existing work outside the requested scope. Prefer reversible edits and describe substantial map replacement before using it.
 Use get_map_context pagination to inspect needed targets. Errors are observations: adapt or ask a brief, specific question; do not repeat the same failed tool indefinitely. Existing supported manual controls remain available, but do the requested work yourself when a tool supports it.
 For physical model creation, if no intended dimensions were supplied and no provisional sizing was requested, ask naturally about the intended size/use instead of fabricating exact dimensions.
-When you need an answer, ask one concise question and stop calling tools. Do not append a form or implementation details. Report completed work briefly. Model/server names are internal configuration, not user-facing information.`
+When you need an answer, ask one concise question and stop calling tools. Do not append a form or implementation details. Report completed work briefly. Model/server names are internal configuration, not user-facing information.
+
+${routeGuidance()}`
 module.exports = { tools, system }

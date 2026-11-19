@@ -55,16 +55,48 @@ const createWoodPng = () => {
   ])
 }
 
-/** 나무 재질에만 내장 이미지를 연결하는 휴대형 바이너리 모델 구성 */
-export const embedWoodTexture = (buffer) => {
+/** 압연 흔적과 미세한 색상 차이를 가진 아연 도금 강판 이미지 생성 */
+const createMetalPng = () => {
+  const size = 128
+  const stride = size * 4 + 1
+  const pixels = Buffer.alloc(size * stride)
+  let seed = 32691
+  for (let y = 0; y < size; y++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    const grain = (seed >>> 28) - 8
+    for (let x = 0; x < size; x++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      const shade =
+        226 + grain + (seed >>> 29) - 4 + Math.round(5 * Math.sin((x + y) * (Math.PI / 32)))
+      const pixel = y * stride + x * 4 + 1
+      pixels[pixel] = shade
+      pixels[pixel + 1] = shade
+      pixels[pixel + 2] = shade + 2
+      pixels[pixel + 3] = 255
+    }
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(size, 0)
+  header.writeUInt32BE(size, 4)
+  header[8] = 8
+  header[9] = 6
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(pixels)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/** 지정 재질에 내장 이미지를 연결하는 휴대형 바이너리 모델 구성 */
+const embedTexture = (buffer, matches, createPng) => {
   const jsonLength = buffer.readUInt32LE(12)
   const document = JSON.parse(buffer.subarray(20, 20 + jsonLength).toString())
-  const materials =
-    document.materials?.filter((material) => material.name?.startsWith('wood')) ?? []
+  const materials = document.materials?.filter((material) => matches(material.name ?? '')) ?? []
   if (!materials.length) return buffer
   const binaryStart = 20 + jsonLength + 8
   const binary = buffer.subarray(binaryStart, binaryStart + document.buffers[0].byteLength)
-  const png = createWoodPng()
+  const png = createPng()
   const padding = Buffer.alloc((4 - (binary.length % 4)) % 4)
   const view = document.bufferViews.length
   document.bufferViews.push({
@@ -101,3 +133,11 @@ export const embedWoodTexture = (buffer) => {
   packedBinary.copy(result, offset + 8)
   return result
 }
+
+/** 나뭇결과 도금 강판을 해당 재질에만 적용하는 GLB 표면 구성 */
+export const embedSurfaceTextures = (buffer) =>
+  embedTexture(
+    embedTexture(buffer, (name) => name.startsWith('wood'), createWoodPng),
+    (name) => name === 'rackDeck',
+    createMetalPng,
+  )

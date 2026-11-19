@@ -19,7 +19,10 @@ import {
   type MapShape,
 } from '@/entities/map/index.ts'
 
-const props = defineProps<{ initialCategory: 'ports' | 'edges' | 'shapes' | 'portGroups' }>()
+const props = defineProps<{
+  initialCategory: 'ports' | 'edges' | 'shapes' | 'portGroups'
+  target?: { id?: string; nodeId?: number; add?: boolean }
+}>()
 const editor = useEditor()
 const open = defineModel<boolean>({ required: true })
 const category = ref<'ports' | 'edges' | 'shapes' | 'portGroups'>('ports')
@@ -72,6 +75,12 @@ const fields = computed(() => {
       offsetY: '노드 기준 Y 간격',
       strokeColor: '테두리 색상 BGR',
       fillColor: '채움 색상 BGR',
+      fontColor: '글자 색상 BGR',
+      fontSize: '글자 크기',
+      nameDistance: '이름 간격',
+      namePosition: '이름 위치',
+      nameDirection: '이름 방향',
+      nameAlign: '이름 정렬',
       portIds: '소속 포트 ID 쉼표 구분',
     }
   if (category.value === 'edges')
@@ -121,14 +130,22 @@ const visibleFields = computed(() =>
 )
 const items = computed(() => {
   const values = editor.document[category.value] ?? []
-  return values.map((value) => ({
-    id: String(value.id),
-    label:
-      'from' in value
-        ? `${value.from} → ${value.to}`
-        : `${value.id} ${'name' in value ? value.name : 'description' in value ? value.description : '포트 그룹'}`,
-    value,
-  }))
+  return values
+    .filter(
+      (value) =>
+        !('from' in value) ||
+        props.target?.nodeId === undefined ||
+        value.from === props.target.nodeId ||
+        value.to === props.target.nodeId,
+    )
+    .map((value) => ({
+      id: String(value.id),
+      label:
+        'from' in value
+          ? `${value.from} → ${value.to}`
+          : `${value.id} ${'name' in value ? value.name : 'description' in value ? value.description : '포트 그룹'}`,
+      value,
+    }))
 })
 const filtered = computed(() =>
   items.value.filter((item) => item.label.toLowerCase().includes(query.value.toLowerCase())),
@@ -162,14 +179,20 @@ const reset = () => {
   error.value = ''
 }
 watch([current, fields], reset)
-watch(category, () => {
-  selected.value = ''
-  query.value = ''
-})
-watch(open, (value) => {
-  if (value) {
-    category.value = props.initialCategory
+watch(
+  category,
+  () => {
     selected.value = ''
+    query.value = ''
+  },
+  { flush: 'sync' },
+)
+watch([open, () => props.initialCategory, () => props.target], ([isOpen]) => {
+  if (isOpen) {
+    category.value = props.initialCategory
+    selected.value = props.target?.id ?? ''
+    query.value = ''
+    fieldQuery.value = ''
     error.value = ''
   }
 })
@@ -256,7 +279,10 @@ const apply = () => {
  */
 const add = () => {
   try {
-    const node = editor.selectedNode ?? editor.document.nodes[0]
+    const node =
+      props.target?.add && category.value === 'portGroups'
+        ? editor.document.nodes.find((item) => item.id === props.target?.nodeId)
+        : (editor.selectedNode ?? editor.document.nodes[0])
     if (!node) throw new Error('먼저 기준 노드를 추가하세요.')
     if (category.value === 'ports') {
       let suffix = editor.document.ports.length + 1
@@ -404,9 +430,16 @@ const remove = () => {
             <v-btn
               v-if="category !== 'edges'"
               data-testid="object-add"
+              :disabled="editor.readOnly"
               @click="add"
             >
-              {{ category === 'ports' ? '포트 추가' : '도형 추가' }}
+              {{
+                category === 'ports'
+                  ? '포트 추가'
+                  : category === 'portGroups'
+                    ? '포트 그룹 추가'
+                    : '도형 추가'
+              }}
             </v-btn>
             <v-btn
               :disabled="!current"

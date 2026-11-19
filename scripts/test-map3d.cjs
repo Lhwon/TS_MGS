@@ -21,7 +21,22 @@ const contract = load('packages/map3d/index.ts')
 const library = contract.parseEquipmentLibrary(
   fs.readFileSync('src/entities/facility/ceram-mp5.equipment.json', 'utf8'),
 )
-assert.equal(library.assets.length, 19)
+assert.equal(library.assets.length, 23)
+assert.ok(library.assets.every((asset) => !/\b(?:ceram|mp[45])\b/i.test(asset.name)))
+for (const tier of [1, 2, 3, 4]) {
+  const rack = library.assets.find((asset) => asset.name === `보관 랙 · ${tier}단`)
+  const buffer = Buffer.from(rack.glb.data, 'base64')
+  const { nodes, materials, images } = JSON.parse(
+    buffer.toString('utf8', 20, 20 + buffer.readUInt32LE(12)),
+  )
+  assert.equal(nodes.filter((node) => node.name?.startsWith('storage-deck-')).length, tier)
+  assert.equal(nodes.filter((node) => node.name === 'rack-diagonal-brace').length, tier * 2)
+  assert.equal(images[0].mimeType, 'image/png')
+  assert.ok(
+    materials.find((material) => material.name === 'rackDeck').pbrMetallicRoughness
+      .baseColorTexture,
+  )
+}
 assert.deepEqual(library.assets[0].glb.size, { x: 2500, y: 2500, z: 3850 })
 const document = contract.emptyFacilityDocument()
 document.mapRef = {
@@ -77,11 +92,13 @@ const deckHeights = json.nodes
   .filter((node) => node.name?.startsWith('storage-deck-'))
   .map((node) => Math.round((node.translation?.[1] ?? node.matrix[13]) * 1000))
 assert.deepEqual(deckHeights, [1970, 3840])
-assert.equal(json.nodes.filter((node) => node.mesh !== undefined).length, 14)
+assert.equal(json.nodes.filter((node) => node.name === 'rack-anchor-bolt').length, 8)
 assert.equal(json.nodes.filter((node) => node.name?.startsWith('rack-upright-')).length, 4)
-assert.equal(json.nodes.filter((node) => node.name?.startsWith('rack-beam-')).length, 4)
+assert.equal(json.nodes.filter((node) => /^rack-beam-\d/.test(node.name ?? '')).length, 4)
 assert.equal(json.nodes.filter((node) => node.name?.startsWith('rack-foot-')).length, 4)
-for (const node of json.nodes.filter((node) => node.mesh !== undefined)) {
+for (const node of json.nodes.filter((node) =>
+  /^(storage-deck-|rack-upright-|rack-beam-\d|rack-foot-)/.test(node.name ?? ''),
+)) {
   assert.ok(
     !node.rotation ||
       node.rotation.every((value, index) => Math.abs(value - (index === 3 ? 1 : 0)) < 1e-7),

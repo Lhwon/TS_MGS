@@ -9,18 +9,22 @@ export interface MapPoint {
   x: number
   y: number
 }
-// 원본 마우스 거리 판정에 사용하는 화면 배율과 독립적인 지도 거리 기준
-// 화면 확대와 레이어 표시 여부에 영향을 받지 않는 선택 거리
 /**
  * 마우스 위치에서 선택 가능한 원본 지도 노드를 탐색하는 근접 판정
- * 확대 배율과 무관한 원본 거리 기준 및 노드 종류 제한을 적용하는 선택 대상 계산
+ * 원본 지도 거리와 마우스 버튼별 대상 제한을 적용하고 축소 화면에서 최소 클릭 영역을 제공
  *
  * @param nodes 노드 식별자와 지도 좌표를 포함하는 노드 목록
  * @param point 판정에 사용하는 지도 평면 좌표
  * @param button 선택 거리와 노드 종류 제한을 결정하는 마우스 버튼
+ * @param unitsPerPixel 화면 한 픽셀에 해당하는 지도 거리
  * @returns 선택 가능 노드와 실제 지도 거리
  */
-export const pickMgsNode = (nodes: MapNode[], point: MapPoint, button: 'left' | 'right') => {
+export const pickMgsNode = (
+  nodes: MapNode[],
+  point: MapPoint,
+  button: 'left' | 'right',
+  unitsPerPixel = 0,
+) => {
   let nearest: MapNode | undefined
   let distance = Infinity
   for (const node of nodes) {
@@ -31,7 +35,8 @@ export const pickMgsNode = (nodes: MapNode[], point: MapPoint, button: 'left' | 
       distance = value
     }
   }
-  return { node: distance < (button === 'left' ? 700 : 500) ? nearest : undefined, distance }
+  const limit = Math.max(button === 'left' ? 700 : 500, unitsPerPixel * 8)
+  return { node: distance < limit ? nearest : undefined, distance }
 }
 // 정방향 드래그는 선택 추가이며 역방향 드래그는 선택 해제인 원본 규칙
 /**

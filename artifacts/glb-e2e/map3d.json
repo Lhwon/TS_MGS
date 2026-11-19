@@ -9,11 +9,11 @@
   },
   "libraryRef": {
     "fileName": "equipment.json",
-    "key": "equipment1-20-ee6145ca"
+    "key": "equipment1-20-4572c2e5"
   },
   "instances": [
     {
-      "id": "1d5d7f4b-fc58-489a-a3b5-1eea6bed1a0c",
+      "id": "5f831e88-5067-4533-9a96-7b2bc3dbd745",
       "assetId": "ceram-mp5-storage-rack",
       "name": "MP5 보관랙 2500×2500×3850 1",
       "position": {
@@ -35,8 +35,8 @@
       }
     },
     {
-      "id": "04c714ad-a099-4328-bf5b-2828765fc5b3",
-      "assetId": "1122828d-9692-48ba-9252-f0cb1998258e",
+      "id": "ac6871de-e52d-4fe8-af33-0ab04625aa22",
+      "assetId": "f29a3a89-8655-4c8d-9261-fa59e04dee75",
       "name": "robot 1",
       "position": {
         "x": 18000,

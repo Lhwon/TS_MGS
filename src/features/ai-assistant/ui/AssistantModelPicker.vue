@@ -41,7 +41,7 @@ const select = (name: string) => {
       class="pa-4"
       data-testid="ai-model-dialog"
     >
-      <div class="d-flex align-center justify-space-between mb-2">
+      <div class="popup-drag-handle d-flex align-center justify-space-between mb-2">
         <strong>AI 모델 선택</strong>
         <v-btn
           :icon="[mdiClose]"

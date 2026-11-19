@@ -11,6 +11,8 @@ export interface DrawingVision {
   routeColor: string
   summary: string
   uncertainty: string
+  references?: { axis: 'x' | 'y'; start: number; end: number; cross: number; mm: number }[]
+  doors?: { label: string; x: number; y: number }[]
   objects?: {
     kind: 'rack' | 'shelf' | 'conveyor' | 'equipment' | 'port' | 'obstacle' | 'text'
     label: string
@@ -111,6 +113,12 @@ export interface MapPortGroup {
   height: number
   strokeColor: number
   fillColor: number
+  fontColor?: number
+  fontSize?: number
+  nameDistance?: number
+  namePosition?: number
+  nameDirection?: number
+  nameAlign?: number
   portIds: string[]
 }
 export interface MapShape {
@@ -661,7 +669,19 @@ export const parseDocument = (content: string): MapDocument => {
       const group = record(item, '포트 그룹')
       const checked: MapPortGroup = {
         id: text(group.id, '그룹 ID'),
-        ...optionalNumbers(group, ['nodeId', 'nodeX', 'nodeY', 'offsetX', 'offsetY']),
+        ...optionalNumbers(group, [
+          'nodeId',
+          'nodeX',
+          'nodeY',
+          'offsetX',
+          'offsetY',
+          'fontColor',
+          'fontSize',
+          'nameDistance',
+          'namePosition',
+          'nameDirection',
+          'nameAlign',
+        ]),
         x: numeric(group.x, '그룹 X'),
         y: numeric(group.y, '그룹 Y'),
         width: numeric(group.width, '그룹 폭'),

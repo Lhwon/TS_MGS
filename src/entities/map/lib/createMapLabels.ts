@@ -74,6 +74,7 @@ export const createMapLabels = (
   map: MapDocument,
   layers: Layers,
   theme: ReturnType<typeof mgsTheme>,
+  mgs2d = false,
 ) => {
   const labels: MapLabel[] = []
   if (!layers.labels) return labels
@@ -91,8 +92,8 @@ export const createMapLabels = (
             ? [`View : ${node.safetyViewDistance.toLocaleString('en-US')}`]
             : []),
         ].join('\n'),
-        x: node.x,
-        y: node.y - 75,
+        x: node.x + (mgs2d ? 250 : 0),
+        y: node.y - (mgs2d ? 100 : 75),
         size: layers.fontStyle ? theme.nodeFontSize : node.virtual || node.curve ? 70 : 100,
         color:
           node.safetyDistance || node.safetyViewDistance

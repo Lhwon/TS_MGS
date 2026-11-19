@@ -205,7 +205,7 @@ const choose = (index: number) => {
       class="pa-4"
       data-testid="area-editor"
     >
-      <div class="d-flex justify-space-between align-center">
+      <div class="popup-drag-handle d-flex justify-space-between align-center">
         <strong>Bay / Zone 설정</strong>
         <v-btn @click="editor.areaEditorOpen = false">닫기</v-btn>
       </div>

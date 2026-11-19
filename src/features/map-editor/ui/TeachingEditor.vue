@@ -87,7 +87,7 @@ const selectRow = (index: number, checked: boolean) => {
       class="pa-4"
       data-testid="teaching-editor"
     >
-      <div class="d-flex justify-space-between align-center">
+      <div class="popup-drag-handle d-flex justify-space-between align-center">
         <strong>Apply Teaching</strong>
         <v-btn @click="editor.teachingOpen = false">닫기</v-btn>
       </div>

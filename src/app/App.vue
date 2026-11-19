@@ -5,14 +5,21 @@
  * 작성일자: 2026-11-16
 -->
 <script setup lang="ts">
-import { watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { applySystemPalette } from '@/shared/theme/index.ts'
+import { enablePopupDragging } from '@/shared/ui/index.ts'
 import { useTheme } from 'vuetify'
 import { useEditor } from '@/features/map-editor/index.ts'
 import { StudioPage } from '@/pages/studio/index.ts'
 
 const editor = useEditor()
 const theme = useTheme()
+let stopPopupDragging: (() => void) | undefined
+onMounted(() => {
+  stopPopupDragging = enablePopupDragging()
+})
+onUnmounted(() => stopPopupDragging?.())
+
 watch(
   () => editor.colorMode,
   (mode) => {

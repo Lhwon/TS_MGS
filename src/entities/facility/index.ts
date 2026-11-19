@@ -6,9 +6,18 @@
  */
 export * from '@bem/map3d'
 export { buildWipRacks, wipRackKey } from './wipRacks'
+export {
+  FACILITY_CYLINDER_SEGMENTS,
+  facilityModelSize,
+  facilityPartMatrix,
+} from './facilityDimensions'
 
 import { parseEquipmentLibrary } from '@bem/map3d'
 
 /** 도면 기반 개략 설비 라이브러리의 지연 로딩과 계약 검증 */
-export const loadCeramCatalog = async () =>
+export const loadDefaultCatalog = async () =>
   parseEquipmentLibrary(JSON.stringify((await import('./ceram-mp5.equipment.json')).default))
+
+/** 이전 기본 모델과 배치 이름에서 제품명 접두어 제거 */
+export const defaultModelLabel = (name: string) =>
+  name.replace(/(?<![a-z0-9])(?:ceram|mp[45])(?![a-z0-9])[\s_-]*/gi, '').trim()

@@ -1,9 +1,12 @@
 import { decodeEmbeddedGlb, embeddedGlbPartCount } from './glbData'
 import { normalizeCargoDocument } from './cargo'
 import { parseFloorAreas, type FloorArea } from './floorAreas'
+import { parseWallDoors, type WallDoor } from './wallDoors'
+export * from './wallDoors'
 export * from './floorAreas'
 export { normalizeCargoDocument, standardCargoAsset } from './cargo'
 export { decodeEmbeddedGlb, MAX_GLB_BYTES } from './glbData'
+export * from './surfaceMaterials'
 /**
  * 파일명: index.ts
  * 설명: 편집기와 사용자 화면이 공유하는 설비 모델 계약과 파일 검증 및 형상 생성
@@ -11,6 +14,8 @@ export { decodeEmbeddedGlb, MAX_GLB_BYTES } from './glbData'
  * 작성일자: 2026-10-20
  */
 // 편집기와 사용자 화면이 공유하는 평면 좌표 및 높이와 밀리미터 단위 계약
+import { surfaceMaterials, type SurfaceMaterial } from './surfaceMaterials'
+
 export interface Point3 {
   x: number
   y: number
@@ -26,6 +31,7 @@ export interface FacilityPart {
   tiltX?: number
   tiltY?: number
   color: string
+  surface?: SurfaceMaterial
   opacity?: number
   wall?: true
 }
@@ -34,6 +40,7 @@ export interface FacilityAsset {
   name: string
   kind: 'rack' | 'shelf' | 'equipment' | 'conveyor'
   parts: FacilityPart[]
+  catalogCategory?: 'equipment' | 'interior'
   glb?: { data: string; size: Point3; sourceName: string }
   design?: {
     width: number
@@ -53,6 +60,7 @@ export interface FacilityInstance {
   rotation: number
   scale?: Point3
   wallOpacity?: number
+  wallDoors?: WallDoor[]
   carrierRotation?: number
   portId?: string
   // 실제 포트 연결을 위한 상대 위치이며 구버전 포트 식별자만 있는 경우에는 메타데이터로 유지하는 정보
@@ -124,6 +132,36 @@ export const mapGeometryKey = (
 export const parseFacilityDocument = (content: string, upgradeCargo = true): FacilityDocument => {
   if (new TextEncoder().encode(content).length > MAX_SCENE_BYTES)
     throw new Error('3D 지도는 32MB 이하여야 합니다.')
+  return validateFacilityDocument(JSON.parse(content.replace(/^\uFEFF/, '')), upgradeCargo)
+}
+
+const glbCosts = new WeakMap<FacilityAsset, number>()
+const libraryBytes = new WeakMap<FacilityAsset[], number>()
+
+/** 편집 중에는 이미 검증한 라이브러리를 재사용하고 새 배치 데이터만 검증 */
+export const validateFacilityPlacements = (source: FacilityDocument, instances: FacilityInstance[]) => {
+  let bytes = libraryBytes.get(source.assets)
+  if (bytes === undefined) {
+    const library = source.assets.map((asset) =>
+      asset.glb ? { ...asset, glb: { ...asset.glb, data: '' } } : asset,
+    )
+    bytes = new TextEncoder().encode(JSON.stringify(library)).length +
+      source.assets.reduce((length, asset) => length + (asset.glb?.data.length ?? 0), 0)
+    libraryBytes.set(source.assets, bytes)
+  }
+  const next = { ...source, instances }
+  const withoutLibrary = new TextEncoder().encode(JSON.stringify({ ...next, assets: [] })).length
+  if (bytes + withoutLibrary - 2 > MAX_SCENE_BYTES)
+    throw new Error('3D 지도는 32MB 이하여야 합니다.')
+  return validateFacilityDocument(next, false, source)
+}
+
+/** 파일 전체와 검증된 설계의 배치 수정에 공통 계약을 적용 */
+const validateFacilityDocument = (
+  input: unknown,
+  upgradeCargo: boolean,
+  validated?: FacilityDocument,
+): FacilityDocument => {
   /**
    * 배열과 빈 값을 제외한 데이터 객체만 허용하는 입력 구조 검증
    *
@@ -228,7 +266,7 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
   const unique = (ids: string[]) => {
     if (new Set(ids).size !== ids.length) throw new Error('3D ID가 중복되었습니다.')
   }
-  const data = record(JSON.parse(content.replace(/^\uFEFF/, '')))
+  const data = record(input)
   if (
     data.format !== 'bem-map3d' ||
     data.version !== 1 ||
@@ -239,10 +277,9 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
   const reference = record(data.mapRef)
   const result = emptyFacilityDocument()
   result.mapRef = { name: str(reference.name), geometryKey: str(reference.geometryKey) }
-  const floors = parseFloorAreas(data.floors)
+  const floors = validated ? validated.floors : parseFloorAreas(data.floors)
   if (floors?.length) result.floors = floors
-  const assetCosts = new Map<string, number>()
-  result.assets = list(data.assets, 500).map((value) => {
+  result.assets = validated?.assets ?? list(data.assets, 500).map((value) => {
     const a = record(value)
     if (!['rack', 'shelf', 'equipment', 'conveyor'].includes(a.kind))
       throw new Error('지원하지 않는 모델 종류입니다.')
@@ -251,6 +288,8 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
       if (!['box', 'cylinder'].includes(p.shape))
         throw new Error('지원하지 않는 설비 부품 도형입니다.')
       if (p.wall !== undefined && p.wall !== true) throw new Error('벽체 부품 표시가 잘못되었습니다.')
+      if (p.surface !== undefined && (typeof p.surface !== 'string' || !Object.hasOwn(surfaceMaterials, p.surface)))
+        throw new Error('지원하지 않는 부품 재질입니다.')
       return {
         id: identifier(p.id),
         name: str(p.name),
@@ -259,6 +298,7 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
         size: point(p.size, true),
         rotation: num(p.rotation),
         color: color(p.color),
+        ...(p.surface === undefined ? {} : { surface: p.surface }),
         ...(p.tiltX === undefined ? {} : { tiltX: num(p.tiltX) }),
         ...(p.tiltY === undefined ? {} : { tiltY: num(p.tiltY) }),
         ...(p.opacity === undefined ? {} : { opacity: num(p.opacity, 0, 1) }),
@@ -270,12 +310,14 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
       throw new Error('부품 모델과 GLB 모델을 함께 지정할 수 없습니다.')
     unique(parts.map((p) => p.id))
     const asset: FacilityAsset = { id: identifier(a.id), name: str(a.name), kind: a.kind, parts }
+    if (a.catalogCategory === 'equipment' || a.catalogCategory === 'interior')
+      asset.catalogCategory = a.catalogCategory
     if (a.glb !== undefined) {
       const glb = record(a.glb)
       if (typeof glb.data !== 'string') throw new Error('GLB 데이터가 없습니다.')
       const cost = embeddedGlbPartCount(decodeEmbeddedGlb(glb.data))
       if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
-      assetCosts.set(asset.id, cost)
+      glbCosts.set(asset, cost)
       asset.glb = { data: glb.data, size: point(glb.size, true), sourceName: str(glb.sourceName) }
     }
     if (a.design !== undefined) {
@@ -312,6 +354,8 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
       }
     }
     if (!assets.has(instance.assetId)) throw new Error('배치된 시설의 모델이 없습니다.')
+    const doors = parseWallDoors(i.wallDoors, instance, assets.get(instance.assetId)!)
+    if (doors?.length) instance.wallDoors = doors
     if (i.wallOpacity !== undefined) instance.wallOpacity = num(i.wallOpacity, 0, 1)
     if (i.portId !== undefined) instance.portId = str(i.portId)
     if (i.carrierRotation !== undefined) instance.carrierRotation = num(i.carrierRotation)
@@ -325,7 +369,17 @@ export const parseFacilityDocument = (content: string, upgradeCargo = true): Fac
   unique(result.instances.map((i) => i.id))
   if (
     result.instances.reduce(
-      (sum, i) => sum + (assetCosts.get(i.assetId) ?? assets.get(i.assetId)!.parts.length),
+      (sum, instance) => {
+        const asset = assets.get(instance.assetId)!
+        if (!asset.glb) return sum + (instance.wallDoors ? instance.wallDoors.length * 6 + 1 : asset.parts.length)
+        let cost = glbCosts.get(asset)
+        if (cost === undefined) {
+          cost = embeddedGlbPartCount(decodeEmbeddedGlb(asset.glb.data))
+          if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
+          glbCosts.set(asset, cost)
+        }
+        return sum + cost
+      },
       0,
     ) > MAX_PART_INSTANCES
   )

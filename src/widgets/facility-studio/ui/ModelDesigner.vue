@@ -25,9 +25,12 @@ import {
   interiorModels,
   emptyFacilityDocument,
   parseFacilityDocument,
+  surfaceForPart,
+  surfaceMaterials,
   type FacilityAsset,
   type FacilityPart,
   type InteriorModel,
+  type SurfaceMaterial,
 } from '@/entities/facility/index.ts'
 import { createModelPreview } from '@/widgets/facility-studio/lib/ModelPreview.ts'
 
@@ -38,11 +41,16 @@ const dialog = ref<HTMLDialogElement>()
 const host = ref<HTMLElement>()
 const draft = reactive({
   name: props.asset?.name ?? '새 모델',
+  catalogCategory: props.asset?.catalogCategory,
   parts: JSON.parse(JSON.stringify(props.asset?.parts ?? [])) as FacilityPart[],
 })
 const selectedId = ref<string | null>(draft.parts[0]?.id ?? null)
 const batchIds = ref<string[]>([])
 const selected = computed(() => draft.parts.find((part) => part.id === selectedId.value))
+const surfaceOptions = [
+  { title: '자동', value: '' },
+  ...Object.entries(surfaceMaterials).map(([value, { label }]) => ({ title: label, value })),
+]
 const initial = JSON.stringify(draft)
 const dirty = computed(() => JSON.stringify(draft) !== initial)
 const error = ref('')
@@ -93,6 +101,7 @@ const change = (action: () => void, key: string = crypto.randomUUID()) => {
 const restore = (value: string) => {
   const state = JSON.parse(value)
   draft.name = state.name
+  draft.catalogCategory = state.catalogCategory
   draft.parts = state.parts
   selectedId.value = state.selectedId
   batchIds.value = state.batchIds ?? []
@@ -274,13 +283,14 @@ const starter = (kind: 'rack' | 'shelf' | 'conveyor' | InteriorModel) => {
     color: '#416e9d',
   }
   const asset =
-    kind === 'wall' || kind === 'doorway' || kind === 'glass'
-      ? createInteriorModel(kind)
-      : kind === 'conveyor'
-        ? designConveyor(crypto.randomUUID(), '컨베이어', design)
-        : designRack(crypto.randomUUID(), kind === 'rack' ? '랙' : '선반', kind, design)
+    kind === 'conveyor'
+      ? designConveyor(crypto.randomUUID(), '컨베이어', design)
+      : kind === 'rack' || kind === 'shelf'
+        ? designRack(crypto.randomUUID(), kind === 'rack' ? '랙' : '선반', kind, design)
+        : createInteriorModel(kind)
   change(() => {
     draft.name = asset.name
+    draft.catalogCategory = asset.catalogCategory
     draft.parts = asset.parts
     selectedId.value = asset.parts[0]?.id ?? null
   })
@@ -328,6 +338,16 @@ const textValue = (field: 'model' | 'part' | 'color', value: unknown) => {
   }, `${selectedId.value}:${field}`)
 }
 
+/** 선택 부품의 재질을 변경하거나 기본 재질로 복원 */
+const setPartSurface = (value: string) => {
+  const part = selected.value
+  if (!part || (value && !Object.hasOwn(surfaceMaterials, value))) return
+  change(() => {
+    if (value) part.surface = value as SurfaceMaterial
+    else delete part.surface
+  })
+}
+
 /** 선택 부품의 재질 투명도를 실시간으로 미리 보고 연속 조작을 하나의 이력으로 기록 */
 const setPartTransparency = (event: Event) => {
   const part = selected.value
@@ -369,6 +389,7 @@ const apply = (copy = false) => {
         id: !copy && props.asset ? props.asset.id : crypto.randomUUID(),
         name: draft.name.trim(),
         kind: props.asset?.kind ?? 'equipment',
+        catalogCategory: draft.catalogCategory,
         parts: JSON.parse(JSON.stringify(draft.parts)),
       },
     ]
@@ -791,6 +812,16 @@ onBeforeUnmount(() => {
               data-testid="part-color"
               @input="textValue('color', ($event.target as HTMLInputElement).value)"
           /></label>
+          <v-select
+            label="부품 재질"
+            :model-value="selected.surface ?? ''"
+            :items="surfaceOptions"
+            :menu-props="{ attach: dialog }"
+            :hint="selected.surface ? undefined : surfaceMaterials[surfaceForPart(selected)].label"
+            persistent-hint
+            data-testid="part-surface"
+            @update:model-value="setPartSurface"
+          />
           <label class="d-flex flex-column text-caption ga-1">
             부품 투명도 {{ Math.round(100 * (1 - (selected.opacity ?? 1))) }}%
             <input

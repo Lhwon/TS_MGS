@@ -54,11 +54,19 @@ const createTexture = (material: FloorMaterial) => {
   return texture
 }
 
+// 바닥 재질의 반사 특성과 표면 요철 높이
+const floorFinish = {
+  concrete: { roughness: 0.87, reliefMm: 0.65 },
+  epoxy: { roughness: 0.34, reliefMm: 0 },
+  tile: { roughness: 0.49, reliefMm: 0.45 },
+  wood: { roughness: 0.62, reliefMm: 0.25 },
+} as const
+
 /** 바닥 재질을 지도 객체보다 먼저 그리고 목록의 위쪽 영역을 마지막에 합성 */
 export const createFloorSurfaces = (unit: number) => {
   const group = new THREE.Group()
   const textures = new Map<FloorMaterial, THREE.Texture>()
-  let meshes: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>[] = []
+  let meshes: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshStandardMaterial>[] = []
   let current: FloorArea[] | undefined
 
   /** 기존 면의 버퍼와 재질을 해제하며 공용 반복 텍스처는 유지 */
@@ -97,13 +105,16 @@ export const createFloorSurfaces = (unit: number) => {
         texture = createTexture(area.material)
         textures.set(area.material, texture)
       }
+      const { roughness, reliefMm } = floorFinish[area.material]
       const mesh = new THREE.Mesh(
         geometry,
-        new THREE.MeshBasicMaterial({
+        new THREE.MeshStandardMaterial({
           color: area.color,
           map: texture,
+          roughness,
+          bumpMap: reliefMm ? texture : null,
+          bumpScale: reliefMm * unit,
           depthWrite: false,
-          toneMapped: false,
           polygonOffset: true,
           polygonOffsetFactor: 1,
           polygonOffsetUnits: 1,

@@ -15,6 +15,7 @@ import {
   parseEquipmentLibrary,
   parseFacilityDocument,
   resolveFacilityInstance,
+  validateFacilityPlacements,
 } from '@/entities/facility/index.ts'
 import type {
   FacilityAsset,
@@ -48,6 +49,13 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const selected = computed(() => document.value.instances.find((i) => i.id === selectedId.value))
   const asset = computed(() => document.value.assets.find((a) => a.id === selectedAssetId.value))
 
+  /** 검증한 편집 결과와 이전 문서를 같은 실행 취소 이력에 기록 */
+  const publish = (checked: FacilityDocument) => {
+    past.value = [...past.value.slice(-29), document.value]
+    future.value = []
+    document.value = checked
+  }
+
   /**
    * 변경 작업을 복제 문서에 적용한 뒤 검증을 통과한 결과만 반영하는 편집 명령
    * 이전 문서를 제한된 실행 취소 이력에 보관하고 다시 실행 이력을 초기화하는 상태 갱신
@@ -57,11 +65,12 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const commit = (change: (doc: FacilityDocument) => void) => {
     const next = structuredClone(document.value)
     change(next)
-    const checked = parseFacilityDocument(JSON.stringify(next))
-    past.value = [...past.value.slice(-29), document.value]
-    future.value = []
-    document.value = checked
+    publish(parseFacilityDocument(JSON.stringify(next)))
   }
+
+  /** 라이브러리와 도면 자료를 복사하지 않고 개별 배치 갱신 */
+  const commitPlacements = (instances: FacilityInstance[]) =>
+    publish(validateFacilityPlacements(document.value, instances))
 
   /**
    * 같은 식별자의 설비 모델을 추가하거나 교체하고 기준 맵을 연결하는 라이브러리 편집
@@ -96,17 +105,18 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     if (!asset.value) return
     const model = asset.value
     const id = crypto.randomUUID()
-    commit((doc) =>
-      doc.instances.push({
+    commitPlacements([
+      ...document.value.instances,
+      {
         id,
         assetId: model.id,
-        name: `${model.name} ${doc.instances.filter((i) => i.assetId === model.id).length + 1}`,
+        name: `${model.name} ${document.value.instances.filter((i) => i.assetId === model.id).length + 1}`,
         position: { x, y, z: 0 },
         rotation: 0,
         ...transform,
         ...(portId ? { portId, portOffset: { x: 0, y: 0, z: 0 } } : {}),
-      }),
-    )
+      },
+    ])
     selectedId.value = id
   }
 
@@ -117,10 +127,10 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param patch 식별자를 유지하면서 교체할 대상 속성
    */
   const updateInstance = (id: string, patch: Partial<FacilityInstance>) => {
-    commit((doc) => {
-      const instance = doc.instances.find((i) => i.id === id)
-      if (instance) Object.assign(instance, patch, { id })
-    })
+    if (!document.value.instances.some((instance) => instance.id === id)) return
+    commitPlacements(document.value.instances.map((instance) =>
+      instance.id === id ? { ...instance, ...patch, id } : instance,
+    ))
   }
 
   /**
@@ -133,18 +143,17 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('이동할 X와 Y 값을 확인하세요.')
     if (selectedIds.value.length < 2 || (x === 0 && y === 0)) return
     const ids = new Set(selectedIds.value)
-    commit((doc) => {
-      for (const instance of doc.instances) {
-        if (!ids.has(instance.id)) continue
+    commitPlacements(document.value.instances.map((instance) => {
+        if (!ids.has(instance.id)) return instance
         const { position } = resolveFacilityInstance(instance, ports)
-        instance.position.x = position.x + x
-        instance.position.y = position.y + y
-        if (instance.portOffset) {
-          instance.portOffset.x += x
-          instance.portOffset.y += y
+        return {
+          ...instance,
+          position: { ...instance.position, x: position.x + x, y: position.y + y },
+          ...(instance.portOffset ? {
+            portOffset: { ...instance.portOffset, x: instance.portOffset.x + x, y: instance.portOffset.y + y },
+          } : {}),
         }
-      }
-    })
+    }))
   }
 
   /**
@@ -152,9 +161,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    */
   const remove = () => {
     if (!selectedId.value) return
-    commit((doc) => {
-      doc.instances = doc.instances.filter((i) => i.id !== selectedId.value)
-    })
+    commitPlacements(document.value.instances.filter((i) => i.id !== selectedId.value))
     selectedId.value = null
   }
 
@@ -169,7 +176,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
       position: { ...source.position, x },
     }
     if (copy.portOffset) copy.portOffset.x += x - source.position.x
-    commit((doc) => doc.instances.push(copy))
+    commitPlacements([...document.value.instances, copy])
     selectedId.value = copy.id
   }
 

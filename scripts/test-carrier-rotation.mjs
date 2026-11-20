@@ -30,8 +30,8 @@ try {
   await page.getByTestId('mode-facility').click()
   await page.getByTestId('default-catalog').click()
   await page
-    .locator('.facility-library button')
-    .filter({ hasText: '나무 박스 적재물 · 단품' })
+    .getByTestId('model-catalog')
+    .getByRole('button', { name: /나무 박스 적재물 · 단품/ })
     .click()
   await page.getByTestId('place-center').click()
   const input = page.getByTestId('instance-carrier-rotation').locator('input')

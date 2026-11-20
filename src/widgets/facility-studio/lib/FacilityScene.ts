@@ -11,7 +11,7 @@ import { GlbModelCache } from '@bem/map3d/glb'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import type { FacilityDocument, FacilityInstance, FacilityPart } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FacilityDocument, FacilityInstance, FacilityPart } from '@/entities/facility/index.ts'
 import { resolveFacilityInstance } from '@/entities/facility/index.ts'
 import {
   createMapTopology,
@@ -24,6 +24,7 @@ import {
 } from '@/entities/map/index.ts'
 import type { MapDocument } from '@/entities/map/index.ts'
 import { FACILITY_CYLINDER_SEGMENTS, facilityPartMatrix } from '@/entities/facility/index.ts'
+import { instanceParts, surfaceForPart, surfaceMaterials, wallBody, wallDoorLimits } from '@/entities/facility/index.ts'
 import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
 import { createFloorSurfaces } from '@/widgets/facility-studio/lib/floorSurfaces.ts'
 import type { FloorPoint } from '@/entities/facility/index.ts'
@@ -52,7 +53,7 @@ export const createFacilityScene = (
       },
       rotation: number,
       scale: { x: number; y: number; z: number },
-    ): void
+    ): boolean
   },
 ) => {
   const viewportHost = host
@@ -147,18 +148,27 @@ export const createFacilityScene = (
   let cylinder = new THREE.CylinderGeometry(0.5, 0.5, 1, FACILITY_CYLINDER_SEGMENTS)
   let observer: ResizeObserver
   let meshes: THREE.InstancedMesh[] = []
+  const batches = new Map<string, {
+    asset: FacilityAsset
+    instances: FacilityInstance[]
+    meshes: THREE.InstancedMesh[]
+    source?: THREE.Group
+  }>()
+  const previewed = new Set<string>()
   let instanceBindings = new Map<
     string,
     {
       mesh: THREE.InstancedMesh
       index: number
-      part?: FacilityPart
-      local?: THREE.Matrix4
+      local: THREE.Matrix4
     }[]
   >()
   const glbCache = new GlbModelCache()
   let documentGeneration = 0
   let facilityDocument: FacilityDocument | undefined
+  let requestedDocument: FacilityDocument | undefined
+  const emptyPorts: MapDocument['ports'] = []
+  let drawnPorts = emptyPorts
   let selectedId: string | null = null
   let selectedIds: string[] = []
   let placing = false
@@ -170,6 +180,7 @@ export const createFacilityScene = (
   let downWasSpace = false
   let uniformScaleStart: THREE.Vector3 | undefined
   let uniformScaleRatio = 1
+  const resizeMinimum = new THREE.Vector3()
   let ray = new THREE.Raycaster()
   let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
   /**
@@ -323,7 +334,7 @@ export const createFacilityScene = (
     )
     grid.visible = layers.grid
     updateFloorPlan()
-    if (mapChanged && facilityDocument) setDocument(facilityDocument)
+    if (mapChanged && requestedDocument) setDocument(requestedDocument)
     requestRender()
   }
   /**
@@ -375,134 +386,187 @@ export const createFacilityScene = (
     }
   }
 
-  /**
-   * 모든 포트 연결을 확인한 뒤 설비 부품을 재질과 도형별 인스턴스로 구성하는 설계 문서 교체
-   * 누락 포트가 있는 경우 잘못된 배치를 숨기고 오류를 전달하는 렌더링 보호
-   *
-   * @param doc 모델과 배치 및 기준 맵 정보를 포함하는 설계 문서
-   */
-  const setDocument = async (doc: FacilityDocument) => {
-    const generation = ++documentGeneration
-    models.visible = false
-    selection.visible = false
-    batchOutline.visible = false
-    const placedAssets = new Set(doc.instances.map((instance) => instance.assetId))
-    let sources: Map<string, THREE.Group>
-    try {
-      sources = new Map(
-        await Promise.all(
-          doc.assets
-            .filter((asset) => asset.glb && placedAssets.has(asset.id))
-            .map(async (asset) => [asset.id, await glbCache.load(asset.glb!.data)] as const),
-        ),
-      )
-    } catch (error) {
-      if (generation === documentGeneration)
-        events.error(error instanceof Error ? error.message : String(error))
-      return
+  /** 형상 재구성이 필요한지 확인하고 벽의 개구부는 실제 치수가 달라질 때만 다시 생성 */
+  const sameGeometry = (a: FacilityInstance, b: FacilityInstance) =>
+    a.id === b.id &&
+    a.wallOpacity === b.wallOpacity &&
+    JSON.stringify(a.wallDoors) === JSON.stringify(b.wallDoors) &&
+    (!a.wallDoors?.length ||
+      (a.scale?.x === b.scale?.x && a.scale?.y === b.scale?.y && a.scale?.z === b.scale?.z))
+
+  /** 단순 선택과 이름 변경에서는 변환 버퍼의 갱신을 생략 */
+  const samePoint = (a?: FacilityInstance['position'], b?: FacilityInstance['position']) =>
+    a === b || (!!a && !!b && a.x === b.x && a.y === b.y && a.z === b.z)
+
+  /** 모델별 배치 버퍼를 구성하고 다른 모델의 이미 로딩된 버퍼와 재질을 유지 */
+  const buildBatch = (asset: FacilityAsset, instances: FacilityInstance[], source?: THREE.Group) => {
+    const batchMeshes: THREE.InstancedMesh[] = []
+    const register = (
+      mesh: THREE.InstancedMesh,
+      bindings: { instance: FacilityInstance; part?: FacilityPart; local?: THREE.Matrix4 }[],
+    ) => {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      mesh.userData.ids = bindings.map(({ instance }) => instance.id)
+      bindings.forEach(({ instance, part, local }, index) => {
+        const list = instanceBindings.get(instance.id) ?? []
+        list.push({ mesh, index, local: local ?? facilityPartMatrix(part!) })
+        instanceBindings.set(instance.id, list)
+      })
+      models.add(mesh)
+      batchMeshes.push(mesh)
     }
-    if (generation !== documentGeneration) return
+    if (source && asset.glb) {
+      source.updateMatrixWorld(true)
+      const { x, y, z } = asset.glb.size
+      const scale = new THREE.Matrix4().makeScale(x / 1000, y / 1000, z / 1000)
+      const capacity = Math.max(4, 2 ** Math.ceil(Math.log2(instances.length)))
+      source.traverse((part) => {
+        if (!(part instanceof THREE.Mesh)) return
+        const mesh = new THREE.InstancedMesh(part.geometry, part.material, capacity)
+        mesh.count = instances.length
+        mesh.userData.sharedGlb = true
+        const local = scale.clone().multiply(part.matrixWorld)
+        register(mesh, instances.map((instance) => ({ instance, local })))
+      })
+    } else {
+      const groups = new Map<string, { instance: FacilityInstance; part: FacilityPart; surface: ReturnType<typeof surfaceForPart> }[]>()
+      for (const instance of instances)
+        for (const part of instanceParts(asset, instance)) {
+          const opacity = (part.wall ? instance.wallOpacity : undefined) ?? part.opacity ?? 1
+          // 반투명 부품을 따로 정렬하고 불투명 부품은 재질별 배치 버퍼로 재사용
+          const surface = surfaceForPart(part)
+          const key = opacity < 1
+            ? JSON.stringify([instance.id, part.id])
+            : `${part.shape}:${part.color}:${surface}`
+          if (opacity < 1) seeThroughInstances.add(instance.id)
+          const list = groups.get(key) ?? []
+          list.push({ instance, part, surface })
+          groups.set(key, list)
+        }
+      for (const list of groups.values()) {
+        const { instance, part, surface } = list[0]!
+        const opacity = (part.wall ? instance.wallOpacity : undefined) ?? part.opacity ?? 1
+        const { roughness, metalness } = surfaceMaterials[surface]
+        const mesh = new THREE.InstancedMesh(
+          part.shape === 'box' ? box : cylinder,
+          new THREE.MeshStandardMaterial({
+            color: part.color,
+            roughness,
+            metalness,
+            opacity,
+            transparent: opacity < 1,
+            depthWrite: opacity === 1,
+          }),
+          list.length,
+        )
+        wallOverlap.setWall(mesh, part.wall === true && opacity > 0 && opacity < 1)
+        register(mesh, list)
+      }
+    }
+    batches.set(asset.id, { asset, instances, meshes: batchMeshes, source })
+  }
+
+  /** 기존 모델의 캐시를 보존하며 문서에서 바뀐 형상 또는 변환만 반영 */
+  const setDocument = async (doc: FacilityDocument) => {
+    requestedDocument = doc
+    const generation = ++documentGeneration
+    const ports = mapDocument?.ports ?? emptyPorts
+    const instancesByAsset = new Map<string, FacilityInstance[]>()
+    const sources = new Map<string, THREE.Group>()
+    let changes: { asset: FacilityAsset; instances: FacilityInstance[]; rebuild: boolean }[]
     try {
-      for (const instance of doc.instances)
-        resolveFacilityInstance(instance, mapDocument?.ports ?? [])
+      for (const instance of doc.instances) {
+        resolveFacilityInstance(instance, ports)
+        const items = instancesByAsset.get(instance.assetId) ?? []
+        items.push(instance)
+        instancesByAsset.set(instance.assetId, items)
+      }
+      changes = doc.assets.flatMap((asset) => {
+        const instances = instancesByAsset.get(asset.id)
+        if (!instances) return []
+        const previous = batches.get(asset.id)
+        const canAppend = !!previous?.source && previous.instances.length < instances.length &&
+          (previous.meshes[0]?.instanceMatrix.count ?? 0) >= instances.length
+        const rebuild = previous?.asset !== asset ||
+          (previous.instances.length !== instances.length && !canAppend) ||
+          !previous.instances.every((instance, index) => sameGeometry(instance, instances[index]!))
+        if (previous?.asset === asset && previous.source) sources.set(asset.id, previous.source)
+        return [{ asset, instances, rebuild }]
+      })
+      const loading = changes.filter(({ asset, rebuild }) => rebuild && asset.glb && !sources.has(asset.id))
+      if (loading.length) {
+        for (const [id, source] of await Promise.all(loading.map(async ({ asset }) =>
+          [asset.id, await glbCache.load(asset.glb!.data)] as const,
+        ))) sources.set(id, source)
+      }
     } catch (error) {
-      models.visible = false
-      transform.detach()
-      transform.getHelper().visible = false
-      requestRender()
+      if (generation !== documentGeneration) return
+      if (!facilityDocument || drawnPorts !== ports) {
+        models.visible = false
+        selection.visible = false
+        batchOutline.visible = false
+        transform.detach()
+        transform.getHelper().visible = false
+        requestRender()
+      }
       events.error(error instanceof Error ? error.message : String(error))
       return
     }
-    models.visible = true
-    facilityDocument = doc
-    floorSurfaces.setAreas(doc.floors)
-    transform.detach()
-    for (const mesh of meshes) {
-      wallOverlap.setWall(mesh, false)
-      mesh.dispose()
-      if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
-    }
-    meshes = []
-    models.clear()
-    instanceBindings.clear()
-    instanceBounds.clear()
-    seeThroughInstances.clear()
-    glbCache.retain(doc.assets)
-    const assets = new Map(doc.assets.map((a) => [a.id, a]))
-    const groups = new Map<
-      string,
-      {
-        instance: FacilityInstance
-        part: FacilityPart
-      }[]
-    >()
-    for (const instance of doc.instances)
-      for (const part of assets.get(instance.assetId)!.parts) {
-        const opacity = (part.wall ? instance.wallOpacity : undefined) ?? part.opacity ?? 1
-        // 반투명 부품은 월드 위치 기준으로 각각 정렬되도록 따로 렌더링
-        const key =
-          opacity < 1 ? JSON.stringify([instance.id, part.id]) : `${part.shape}:${part.color}`
-        if (opacity < 1) seeThroughInstances.add(instance.id)
-        const list = groups.get(key) ?? []
-        list.push({ instance, part })
-        groups.set(key, list)
+    if (generation !== documentGeneration) return
+
+    const rebuilt = new Set(changes.filter((change) => change.rebuild).map(({ asset }) => asset.id))
+    for (const [id, batch] of batches) {
+      if (instancesByAsset.has(id) && !rebuilt.has(id))
+        continue
+      for (const mesh of batch.meshes) {
+        wallOverlap.setWall(mesh, false)
+        mesh.removeFromParent()
+        mesh.dispose()
+        if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
       }
-    for (const list of groups.values()) {
-      const first = list[0]!
-      const opacity =
-        (first.part.wall ? first.instance.wallOpacity : undefined) ?? first.part.opacity ?? 1
-      const mesh = new THREE.InstancedMesh(
-        first.part.shape === 'box' ? box : cylinder,
-        new THREE.MeshStandardMaterial({
-          color: first.part.color,
-          roughness: 0.65,
-          metalness: 0.2,
-          opacity,
-          transparent: opacity < 1,
-          depthWrite: opacity === 1,
-        }),
-        list.length,
-      )
-      wallOverlap.setWall(mesh, first.part.wall === true && opacity > 0 && opacity < 1)
-      mesh.userData.ids = list.map((item) => item.instance.id)
-      list.forEach(({ instance, part }, index) => {
-        const bindings = instanceBindings.get(instance.id) ?? []
-        bindings.push({ mesh, index, part })
-        instanceBindings.set(instance.id, bindings)
-      })
-      models.add(mesh)
-      meshes.push(mesh)
+      for (const { id: instanceId } of batch.instances) {
+        instanceBindings.delete(instanceId)
+        instanceBounds.delete(instanceId)
+        seeThroughInstances.delete(instanceId)
+      }
+      batches.delete(id)
     }
-    for (const asset of doc.assets) {
-      const source = sources.get(asset.id)
-      if (!source || !asset.glb) continue
-      const instances = doc.instances.filter((instance) => instance.assetId === asset.id)
-      if (!instances.length) continue
-      source.updateMatrixWorld(true)
-      const dimensions = asset.glb.size
-      const sizeMatrix = new THREE.Matrix4().makeScale(
-        dimensions.x / 1000,
-        dimensions.y / 1000,
-        dimensions.z / 1000,
-      )
-      source.traverse((part) => {
-        if (!(part instanceof THREE.Mesh)) return
-        const mesh = new THREE.InstancedMesh(part.geometry, part.material, instances.length)
-        mesh.userData.sharedGlb = true
-        mesh.userData.ids = instances.map((instance) => instance.id)
-        const local = sizeMatrix.clone().multiply(part.matrixWorld)
-        instances.forEach((instance, index) => {
-          const bindings = instanceBindings.get(instance.id) ?? []
-          bindings.push({ mesh, index, local })
-          instanceBindings.set(instance.id, bindings)
-        })
-        models.add(mesh)
-        meshes.push(mesh)
-      })
+
+    const libraryChanged = facilityDocument?.assets !== doc.assets
+    facilityDocument = doc
+    models.visible = true
+    floorSurfaces.setAreas(doc.floors)
+    for (const { asset, instances, rebuild } of changes) {
+      if (rebuild) buildBatch(asset, instances, sources.get(asset.id))
+      const batch = batches.get(asset.id)!
+      if (batch.instances.length < instances.length) {
+        const template = instanceBindings.get(batch.instances[0]!.id)!
+        const ids = instances.map(({ id }) => id)
+        for (const mesh of batch.meshes) {
+          mesh.count = instances.length
+          mesh.userData.ids = ids
+        }
+        for (let index = batch.instances.length; index < instances.length; index++)
+          instanceBindings.set(instances[index]!.id, template.map((binding) => ({ ...binding, index })))
+      }
+      for (const [index, instance] of instances.entries()) {
+        const before = batch.instances[index]
+        if (rebuild || !before || previewed.has(instance.id) ||
+            (drawnPorts !== ports && instance.portOffset) ||
+            before.rotation !== instance.rotation ||
+            before.portId !== instance.portId ||
+            !samePoint(before.position, instance.position) ||
+            !samePoint(before.scale, instance.scale) ||
+            !samePoint(before.portOffset, instance.portOffset))
+          updateMatrices(instance, !rebuild)
+      }
+      batch.instances = instances
     }
-    for (const instance of doc.instances) updateMatrices(instance)
+    drawnPorts = ports
+    previewed.clear()
+    meshes = [...batches.values()].flatMap((batch) => batch.meshes)
+    if (libraryChanged) glbCache.retain(doc.assets)
     setSelected(selectedIds)
-    requestRender()
   }
   /**
    * 포트 위치와 모델 및 부품 회전을 합성하여 인스턴스 변환 행렬을 갱신하는 설비 위치 반영
@@ -510,7 +574,7 @@ export const createFacilityScene = (
    *
    * @param instance 모델 참조와 위치 및 포트 연결을 포함하는 개별 설비 배치
    */
-  const updateMatrices = (instance: FacilityInstance) => {
+  const updateMatrices = (instance: FacilityInstance, partial = true) => {
     instance = resolveFacilityInstance(instance, mapDocument?.ports ?? [])
     const rotation = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 0, 1),
@@ -525,17 +589,10 @@ export const createFacilityScene = (
       rotation,
       new THREE.Vector3(instance.scale?.x ?? 1, instance.scale?.y ?? 1, instance.scale?.z ?? 1),
     )
-    for (const { mesh, index, part, local: glbLocal } of instanceBindings.get(instance.id) ?? []) {
-      if (glbLocal) {
-        mesh.setMatrixAt(index, root.clone().multiply(glbLocal))
-        mesh.instanceMatrix.needsUpdate = true
-        mesh.boundingBox = null
-        mesh.boundingSphere = null
-        continue
-      }
-      if (!part) continue
-      const local = facilityPartMatrix(part)
-      mesh.setMatrixAt(index, new THREE.Matrix4().multiplyMatrices(root, local))
+    const matrix = new THREE.Matrix4()
+    for (const { mesh, index, local } of instanceBindings.get(instance.id) ?? []) {
+      mesh.setMatrixAt(index, matrix.multiplyMatrices(root, local))
+      if (partial) mesh.instanceMatrix.addUpdateRange(index * 16, 16)
       mesh.instanceMatrix.needsUpdate = true
       // 이동한 설비가 이전 경계 영역 밖에 배치될 수 있으므로 가시성 경계를 다시 계산하는 캐시 초기화
       mesh.boundingSphere = null
@@ -640,9 +697,9 @@ export const createFacilityScene = (
    * 지도와 표시 객체의 범위를 사용 가능한 화면에 맞추는 카메라 맞춤
    */
   const fit = (fromAbove = false) => {
-    models.updateMatrixWorld(true)
     ground.updateMatrixWorld(true)
-    const bounds = new THREE.Box3().setFromObject(models)
+    const bounds = new THREE.Box3()
+    for (const instance of instanceBounds.values()) bounds.union(instance)
     bounds.union(new THREE.Box3().setFromObject(ground))
     bounds.union(new THREE.Box3().setFromObject(floorSurfaces.group))
     if (mapDocument?.layout && (floorPlanVisible ?? mapDocument.layout.visible))
@@ -834,6 +891,7 @@ export const createFacilityScene = (
     wallOverlap.dispose()
     documentGeneration++
     glbCache.dispose()
+    batches.clear()
     instanceBounds.clear()
     cancelAnimationFrame(animationFrame)
     observer.disconnect()
@@ -928,9 +986,23 @@ export const createFacilityScene = (
       uniformScaleStart =
         transform.mode === 'scale' && transform.axis === 'XYZ' ? proxy.scale.clone() : undefined
       uniformScaleRatio = 1
+      resizeMinimum.setScalar(0.001)
+      if (transform.mode === 'scale') {
+        const instance = facilityDocument?.instances.find((item) => item.id === selectedId)
+        const doors = instance?.wallDoors
+        if (instance && doors?.length) {
+          const wall = wallBody(facilityDocument?.assets.find((asset) => asset.id === instance.assetId))
+          if (wall) {
+            const limits = wallDoorLimits(doors)
+            // 부착한 문의 상대 위치와 실제 치수를 유지하는 벽 크기 제한
+            resizeMinimum.x = Math.max(resizeMinimum.x, limits.width / wall.size.x)
+            resizeMinimum.z = Math.max(resizeMinimum.z, limits.height / wall.size.z)
+          }
+        }
+      }
     }
-    if (!event.value && selectedId)
-      events.move(
+    if (!event.value && selectedId) {
+      const applied = events.move(
         selectedId,
         {
           x: Math.round(proxy.position.x * 1000),
@@ -940,12 +1012,26 @@ export const createFacilityScene = (
         THREE.MathUtils.radToDeg(proxy.rotation.z),
         { x: proxy.scale.x, y: proxy.scale.y, z: proxy.scale.z },
       )
+      if (!applied) {
+        const instance = facilityDocument?.instances.find((item) => item.id === selectedId)
+        if (instance) updateMatrices(instance)
+        setSelected(selectedIds)
+      }
+    }
     if (!event.value) uniformScaleStart = undefined
   })
   transform.addEventListener('objectChange', () => {
-    if (uniformScaleStart) proxy.scale.copy(uniformScaleStart).multiplyScalar(uniformScaleRatio)
-    proxy.scale.clampScalar(0.001, 1000)
-    if (selectedId)
+    if (uniformScaleStart) {
+      const minimumRatio = Math.max(
+        resizeMinimum.x / uniformScaleStart.x,
+        resizeMinimum.y / uniformScaleStart.y,
+        resizeMinimum.z / uniformScaleStart.z,
+      )
+      proxy.scale.copy(uniformScaleStart).multiplyScalar(Math.max(minimumRatio, uniformScaleRatio))
+    }
+    proxy.scale.clampScalar(0.001, 1000).max(resizeMinimum)
+    if (selectedId) {
+      previewed.add(selectedId)
       updateMatrices({
         ...facilityDocument!.instances.find((i) => i.id === selectedId)!,
         portOffset: undefined,
@@ -957,6 +1043,7 @@ export const createFacilityScene = (
         rotation: THREE.MathUtils.radToDeg(proxy.rotation.z),
         scale: { x: proxy.scale.x, y: proxy.scale.y, z: proxy.scale.z },
       })
+    }
     requestRender()
   })
   grid.renderOrder = -200
@@ -1015,6 +1102,7 @@ export const createFacilityScene = (
     previewScale: (id: string, scale?: FacilityInstance['scale']) => {
       const instance = facilityDocument?.instances.find((item) => item.id === id)
       if (!instance) return
+      previewed.add(id)
       updateMatrices(scale ? { ...instance, scale } : instance)
       requestRender()
     },

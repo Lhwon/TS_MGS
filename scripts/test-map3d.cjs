@@ -61,6 +61,14 @@ const roundtrip = contract.importFacilityFiles(
 )
 assert.deepEqual(roundtrip.instances, document.instances)
 assert.equal(roundtrip.assets[0].glb.data, library.assets[0].glb.data)
+const movedPlacements = contract.validateFacilityPlacements(roundtrip, [
+  { ...roundtrip.instances[0], position: { x: 123, y: 456, z: 789 } },
+])
+assert.equal(movedPlacements.assets, roundtrip.assets)
+assert.deepEqual(movedPlacements.instances[0].position, { x: 123, y: 456, z: 789 })
+assert.throws(() => contract.validateFacilityPlacements(roundtrip, [
+  { ...roundtrip.instances[0], scale: { x: 0, y: 1, z: 1 } },
+]))
 const { createInteriorModel } = load('src/entities/facility/interiorModels.ts')
 const interior = contract.emptyFacilityDocument()
 interior.assets = [createInteriorModel('doorway'), createInteriorModel('glass')]
@@ -76,6 +84,43 @@ assert.equal(restoredInterior.instances[0].wallOpacity, 0.35)
 assert.equal(restoredInterior.assets[0].parts.filter((part) => part.wall).length, 3)
 assert.equal(restoredInterior.assets[0].parts.find((part) => part.name === '문짝').wall, undefined)
 assert.equal(restoredInterior.assets[1].parts.find((part) => part.name === '유리').opacity, 0.32)
+assert.equal(restoredInterior.assets[1].parts.length, 1)
+const pipe = createInteriorModel('stainless-pipe')
+const restoredPipe = contract.parseFacilityDocument(JSON.stringify({
+  ...contract.emptyFacilityDocument(),
+  assets: [pipe],
+})).assets[0]
+assert.equal(restoredPipe.catalogCategory, 'interior')
+assert.equal(restoredPipe.parts.length, 4)
+assert.ok(restoredPipe.parts.every((part) => part.surface === 'stainlessSteel'))
+assert.equal(restoredPipe.parts.reduce((area, part) => area + part.size.x * part.size.y, 0), 40 ** 2 - 36 ** 2)
+const doorWall = createInteriorModel('wall')
+assert.equal(contract.surfaceForPart(doorWall.parts[0]), 'plaster')
+doorWall.parts[0].surface = 'wood'
+const withDoor = {
+  ...document.instances[0],
+  assetId: doorWall.id,
+  scale: { x: 2, y: 1, z: 1 },
+  wallDoors: [{ id: 'entrance', offset: 500, width: 1040, height: 2160 }],
+}
+const attached = contract.exportFacilityFiles({
+  ...contract.emptyFacilityDocument(),
+  assets: [doorWall],
+  instances: [withDoor],
+})
+const restoredWall = contract.importFacilityFiles(JSON.stringify(attached.layout), JSON.stringify(attached.library))
+assert.deepEqual(restoredWall.instances[0].wallDoors, withDoor.wallDoors)
+assert.equal(restoredWall.assets[0].parts[0].surface, 'wood')
+const opening = contract.instanceParts(restoredWall.assets[0], restoredWall.instances[0])
+assert.equal(opening.find((part) => part.name === '상부 벽체').size.x * 2, 1040)
+assert.ok(opening.filter((part) => part.wall).every((part) => contract.surfaceForPart(part) === 'wood'))
+assert.equal(contract.surfaceForPart(opening.find((part) => part.name === '문틀')), 'paintedSteel')
+assert.equal(contract.surfaceForPart(opening.find((part) => part.name === '문짝')), 'wood')
+assert.equal(opening.find((part) => part.name === '문짝').wall, undefined)
+assert.throws(() => contract.parseWallDoors([
+  ...withDoor.wallDoors,
+  { ...withDoor.wallDoors[0], id: 'duplicate-position' },
+], withDoor, doorWall), /겹칩니다/)
 const floor = {
   id: 'showroom-tile',
   name: '관람 구역',

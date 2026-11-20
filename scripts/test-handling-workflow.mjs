@@ -39,25 +39,30 @@ try {
     if (map.colorMode !== 'dark') map.toggleColorMode()
   })
   await page.getByTestId('mode-facility').click()
-  await page.getByTestId('handling-catalog').click()
+  await page.getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-register-defaults').click()
   await page.waitForFunction(
     async () =>
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document
-        .assets.length === 6,
+        .assets.length === 23,
   )
   assert.equal(await page.getByTestId('instance-count').textContent(), '0')
-  await page.getByTestId('handling-catalog').click()
+  await page.getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-register-defaults').click()
   assert.equal(await page.getByTestId('instance-count').textContent(), '0')
   const assets = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts'))
         .useFacilityEditor()
-        .document.assets.map(({ id, name }) => ({ id, name })),
+        .document.assets.filter(({ id }) =>
+          /(?:wooden-crate(?:-stack)?|centering-station|double-deck-conveyor|quick-shutter-(?:open|closed))$/.test(id),
+        ).map(({ id }) => id),
     ),
   )
   const meshes = {}
-  for (const asset of assets) {
-    await page.locator('.facility-library button').filter({ hasText: asset.name }).click()
+  for (const id of assets) {
+    await page.getByTestId('default-catalog').click()
+    await page.getByTestId(`catalog-model-${id}`).click()
     await page.getByTestId('place-center').click()
     await page.waitForFunction(async () => {
       const store = (
@@ -73,7 +78,7 @@ try {
     await page.getByTestId('tool-select').click()
     await page.waitForTimeout(300)
     assert.equal(await page.locator('.facility-status.error').count(), 0)
-    meshes[asset.id] = await page.evaluate(async () => {
+    meshes[id] = await page.evaluate(async () => {
       const store = (
         await import('/src/features/facility-editor/model/studio.ts')
       ).useFacilityEditor()
@@ -85,7 +90,7 @@ try {
     })
     await page
       .locator('.facility-canvas-wrap')
-      .screenshot({ path: path.join(output, `${asset.id}.png`) })
+      .screenshot({ path: path.join(output, `${id}.png`) })
     await page.getByTestId('instance-remove').click()
   }
   const stableSave = await page.evaluate(async () => {

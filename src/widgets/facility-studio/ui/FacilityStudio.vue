@@ -20,13 +20,17 @@ import {
   interiorModels,
   loadDefaultCatalog,
   MAX_FLOOR_POINTS,
+  wallBody,
+  wallDoorLimits,
 } from '@/entities/facility/index.ts'
-import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, InteriorModel } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, WallDoor } from '@/entities/facility/index.ts'
 import { createFacilityScene } from '@/widgets/facility-studio/lib/FacilityScene.ts'
 import { DEFAULT_LAYERS, type Layers } from '@/entities/map/index.ts'
 import { GlbModelCache } from '@bem/map3d/glb'
 import ModelDesigner from '@/widgets/facility-studio/ui/ModelDesigner.vue'
 import FloorAreaEditor from '@/widgets/facility-studio/ui/FloorAreaEditor.vue'
+import ModelCatalog from '@/widgets/facility-studio/ui/ModelCatalog.vue'
+import WallDoorEditor from '@/widgets/facility-studio/ui/WallDoorEditor.vue'
 
 const emit = defineEmits<{ draftDirty: [value: boolean] }>()
 
@@ -37,6 +41,11 @@ const props = defineProps<{
 const placementPort = ref('')
 const glbInput = ref<HTMLInputElement>()
 const glbUnits = ref<'m' | 'mm'>('m')
+const catalogOpen = ref(false)
+const catalogCategory = ref<NonNullable<FacilityAsset['catalogCategory']>>('equipment')
+const catalogLoading = ref(false)
+const defaultCatalog = shallowRef<FacilityAsset[]>()
+const interiorCatalog = (Object.keys(interiorModels) as (keyof typeof interiorModels)[]).map(createInteriorModel)
 const studio = useFacilityEditor(),
   map = useEditor()
 
@@ -45,6 +54,14 @@ const host = ref<HTMLElement>()
 const selectedModel = computed(() =>
   studio.document.assets.find((asset) => asset.id === studio.selected?.assetId),
 )
+const catalogAssets = computed(() => {
+  const entries = new Map([...interiorCatalog, ...(defaultCatalog.value ?? [])].map((asset) => [asset.id, asset]))
+  for (const asset of studio.document.assets) entries.set(asset.id, asset)
+  return [...entries.values()]
+})
+const doorEditor = ref<HTMLElement>()
+const selectedWall = computed(() => wallBody(selectedModel.value))
+const doorLimits = computed(() => wallDoorLimits(studio.selected?.wallDoors ?? []))
 const baseSize = computed(() => selectedModel.value && facilityModelSize(selectedModel.value))
 const wallPart = computed(() => selectedModel.value?.parts.find((part) => part.wall))
 const wallTransparency = computed(() =>
@@ -152,14 +169,30 @@ let scene: ReturnType<typeof createFacilityScene> | undefined
  * 편집 명령의 예외를 화면 상태로 변환하고 정상 처리 시 이전 오류를 해제하는 작업 실행
  *
  * @param action 검증 범위 안에서 실행할 편집 명령
+ * @returns 편집 명령 적용 여부
  */
 const attempt = (action: () => void) => {
   try {
     action()
     error.value = ''
+    return true
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
+    return false
   }
+}
+
+/** 현재 벽의 상대 위치에 문을 부착하거나 기존 문의 치수를 변경 */
+const applyWallDoors = (wallDoors: WallDoor[]) => {
+  if (!studio.selected || !selectedWall.value) return
+  attempt(() => studio.updateInstance(studio.selected!.id, { wallDoors }))
+}
+
+/** 선택한 단일 직선 벽의 문 설정을 표시 */
+const showDoorEditor = () => {
+  tool.value = 'select'
+  if (doorEditor.value) doorEditor.value.scrollIntoView({ block: 'nearest' })
+  else studio.message = '문을 붙일 직선 벽을 캔버스 또는 배치 목록에서 선택하세요.'
 }
 
 /** 선택 객체의 상대 배치를 유지하며 입력한 X와 Y 이동량을 한 번에 적용 */
@@ -212,6 +245,9 @@ const scaleFromSize = () => {
     const value = Number(pose.size[axis])
     const current = studio.selected?.scale?.[axis] ?? 1
     const ratio = value === displaySize(size[axis] * current) ? current : value / size[axis]
+    const doorMinimum = minimumDoorSize(axis)
+    if (doorMinimum > 0 && ratio * size[axis] < doorMinimum - 0.000001)
+      throw new Error(`부착한 문을 유지하려면 벽 ${label} 치수를 ${doorMinimum} mm 이상으로 설정하세요.`)
     if (!Number.isFinite(ratio) || ratio < minScale * (1 - 1e-10) || ratio > maxScale * (1 + 1e-10))
       throw new Error(
         `${label}는 ${displaySize(size[axis] * minScale)}~${displaySize(size[axis] * maxScale)} mm로 입력하세요.`,
@@ -232,9 +268,13 @@ const quickScale = (axis: SizeAxis, size: number, source = studio.selected?.scal
   const base = baseSize.value?.[axis]
   if (!base || !Number.isFinite(size)) return
   const scale = { x: source?.x ?? 1, y: source?.y ?? 1, z: source?.z ?? 1 }
-  scale[axis] = Math.max(minScale, Math.min(maxScale, size / base))
+  scale[axis] = Math.max(minScale, minimumDoorSize(axis) / base, Math.min(maxScale, size / base))
   return scale
 }
+
+/** 부착한 문의 위치와 크기를 유지하는 데 필요한 벽의 축별 최소 치수 */
+const minimumDoorSize = (axis: SizeAxis) =>
+  axis === 'x' ? doorLimits.value.width : axis === 'z' ? doorLimits.value.height : 0
 
 /** 빠른 크기 조절을 시작할 때 선택 배치와 기준 치수 및 포인터를 기록 */
 const startQuickResize = (event: PointerEvent, axis: SizeAxis) => {
@@ -320,20 +360,6 @@ const applyModel = (asset: FacilityAsset) => {
   error.value = ''
   studio.message =
     '사용자 모델을 적용했습니다. 포트를 선택해 배치할 수 있으며 같은 모델의 기존 배치에도 변경이 반영됩니다.'
-}
-
-/** 인테리어 모델을 라이브러리에 추가하고 맞는 바닥 배치 도구 활성화 */
-const startInteriorPlacement = (type: InteriorModel) => {
-  attempt(() => {
-    if (map.document.units !== 'mm') throw new Error('인테리어를 배치하기 전에 2D 맵 축척을 확정하세요.')
-    const model = createInteriorModel(type)
-    if (studio.document.assets.some((asset) => asset.id === model.id))
-      studio.selectedAssetId = model.id
-    else studio.setAsset(model, reference.value)
-    wallStart.value = undefined
-    floorId.value = ''
-    tool.value = type === 'wall' ? 'wall' : 'place'
-  })
 }
 
 /** 바닥 지점 입력을 시작하고 기존 경계를 다시 그리는 경우 수정 대상을 고정 */
@@ -589,6 +615,7 @@ const importGlb = async (event: Event) => {
         name: file.name.replace(/\.glb$/i, ''),
         kind: 'equipment',
         parts: [],
+        catalogCategory: catalogCategory.value,
         glb: { data, size, sourceName: file.name },
       },
       reference.value,
@@ -604,23 +631,47 @@ const importGlb = async (event: Event) => {
   }
 }
 
-/** 현장 도면 항목을 바탕으로 제작한 재사용 설비 라이브러리 등록 */
-const importDefaults = async () => {
-  studio.busy = true
+/** 기본 모델을 한 번만 조회하고 팝업에서 선택할 모델을 표시 */
+const openCatalog = async () => {
+  error.value = ''
+  catalogOpen.value = true
+  if (defaultCatalog.value || catalogLoading.value) return
+  catalogLoading.value = true
   try {
-    const catalog = await loadDefaultCatalog()
-    studio.addAssets(
-      catalog.assets,
-      reference.value,
-      catalog.assets.map((asset) => asset.id),
-    )
-    error.value = ''
-    studio.message = '기본 모델 라이브러리를 적용했습니다.'
+    defaultCatalog.value = (await loadDefaultCatalog()).assets
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
-    studio.busy = false
+    catalogLoading.value = false
   }
+}
+
+/** 카탈로그에서 모델을 선택하고 벽 그리기 또는 바닥 배치로 전환 */
+const chooseCatalogModel = (asset: FacilityAsset) => {
+  attempt(() => {
+    if (map.document.units !== 'mm' && interiorCatalog.some((model) => model.id === asset.id))
+      throw new Error('인테리어를 배치하기 전에 2D 맵 축척을 확정하세요.')
+    if (studio.document.assets.some((item) => item.id === asset.id)) studio.selectedAssetId = asset.id
+    else studio.setAsset(asset, reference.value)
+    catalogOpen.value = false
+    wallStart.value = undefined
+    floorId.value = ''
+    const drawingWall = asset.id === 'interior-wall'
+    tool.value = drawingWall ? 'wall' : 'place'
+    studio.message = drawingWall
+      ? `${asset.name} · 바닥에서 시작점과 끝점을 클릭하세요.`
+      : `${asset.name} · 배치할 바닥 위치를 클릭하세요.`
+  })
+}
+
+/** 기존 일괄 등록 동작으로 공급 모델을 라이브러리에 추가 */
+const registerDefaultModels = () => {
+  attempt(() => {
+    const assets = defaultCatalog.value
+    if (!assets?.length) throw new Error('기본 모델을 불러온 뒤 등록하세요.')
+    studio.addAssets(assets, reference.value, assets.map((asset) => asset.id))
+    catalogOpen.value = false
+  })
 }
 
 onMounted(() => {
@@ -769,97 +820,42 @@ onBeforeUnmount(() => scene?.dispose())
     <div class="facility-layout">
       <v-sheet
         tag="aside"
-        class="facility-library overflow-auto"
+        aria-label="3D 작업 도구"
+        class="facility-tools-panel overflow-auto"
+        data-testid="facility-tools-panel"
       >
-        <h2>사용자 모델</h2>
-        <p class="text-caption">
-          부품을 직접 조합해 시설과 설비를 디자인하고 포트에 배치할 수 있습니다.
-        </p>
-
-        <v-btn
-          text="새 모델 디자인"
-          class="facility-primary w-100 mb-3"
-          data-testid="new-model"
-          :disabled="studio.busy"
-          @click="openDesigner()"
-        />
-        <v-btn
-          text="선택 모델 편집"
-          class="w-100 mb-3"
-          data-testid="model-edit"
-          :disabled="!studio.asset || !!studio.asset.glb || studio.busy"
-          @click="openDesigner(studio.asset ?? null)"
-        />
-        <v-btn
-          text="설비 모델 파일 가져오기"
-          :disabled="studio.busy"
-          @click="studio.importModels(reference)"
-        />
-        <input
-          ref="glbInput"
-          type="file"
-          accept=".glb"
-          hidden
-          data-testid="glb-file"
-          @change="importGlb"
-        />
-        <label class="d-block mt-3">
-          GLB 원본 단위
-          <select
-            v-model="glbUnits"
-            data-testid="glb-units"
-          >
-            <option value="m">m 표준 GLB</option>
-            <option value="mm">mm</option>
-          </select>
-        </label>
-        <v-btn
-          text="GLB 모델 가져오기"
-          class="w-100 mt-2"
-          :disabled="studio.busy"
-          data-testid="glb-import"
-          @click="glbInput?.click()"
-        />
-        <v-btn
-          text="기본 모델"
-          class="w-100 mt-2"
-          :disabled="studio.busy"
-          data-testid="default-catalog"
-          @click="importDefaults"
-        />
-        <small class="d-block mt-2">
-          현장 치수에 맞게 배치한 모델의 가로·세로·높이를 설정할 수 있습니다.
-        </small>
-        <h2>인테리어</h2>
-        <div class="d-flex flex-wrap ga-1">
+        <div class="d-flex flex-column ga-2 mb-4">
           <v-btn
-            v-for="(label, type) in interiorModels"
-            :key="type"
-            :text="type === 'wall' ? '벽 그리기' : label"
-            :data-testid="`interior-${type}`"
+            text="GLB 모델 카탈로그"
+            class="facility-primary"
+            data-testid="default-catalog"
             :disabled="studio.busy"
-            @click="startInteriorPlacement(type)"
+            @click="openCatalog"
           />
-          <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
-          <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
+          <span
+            v-if="studio.asset"
+            class="text-caption text-truncate"
+            :title="studio.asset.name"
+          >
+            {{ studio.asset.name }}
+          </span>
+          <div class="facility-tabs">
+            <v-btn
+              text="새 모델 디자인"
+              data-testid="new-model"
+              :disabled="studio.busy"
+              @click="openDesigner()"
+            />
+            <v-btn
+              text="선택 모델 편집"
+              data-testid="model-edit"
+              :disabled="!studio.asset || !!studio.asset.glb || studio.busy"
+              @click="openDesigner(studio.asset ?? null)"
+            />
+          </div>
         </div>
-        <h2>
-          모델 라이브러리
-          <small>{{ studio.document.assets.length }}</small>
-        </h2>
-        <v-btn
-          v-for="asset in studio.document.assets"
-          :key="asset.id"
-          class="facility-row w-100 text-start"
-          :class="{ active: studio.selectedAssetId === asset.id }"
-          @click="studio.selectedAssetId = asset.id"
-        >
-          <strong>{{ asset.name }}</strong>
-          <small>{{ asset.glb ? 'GLB 모델' : `사용자 모델 · 부품 ${asset.parts.length}` }}</small>
-        </v-btn>
-      </v-sheet>
-      <div class="facility-canvas-wrap position-relative d-flex flex-column">
-        <div class="facility-view-tools d-flex flex-wrap">
+        <h2>배치 및 편집</h2>
+        <div class="facility-tabs mb-2">
           <v-btn
             v-for="[value, label] in [
               ['select', '선택'],
@@ -885,24 +881,8 @@ onBeforeUnmount(() => scene?.dispose())
           >
             중앙 배치
           </v-btn>
-          <v-btn
-            data-testid="scene-fit"
-            @click="scene?.fit()"
-          >
-            전체 보기
-          </v-btn>
-          <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
-          <v-btn
-            v-if="map.document.layout"
-            :class="{ active: showFloorPlan }"
-            :aria-pressed="showFloorPlan"
-            data-testid="interior-floor-plan"
-            @click="floorPlanVisible = !showFloorPlan"
-          >
-            배경 도면
-          </v-btn>
         </div>
-        <div class="facility-view-tools d-flex flex-wrap">
+        <div class="d-flex flex-column ga-2 mb-4">
           <select
             v-model="placementPort"
             aria-label="배치할 포트"
@@ -925,9 +905,43 @@ onBeforeUnmount(() => scene?.dispose())
             선택 포트에 1개 배치
           </v-btn>
         </div>
+        <h2>인테리어 편집</h2>
+        <div class="facility-tabs mb-2">
+          <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
+          <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
+        </div>
+        <v-btn
+          text="벽에 문 붙이기"
+          class="w-100 mb-4"
+          data-testid="interior-door"
+          :disabled="studio.busy"
+          @click="showDoorEditor"
+        />
+        <h2>보기</h2>
+        <div class="facility-tabs">
+          <v-btn
+            data-testid="scene-fit"
+            @click="scene?.fit()"
+          >
+            전체 보기
+          </v-btn>
+          <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
+          <v-btn
+            v-if="map.document.layout"
+            :class="{ active: showFloorPlan }"
+            :aria-pressed="showFloorPlan"
+            data-testid="interior-floor-plan"
+            @click="floorPlanVisible = !showFloorPlan"
+          >
+            배경 도면
+          </v-btn>
+        </div>
+        <p v-if="tool === 'wall'" class="text-caption mt-3" role="status">
+          {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
+        </p>
         <div
           v-if="floorDraft"
-          class="facility-view-tools floor-drawing-tools d-flex align-center flex-wrap ga-2"
+          class="floor-drawing-tools d-flex flex-column ga-2 mt-3"
         >
           <span class="text-caption" role="status">
             {{ floorGuide }}
@@ -954,15 +968,14 @@ onBeforeUnmount(() => scene?.dispose())
           <v-btn :disabled="!floorDraft.points.length" text="마지막 점 취소" @click="undoFloorPoint" />
           <v-btn text="그리기 취소" @click="tool = 'select'" />
         </div>
+      </v-sheet>
+      <div class="facility-canvas-wrap position-relative d-flex flex-column">
         <div
           ref="host"
           class="facility-canvas position-relative overflow-hidden"
           data-testid="facility-canvas"
           @keydown.enter="finishFloorOnEnter"
         ></div>
-        <p v-if="tool === 'wall'" class="px-3 py-2 text-caption" role="status">
-          {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
-        </p>
         <div
           v-if="studio.selected"
           class="facility-selection-tools"
@@ -1103,7 +1116,7 @@ onBeforeUnmount(() => scene?.dispose())
           class="facility-form"
           @submit.prevent="applyPose"
         >
-          <h2>선택 시설</h2>
+          <h2>{{ selectedWall ? '벽 속성' : '선택 시설' }}</h2>
           <label>
             이름
             <v-text-field
@@ -1153,6 +1166,10 @@ onBeforeUnmount(() => scene?.dispose())
           <small v-if="baseSize">
             기본 크기 {{ displaySize(baseSize.x) }} × {{ displaySize(baseSize.y) }} ×
             {{ displaySize(baseSize.z) }} mm
+          </small>
+          <small v-if="doorLimits.width" data-testid="wall-door-limits">
+            문을 유지하려면 벽의 가로는 {{ doorLimits.width }} mm, 높이는
+            {{ doorLimits.height }} mm 이상이어야 합니다.
           </small>
           <label v-if="wallPart" class="d-flex flex-column mt-2">
             벽 투명도 {{ wallTransparency }}%
@@ -1247,6 +1264,15 @@ onBeforeUnmount(() => scene?.dispose())
         >
           시설을 선택하면 가로·세로·높이를 mm로 설정할 수 있습니다.
         </p>
+        <div v-if="studio.selected && selectedWall" ref="doorEditor">
+          <WallDoorEditor
+            :key="studio.selected.id"
+            :doors="studio.selected.wallDoors ?? []"
+            :width="selectedWall.size.x * (studio.selected.scale?.x ?? 1)"
+            :height="selectedWall.size.z * (studio.selected.scale?.z ?? 1)"
+            @apply="applyWallDoors"
+          />
+        </div>
       </v-sheet>
     </div>
     <div
@@ -1256,6 +1282,28 @@ onBeforeUnmount(() => scene?.dispose())
     >
       {{ error || studio.message }}
     </div>
+    <input
+      ref="glbInput"
+      type="file"
+      accept=".glb"
+      hidden
+      data-testid="glb-file"
+      @change="importGlb"
+    />
+    <ModelCatalog
+      v-model="catalogOpen"
+      v-model:category="catalogCategory"
+      v-model:units="glbUnits"
+      :assets="catalogAssets"
+      :busy="studio.busy"
+      :loading="catalogLoading"
+      :selected="studio.selectedAssetId"
+      :error="error"
+      @choose="chooseCatalogModel"
+      @import="glbInput?.click()"
+      @import-library="studio.importModels(reference)"
+      @register-defaults="registerDefaultModels"
+    />
     <ModelDesigner
       v-if="designerOpen"
       :asset="editingAsset"
@@ -1364,20 +1412,20 @@ select {
 }
 .facility-layout {
   display: grid;
-  grid-template-columns: 268px minmax(300px, 1fr) 270px;
+  grid-template-columns: 232px minmax(0, 1fr) 270px;
   flex: 1;
   min-height: 0;
 }
-.facility-library {
+.facility-tools-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border-right: 1px solid var(--border);
   background: var(--surface);
-  padding: 16px;
 }
 .facility-inspector {
   background: var(--surface);
   padding: 16px;
-}
-.facility-library {
-  border-right: 1px solid var(--border);
 }
 .facility-inspector {
   border-left: 1px solid var(--border);
@@ -1477,16 +1525,6 @@ select {
   min-height: 0;
   background: var(--surface);
 }
-.facility-view-tools {
-  gap: 5px;
-  padding: 9px;
-  background: var(--surface);
-}
-.facility-view-tools button {
-  background: var(--surface);
-  color: var(--text-secondary);
-  border-color: var(--border);
-}
 .facility-canvas {
   flex: 1;
   min-height: 0;
@@ -1512,7 +1550,7 @@ select {
   background: var(--surface);
   color: var(--text);
 }
-.facility-view-tools .floor-drawing-apply:not(:disabled) {
+.floor-drawing-tools .floor-drawing-apply:not(:disabled) {
   background: var(--accent-fill);
   border-color: var(--accent-fill);
   color: var(--on-accent);
@@ -1635,10 +1673,7 @@ select {
     padding: 5px 7px;
   }
   .facility-layout {
-    grid-template-columns: 235px minmax(250px, 1fr) 235px;
-  }
-  .facility-library {
-    padding: 12px;
+    grid-template-columns: 214px minmax(0, 1fr) 235px;
   }
   .facility-inspector {
     padding: 12px;
@@ -1648,16 +1683,6 @@ select {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-}
-// 라이브러리 항목의 모델 이름과 부품 수를 구분하는 세로 배치
-.facility-row {
-  height: auto;
-  min-height: 50px;
-  :deep(.v-btn__content) {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 3px;
   }
 }
 </style>

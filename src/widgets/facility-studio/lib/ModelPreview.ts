@@ -7,7 +7,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import type { FacilityPart } from '@/entities/facility/index.ts'
+import { surfaceForPart, surfaceMaterials, type FacilityPart } from '@/entities/facility/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
 import { mgsTheme } from '@/entities/map/index.ts'
 import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
@@ -166,7 +166,7 @@ export const createModelPreview = (
         root.userData.id = part.id
         const mesh = new THREE.Mesh(
           part.shape === 'box' ? box : cylinder,
-          new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.2 }),
+          new THREE.MeshStandardMaterial(),
         )
         mesh.userData.id = part.id
         root.add(mesh)
@@ -176,6 +176,9 @@ export const createModelPreview = (
       const mesh = root.children[0] as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
       mesh.geometry = part.shape === 'box' ? box : cylinder
       mesh.material.color.set(part.color)
+      const { roughness, metalness } = surfaceMaterials[surfaceForPart(part)]
+      mesh.material.roughness = roughness
+      mesh.material.metalness = metalness
       const opacity = part.opacity ?? 1
       if (mesh.material.transparent !== (opacity < 1)) {
         mesh.material.transparent = opacity < 1

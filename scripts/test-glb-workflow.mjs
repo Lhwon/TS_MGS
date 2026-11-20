@@ -56,22 +56,16 @@ try {
     )
   })
   await page.getByTestId('mode-facility').click()
-  await page.getByRole('button', { name: '기본 모델', exact: true }).click()
+  await page.getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-register-defaults').click()
   await page.waitForFunction(
     async () =>
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document
         .assets.length === 23,
   )
-  const libraryRow = page.locator('.facility-library .facility-row').first()
-  const alignment = await libraryRow.evaluate((row) => {
-    const title = row.querySelector('strong')
-    const detail = row.querySelector('small')
-    return {
-      leftGap: title.getBoundingClientRect().left - row.getBoundingClientRect().left,
-      aligned: title.getBoundingClientRect().left === detail.getBoundingClientRect().left,
-    }
-  })
-  assert.ok(alignment.aligned && alignment.leftGap < 20, JSON.stringify(alignment))
+  assert.equal(await page.locator('.facility-library').count(), 0)
+  await page.getByTestId('facility-tools-panel').getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-model-ceram-mp5-storage-rack').click()
   await page.getByTestId('placement-port').selectOption('PORT-1')
   await page.getByTestId('place-port').click()
   await page.getByTestId('selection-tools').waitFor()
@@ -182,6 +176,7 @@ try {
     store.setAsset({ ...store.document.assets[0], name: '기존 보관랙' }, store.document.mapRef)
   })
   await page.getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-register-defaults').click()
   const refreshed = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document,

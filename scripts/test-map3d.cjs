@@ -36,6 +36,10 @@ for (const tier of [1, 2, 3, 4]) {
     materials.find((material) => material.name === 'rackDeck').pbrMetallicRoughness
       .baseColorTexture,
   )
+  assert.ok(
+    materials.find((material) => material.name === 'rackUpright').pbrMetallicRoughness
+      .baseColorTexture,
+  )
 }
 assert.deepEqual(library.assets[0].glb.size, { x: 2500, y: 2500, z: 3850 })
 const document = contract.emptyFacilityDocument()
@@ -116,6 +120,21 @@ assert.equal(opening.find((part) => part.name === '상부 벽체').size.x * 2, 1
 assert.ok(opening.filter((part) => part.wall).every((part) => contract.surfaceForPart(part) === 'wood'))
 assert.equal(contract.surfaceForPart(opening.find((part) => part.name === '문틀')), 'paintedSteel')
 assert.equal(contract.surfaceForPart(opening.find((part) => part.name === '문짝')), 'wood')
+const windowOpening = { id: 'window', kind: 'window', offset: -1250, width: 1200, height: 1000, sill: 900 }
+const mixed = { ...withDoor, wallDoors: [...withDoor.wallDoors, windowOpening] }
+const mixedParts = contract.instanceParts(doorWall, {
+  ...mixed,
+  wallDoors: contract.parseWallDoors(mixed.wallDoors, mixed, doorWall),
+})
+assert.equal(mixedParts.find((part) => part.name === '하부 벽체').size.z, 900)
+assert.equal(mixedParts.find((part) => part.name === '유리').surface, 'glass')
+assert.equal(contract.wallDoorLimits([windowOpening]).height, 1900)
+assert.equal(contract.wallOpeningPartBudget(mixed.wallDoors), 15)
+assert.throws(() => contract.parseWallDoors([{ ...windowOpening, sill: 2000 }], mixed, doorWall))
+assert.throws(() => contract.parseWallDoors([
+  withDoor.wallDoors[0],
+  { ...windowOpening, offset: 500 },
+], mixed, doorWall), /겹칩니다/)
 assert.equal(opening.find((part) => part.name === '문짝').wall, undefined)
 assert.throws(() => contract.parseWallDoors([
   ...withDoor.wallDoors,

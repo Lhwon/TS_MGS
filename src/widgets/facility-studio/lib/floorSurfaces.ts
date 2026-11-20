@@ -121,6 +121,7 @@ export const createFloorSurfaces = (unit: number) => {
         }),
       )
       mesh.name = area.name
+      mesh.receiveShadow = true
       mesh.position.set(origin.x * unit, origin.y * unit, 0)
       mesh.scale.setScalar(unit)
       mesh.renderOrder = -160 + index / MAX_FLOOR_AREAS

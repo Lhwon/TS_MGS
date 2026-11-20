@@ -417,6 +417,11 @@ try {
   assert.equal(topology.canvas, topology.labels)
   assert.equal(topology.far, 20000)
   assert.ok(topology.meshState.length >= 7)
+  const drawOrder = new Map(topology.meshState.map(({ name, order }) => [name, order]))
+  assert.ok(drawOrder.get('ports') < drawOrder.get('edges'))
+  assert.ok(drawOrder.get('edges') < drawOrder.get('arrows'))
+  assert.ok(drawOrder.get('arrows') < drawOrder.get('node-borders'))
+  assert.ok(drawOrder.get('node-borders') < drawOrder.get('nodes'))
   assert.ok(
     topology.meshState.every(
       (mesh) =>

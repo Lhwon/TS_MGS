@@ -371,18 +371,6 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
           ? theme.portFill
           : legacyColor(port.fillColor),
       )
-      if (stroke > 0 && !port.radiusRatio) {
-        const tabWidth = Math.min(w * 0.24, h * 0.46)
-        rounded(
-          port.x,
-          port.y - h / 2 + stroke * 2,
-          tabWidth,
-          stroke * 1.2,
-          stroke / 2,
-          96,
-          outline,
-        )
-      }
     }
     portMesh = new THREE.Mesh(
       new THREE.BufferGeometry()
@@ -440,15 +428,15 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
   group.add(captions)
   // 압축한 바닥 높이와 무관하게 겹침 순서를 보장하는 지도 전용 페인터 순서
   const orders: Record<string, number> = {
-    edges: -100,
-    arrows: -99,
-    'vehicle-headings': -96,
-    'node-borders': -98,
-    ports: -95,
+    ports: -100,
+    edges: -99,
+    arrows: -98,
+    'node-borders': -97,
+    nodes: -96,
+    'vehicle-headings': -95,
     'port-captions': -94,
   }
   nodeMesh.name = 'nodes'
-  nodeMesh.renderOrder = -97
   group.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return
     if (orders[object.name] !== undefined) object.renderOrder = orders[object.name]

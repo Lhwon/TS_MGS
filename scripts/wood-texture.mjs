@@ -88,6 +88,37 @@ const createMetalPng = () => {
   ])
 }
 
+/** 기둥 도장과 반복되는 타공 가장자리의 명암을 작은 텍스처에 기록 */
+const createUprightPng = () => {
+  const width = 64
+  const height = 128
+  const stride = width * 4 + 1
+  const pixels = Buffer.alloc(stride * height)
+  for (let y = 0; y < height; y++) {
+    const dy = (y % 32) - 16
+    for (let x = 0; x < width; x++) {
+      const dx = x - width / 2
+      const radius = Math.hypot(dx / 4.2, dy / 5.8)
+      const border = Math.max(0, 1 - Math.abs(radius - 1.1) * 5)
+      const shade = radius < 0.9 ? 66 : 235 + border * (dy > 0 ? 18 : -54)
+      const pixel = stride * y + x * 4 + 1
+      pixels.fill(shade, pixel, pixel + 3)
+      pixels[pixel + 3] = 255
+    }
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 6
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(pixels)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
 /** 지정 재질에 내장 이미지를 연결하는 휴대형 바이너리 모델 구성 */
 const embedTexture = (buffer, matches, createPng) => {
   const jsonLength = buffer.readUInt32LE(12)
@@ -137,7 +168,11 @@ const embedTexture = (buffer, matches, createPng) => {
 /** 나뭇결과 도금 강판을 해당 재질에만 적용하는 GLB 표면 구성 */
 export const embedSurfaceTextures = (buffer) =>
   embedTexture(
-    embedTexture(buffer, (name) => name.startsWith('wood'), createWoodPng),
-    (name) => name === 'rackDeck',
-    createMetalPng,
+    embedTexture(
+      embedTexture(buffer, (name) => name.startsWith('wood'), createWoodPng),
+      (name) => name === 'rackDeck',
+      createMetalPng,
+    ),
+    (name) => name === 'rackUpright',
+    createUprightPng,
   )

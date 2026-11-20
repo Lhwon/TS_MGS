@@ -34,6 +34,7 @@ globalThis.FileReader = ExportReader
 const cargoOnly = process.argv.includes('--cargo-only')
 const cargoIds = new Set(['wooden-crate', 'wooden-crate-stack'])
 const handlingOnly = process.argv.includes('--handling-only')
+const rackOnly = process.argv.includes('--rack-only')
 const handlingIds = new Set(['centering-station', 'double-deck-conveyor'])
 const output = 'public/models/ceram-mp5'
 await fs.mkdir(output, { recursive: true })
@@ -48,6 +49,7 @@ const materials = Object.fromEntries(
     blue: '#4a7080',
     screen: '#294c57',
     rackFrame: '#315570',
+    rackUpright: '#315570',
     rackBeam: '#D87932',
     rackDeck: '#A5ADB2',
     rackFoot: '#414A50',
@@ -122,6 +124,7 @@ const cylinder = (root, material, x, y, z, diameter, h, horizontal = false) => {
 const save = async (id, name, kind, model) => {
   if (cargoOnly && !cargoIds.has(id)) return
   if (handlingOnly && !handlingIds.has(id)) return
+  if (rackOnly && !id.startsWith('storage-rack')) return
   const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3())
   const buffer = embedSurfaceTextures(
     Buffer.from(await new GLTFExporter().parseAsync(model, { binary: true })),
@@ -187,12 +190,21 @@ const storageRack = (levels) => {
   const rack = new THREE.Group()
   const pitch = 1870
   const height = levels * pitch + 110
+  const uprightGeometry = new THREE.BoxGeometry(0.09, height / 1000, 0.09)
+  const uv = uprightGeometry.getAttribute('uv')
+  const normals = uprightGeometry.getAttribute('normal')
+  for (let i = 0; i < uv.count; i++)
+    if (Math.abs(normals.getY(i)) < 0.5) uv.setY(i, uv.getY(i) * (height / 240))
   for (const x of [-1200, 1200]) {
     for (const y of [-1200, 1200]) {
-      box(rack, 'rackFrame', x, y, height / 2, 90, 90, height).name = `rack-upright-${x}-${y}`
-      box(rack, 'rackFoot', x, y, 20, 100, 100, 40).name = `rack-foot-${x}-${y}`
+      const upright = new THREE.Mesh(uprightGeometry, materials.rackUpright)
+      upright.name = `rack-upright-${x}-${y}`
+      upright.position.copy(point(x, y, height / 2))
+      rack.add(upright)
+      box(rack, 'rackFoot', x, y, 6, 100, 100, 12).name = `rack-foot-${x}-${y}`
+      box(rack, 'rackFrame', x, y, 20, 94, 94, 16).name = 'rack-base-riser'
       for (const offset of [-33, 33])
-        cylinder(rack, 'fastener', x + offset, y - offset, 43, 12, 6).name = 'rack-anchor-bolt'
+        cylinder(rack, 'fastener', x + offset, y - Math.sign(offset) * 46, 15, 7, 6).name = 'rack-anchor-bolt'
     }
     for (let floor = 0; floor < levels; floor++) {
       const base = floor * pitch
@@ -208,7 +220,7 @@ const storageRack = (levels) => {
     box(rack, 'rackDeck', 0, 0, z + 55, 2390, 2390, 20).name = `storage-deck-${floor + 1}`
     for (const x of [-1200, 1200])
       for (const y of [-1180, 1180])
-        box(rack, 'fastener', x, y, z - 65, 25, 38, 16).name = 'rack-beam-connector'
+        box(rack, 'fastener', x, y, z - 56, 28, 44, 29).name = 'rack-beam-connector'
   }
   return rack
 }
@@ -291,8 +303,9 @@ for (const file of [
   'src/entities/facility/ceram-mp5.equipment.json',
   `${output}/ceram-mp5.equipment.json`,
 ]) {
-  const target = cargoOnly || handlingOnly ? JSON.parse(await fs.readFile(file, 'utf8')) : library
-  if (cargoOnly || handlingOnly) {
+  const partial = cargoOnly || handlingOnly || rackOnly
+  const target = partial ? JSON.parse(await fs.readFile(file, 'utf8')) : library
+  if (partial) {
     const replacements = new Map(assets.map((asset) => [asset.id, asset]))
     target.assets = target.assets.map((asset) => replacements.get(asset.id) ?? asset)
     for (const asset of assets)
@@ -301,7 +314,7 @@ for (const file of [
   await fs.writeFile(file, JSON.stringify(target))
 }
 console.log(`Generated ${assets.length} static GLB models`)
-if (!handlingOnly)
+if (!handlingOnly && !rackOnly)
   await fs.writeFile(
     'packages/map3d/cargo-models.ts',
     `import type { FacilityAsset } from './index'\n\n// 모델 생성기로 관리하는 공통 캐리어 원본\nexport const cargoModels: readonly FacilityAsset[] = ${JSON.stringify(assets.filter((asset) => cargoIds.has(asset.id.replace('ceram-mp5-', ''))))}\n`,

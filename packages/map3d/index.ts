@@ -1,7 +1,7 @@
 import { decodeEmbeddedGlb, embeddedGlbPartCount } from './glbData'
 import { normalizeCargoDocument } from './cargo'
 import { parseFloorAreas, type FloorArea } from './floorAreas'
-import { parseWallDoors, type WallDoor } from './wallDoors'
+import { parseWallDoors, wallOpeningPartBudget, type WallDoor } from './wallDoors'
 export * from './wallDoors'
 export * from './floorAreas'
 export { normalizeCargoDocument, standardCargoAsset } from './cargo'
@@ -371,7 +371,7 @@ const validateFacilityDocument = (
     result.instances.reduce(
       (sum, instance) => {
         const asset = assets.get(instance.assetId)!
-        if (!asset.glb) return sum + (instance.wallDoors ? instance.wallDoors.length * 6 + 1 : asset.parts.length)
+        if (!asset.glb) return sum + (instance.wallDoors ? wallOpeningPartBudget(instance.wallDoors) : asset.parts.length)
         let cost = glbCosts.get(asset)
         if (cost === undefined) {
           cost = embeddedGlbPartCount(decodeEmbeddedGlb(asset.glb.data))

@@ -7,7 +7,7 @@
  */
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useFacilityEditor } from '@/features/facility-editor/index.ts'
 import { useEditor } from '@/features/map-editor/index.ts'
 import {
@@ -23,7 +23,7 @@ import {
   wallBody,
   wallDoorLimits,
 } from '@/entities/facility/index.ts'
-import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, WallDoor } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, Point3, WallDoor } from '@/entities/facility/index.ts'
 import { createFacilityScene } from '@/widgets/facility-studio/lib/FacilityScene.ts'
 import { DEFAULT_LAYERS, type Layers } from '@/entities/map/index.ts'
 import { GlbModelCache } from '@bem/map3d/glb'
@@ -60,6 +60,7 @@ const catalogAssets = computed(() => {
   return [...entries.values()]
 })
 const doorEditor = ref<HTMLElement>()
+const focusedOpening = ref('')
 const selectedWall = computed(() => wallBody(selectedModel.value))
 const doorLimits = computed(() => wallDoorLimits(studio.selected?.wallDoors ?? []))
 const baseSize = computed(() => selectedModel.value && facilityModelSize(selectedModel.value))
@@ -91,7 +92,14 @@ const quickResize = shallowRef<{
 /** 표시 정밀도를 정리하면서 작은 치수의 유효 숫자를 유지 */
 const displaySize = (size: number) => Number(size.toPrecision(12))
 
-const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'translate' | 'rotate' | 'scale'>('select')
+const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'translate' | 'rotate' | 'scale' | 'door' | 'window' | 'measure'>('select')
+const sceneTool = computed(() => {
+  if (tool.value === 'wall' || tool.value === 'floor') return 'place'
+  if (tool.value === 'door' || tool.value === 'window') return 'attach'
+  return tool.value
+})
+const sitePreview = ref(false)
+const measurement = shallowRef<Point3[]>([])
 const floorId = ref('')
 const floorAreas = computed(() => studio.document.floors ?? [])
 const hasSceneContent = computed(() => studio.document.assets.length > 0 || floorAreas.value.length > 0)
@@ -165,6 +173,14 @@ const pose = reactive({
 
 let scene: ReturnType<typeof createFacilityScene> | undefined
 
+/** 지도 편집 위치를 보존한 채 현장 눈높이 미리보기로 전환 */
+const toggleSitePreview = () => {
+  if (!scene) return
+  cancelQuickResize()
+  sitePreview.value = !sitePreview.value
+  scene.setSitePreview(sitePreview.value)
+}
+
 /**
  * 편집 명령의 예외를 화면 상태로 변환하고 정상 처리 시 이전 오류를 해제하는 작업 실행
  *
@@ -182,17 +198,65 @@ const attempt = (action: () => void) => {
   }
 }
 
-/** 현재 벽의 상대 위치에 문을 부착하거나 기존 문의 치수를 변경 */
-const applyWallDoors = (wallDoors: WallDoor[]) => {
+/** 현재 벽의 상대 위치에 문이나 창을 부착하고 기존 개구부의 치수를 변경 */
+const applyWallDoors = (wallDoors: WallDoor[], focus: string) => {
   if (!studio.selected || !selectedWall.value) return
-  attempt(() => studio.updateInstance(studio.selected!.id, { wallDoors }))
+  if (attempt(() => studio.updateInstance(studio.selected!.id, { wallDoors })))
+    focusedOpening.value = focus
 }
 
-/** 선택한 단일 직선 벽의 문 설정을 표시 */
-const showDoorEditor = () => {
+/** 실측 스케일을 사용하는 지도에서 부착이나 측정을 시작 */
+const startSiteTool = (mode: 'door' | 'window' | 'measure') => {
+  attempt(() => {
+    if (map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
+    if (mode === 'measure') measurement.value = []
+    tool.value = mode
+  })
+}
+
+/** 벽에서 찍은 점을 로컬 치수로 환산하고 일치하는 높이에 개구부를 부착 */
+const attachOpening = (id: string | undefined, point: Point3) => {
+  const window = tool.value === 'window'
+  const instance = studio.document.instances.find((item) => item.id === id)
+  const body = wallBody(studio.document.assets.find((asset) => asset.id === instance?.assetId))
+  const applied = attempt(() => {
+    if (!instance || !body) throw new Error('문이나 창문을 붙일 단일 직선 벽을 클릭하세요.')
+    const placed = resolveFacilityInstance(instance, map.document.ports)
+    const sx = placed.scale?.x ?? 1
+    const sz = placed.scale?.z ?? 1
+    const width = body.size.x * sx
+    const height = body.size.z * sz
+    if (width < 100 || height < 200) throw new Error('벽이 너무 작아 문이나 창문을 붙일 수 없습니다.')
+    const rotation = placed.rotation * Math.PI / 180
+    const clickedX =
+      (point.x - placed.position.x) * Math.cos(rotation) +
+      (point.y - placed.position.y) * Math.sin(rotation) - body.position.x * sx
+    const clickedHeight = point.z - placed.position.z - (body.position.z - body.size.z / 2) * sz
+    const openingWidth = Math.min(width, window ? 1200 : 1040)
+    const openingHeight = Math.min(height, window ? 1000 : 2160)
+    const limit = (width - openingWidth) / 2
+    const opening: WallDoor = {
+      id: crypto.randomUUID(),
+      offset: Math.max(-limit, Math.min(limit, Math.round(clickedX))),
+      width: openingWidth,
+      height: openingHeight,
+      ...(window
+        ? { kind: 'window', sill: Math.max(0, Math.min(height - openingHeight, Math.round(clickedHeight - openingHeight / 2))) }
+        : {}),
+    }
+    studio.updateInstance(instance.id, { wallDoors: [...(instance.wallDoors ?? []), opening] })
+    studio.selectedId = instance.id
+    focusedOpening.value = opening.id
+    studio.message = window ? '창문을 붙였습니다.' : '문을 붙였습니다.'
+  })
+  if (!applied) return
   tool.value = 'select'
-  if (doorEditor.value) doorEditor.value.scrollIntoView({ block: 'nearest' })
-  else studio.message = '문을 붙일 직선 벽을 캔버스 또는 배치 목록에서 선택하세요.'
+  void nextTick(() => doorEditor.value?.scrollIntoView({ block: 'nearest' }))
+}
+
+/** 처음 두 점으로 치수를 읽고 다음 클릭에서 새 측정 시작 */
+const addMeasurePoint = (point: Point3) => {
+  measurement.value = measurement.value.length === 1 ? [...measurement.value, point] : [point]
 }
 
 /** 선택 객체의 상대 배치를 유지하며 입력한 X와 Y 이동량을 한 번에 적용 */
@@ -247,7 +311,7 @@ const scaleFromSize = () => {
     const ratio = value === displaySize(size[axis] * current) ? current : value / size[axis]
     const doorMinimum = minimumDoorSize(axis)
     if (doorMinimum > 0 && ratio * size[axis] < doorMinimum - 0.000001)
-      throw new Error(`부착한 문을 유지하려면 벽 ${label} 치수를 ${doorMinimum} mm 이상으로 설정하세요.`)
+      throw new Error(`부착한 문과 창문을 유지하려면 벽 ${label} 치수를 ${doorMinimum} mm 이상으로 설정하세요.`)
     if (!Number.isFinite(ratio) || ratio < minScale * (1 - 1e-10) || ratio > maxScale * (1 + 1e-10))
       throw new Error(
         `${label}는 ${displaySize(size[axis] * minScale)}~${displaySize(size[axis] * maxScale)} mm로 입력하세요.`,
@@ -684,13 +748,15 @@ onMounted(() => {
       place: placeOnFloor,
       finishFloor,
       placeAtPort,
+      attachOpening,
+      measurePoint: addMeasurePoint,
       move: (id, position, rotation, scale) =>
         attempt(() => updatePose(id, { position, rotation, scale })),
     })
     scene.setMap(map.document, map.theme, props.layers ?? DEFAULT_LAYERS)
     scene.setDocument(studio.document)
     scene.setSelected(studio.selectedIds)
-    scene.setTool(tool.value === 'wall' || tool.value === 'floor' ? 'place' : tool.value)
+    scene.setTool(sceneTool.value)
     scene.fit()
   } catch (e) {
     error.value = `3D 초기화 실패: ${e instanceof Error ? e.message : String(e)}`
@@ -728,6 +794,7 @@ watch(
 watch(
   () => map.mapRevision,
   () => {
+    if (sitePreview.value) toggleSitePreview()
     cancelQuickResize()
     error.value = ''
     placementPort.value = ''
@@ -746,8 +813,10 @@ watch(
 watch(tool, (value) => {
   if (value !== 'wall') wallStart.value = undefined
   if (value !== 'floor') floorDraft.value = undefined
-  scene?.setTool(value === 'wall' || value === 'floor' ? 'place' : value)
+  if (value !== 'measure') measurement.value = []
+  scene?.setTool(sceneTool.value)
 })
+watch(measurement, (points) => scene?.setMeasurement(points))
 watch([floorDraft, selectedFloor], ([draft, area]) => {
   scene?.setFloorOutline(
     draft?.points ?? area?.points ?? [],
@@ -769,7 +838,7 @@ onBeforeUnmount(() => scene?.dispose())
   <section
     class="facility-studio d-flex flex-column"
     aria-label="3D 시설 설계"
-    @keydown.esc="(tool === 'wall' || tool === 'floor') && (tool = 'select')"
+    @keydown.esc="sitePreview ? toggleSitePreview() : (['wall', 'floor', 'door', 'window', 'measure'].includes(tool) && (tool = 'select'))"
   >
     <div class="facility-toolbar d-flex flex-wrap align-center ga-2">
       <div>
@@ -817,156 +886,196 @@ onBeforeUnmount(() => scene?.dispose())
         @click="bind"
       />
     </div>
-    <div class="facility-layout">
+    <div class="facility-layout" :class="{ 'facility-site-preview': sitePreview }">
       <v-sheet
         tag="aside"
         aria-label="3D 작업 도구"
         class="facility-tools-panel overflow-auto"
         data-testid="facility-tools-panel"
       >
-        <div class="d-flex flex-column ga-2 mb-4">
-          <v-btn
-            text="GLB 모델 카탈로그"
-            class="facility-primary"
-            data-testid="default-catalog"
-            :disabled="studio.busy"
-            @click="openCatalog"
-          />
-          <span
-            v-if="studio.asset"
-            class="text-caption text-truncate"
-            :title="studio.asset.name"
-          >
-            {{ studio.asset.name }}
-          </span>
-          <div class="facility-tabs">
+        <v-btn
+          :text="sitePreview ? '편집으로 돌아가기' : '현장 미리보기'"
+          :aria-pressed="sitePreview"
+          data-testid="site-preview"
+          class="w-100 mb-3"
+          @click="toggleSitePreview"
+        />
+        <p v-if="sitePreview" class="text-caption facility-muted">
+          눈높이 1.6 m · 오른쪽 드래그로 회전 · Space와 왼쪽 드래그로 이동
+        </p>
+        <div v-show="!sitePreview">
+          <div class="d-flex flex-column ga-2 mb-4">
             <v-btn
-              text="새 모델 디자인"
-              data-testid="new-model"
+              text="GLB 모델 카탈로그"
+              class="facility-primary"
+              data-testid="default-catalog"
               :disabled="studio.busy"
-              @click="openDesigner()"
+              @click="openCatalog"
+            />
+            <span
+              v-if="studio.asset"
+              class="text-caption text-truncate"
+              :title="studio.asset.name"
+            >
+              {{ studio.asset.name }}
+            </span>
+            <div class="facility-tabs">
+              <v-btn
+                text="새 모델 디자인"
+                data-testid="new-model"
+                :disabled="studio.busy"
+                @click="openDesigner()"
+              />
+              <v-btn
+                text="선택 모델 편집"
+                data-testid="model-edit"
+                :disabled="!studio.asset || !!studio.asset.glb || studio.busy"
+                @click="openDesigner(studio.asset ?? null)"
+              />
+            </div>
+          </div>
+          <h2>배치 및 편집</h2>
+          <div class="facility-tabs mb-2">
+            <v-btn
+              v-for="[value, label] in [
+                ['select', '선택'],
+                ['place', '바닥 배치'],
+                ['port', '포트 클릭 배치'],
+                ['translate', '이동'],
+                ['rotate', '회전'],
+                ['scale', '크기'],
+              ] as const"
+              :key="value"
+              :data-testid="`tool-${value}`"
+              :disabled="((value === 'place' || value === 'port') && !studio.asset) ||
+                (multiSelected && (value === 'translate' || value === 'rotate' || value === 'scale'))"
+              :class="{ active: tool === value }"
+              @click="tool = value"
+            >
+              {{ label }}
+            </v-btn>
+            <v-btn
+              data-testid="place-center"
+              :disabled="!studio.asset"
+              @click="placeCenter"
+            >
+              중앙 배치
+            </v-btn>
+          </div>
+          <div class="d-flex flex-column ga-2 mb-4">
+            <select
+              v-model="placementPort"
+              aria-label="배치할 포트"
+              data-testid="placement-port"
+            >
+              <option value="">Port ID 선택</option>
+              <option
+                v-for="port in map.document.ports"
+                :key="port.id"
+                :value="port.id"
+              >
+                {{ port.id }}
+              </option>
+            </select>
+            <v-btn
+              data-testid="place-port"
+              :disabled="!studio.asset || !placementPort"
+              @click="placeAtPort(placementPort)"
+            >
+              선택 포트에 1개 배치
+            </v-btn>
+          </div>
+          <h2>인테리어 편집</h2>
+          <div class="facility-tabs mb-2">
+            <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
+            <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
+          </div>
+          <div class="facility-tabs mb-4">
+            <v-btn
+              text="문 붙이기"
+              data-testid="interior-door"
+              :class="{ active: tool === 'door' }"
+              :disabled="studio.busy"
+              @click="startSiteTool('door')"
             />
             <v-btn
-              text="선택 모델 편집"
-              data-testid="model-edit"
-              :disabled="!studio.asset || !!studio.asset.glb || studio.busy"
-              @click="openDesigner(studio.asset ?? null)"
+              text="창문 붙이기"
+              data-testid="interior-window"
+              :class="{ active: tool === 'window' }"
+              :disabled="studio.busy"
+              @click="startSiteTool('window')"
             />
           </div>
-        </div>
-        <h2>배치 및 편집</h2>
-        <div class="facility-tabs mb-2">
-          <v-btn
-            v-for="[value, label] in [
-              ['select', '선택'],
-              ['place', '바닥 배치'],
-              ['port', '포트 클릭 배치'],
-              ['translate', '이동'],
-              ['rotate', '회전'],
-              ['scale', '크기'],
-            ] as const"
-            :key="value"
-            :data-testid="`tool-${value}`"
-            :disabled="((value === 'place' || value === 'port') && !studio.asset) ||
-              (multiSelected && (value === 'translate' || value === 'rotate' || value === 'scale'))"
-            :class="{ active: tool === value }"
-            @click="tool = value"
-          >
-            {{ label }}
-          </v-btn>
-          <v-btn
-            data-testid="place-center"
-            :disabled="!studio.asset"
-            @click="placeCenter"
-          >
-            중앙 배치
-          </v-btn>
-        </div>
-        <div class="d-flex flex-column ga-2 mb-4">
-          <select
-            v-model="placementPort"
-            aria-label="배치할 포트"
-            data-testid="placement-port"
-          >
-            <option value="">Port ID 선택</option>
-            <option
-              v-for="port in map.document.ports"
-              :key="port.id"
-              :value="port.id"
+          <p v-if="tool === 'door' || tool === 'window'" class="text-caption mb-3" role="status">
+            벽에서 {{ tool === 'door' ? '문' : '창문' }}이 들어갈 위치를 클릭하세요. Esc 취소
+          </p>
+          <h2>보기</h2>
+          <div class="facility-tabs">
+            <v-btn
+              data-testid="measure-tool"
+              :aria-pressed="tool === 'measure'"
+              @click="tool === 'measure' ? (tool = 'select') : startSiteTool('measure')"
             >
-              {{ port.id }}
-            </option>
-          </select>
-          <v-btn
-            data-testid="place-port"
-            :disabled="!studio.asset || !placementPort"
-            @click="placeAtPort(placementPort)"
+              <span class="facility-measure-indicator mr-2" aria-hidden="true"></span>
+              치수 확인
+            </v-btn>
+            <v-btn
+              data-testid="scene-fit"
+              @click="scene?.fit()"
+            >
+              전체 보기
+            </v-btn>
+            <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
+            <v-btn
+              v-if="map.document.layout"
+              :class="{ active: showFloorPlan }"
+              :aria-pressed="showFloorPlan"
+              data-testid="interior-floor-plan"
+              @click="floorPlanVisible = !showFloorPlan"
+            >
+              배경 도면
+            </v-btn>
+          </div>
+          <div v-if="tool === 'measure'" class="d-flex flex-column ga-2 mt-3" data-testid="measure-panel">
+            <p class="text-caption" role="status">
+              {{ measurement.length === 2 ? '다음 점을 클릭하면 새 측정을 시작합니다.' : measurement.length ? '끝점을 클릭하세요.' : '바닥이나 객체에서 시작점을 클릭하세요.' }}
+            </p>
+            <small>초록색으로 강조된 가장자리에 자동 맞춤 · Shift로 꼭짓점에 맞춤</small>
+            <small>수평각은 +X 방향, 수직각은 바닥 평면 기준</small>
+            <v-btn text="측정 지우기" :disabled="!measurement.length" @click="measurement = []" />
+          </div>
+          <p v-if="tool === 'wall'" class="text-caption mt-3" role="status">
+            {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
+          </p>
+          <div
+            v-if="floorDraft"
+            class="floor-drawing-tools d-flex flex-column ga-2 mt-3"
           >
-            선택 포트에 1개 배치
-          </v-btn>
-        </div>
-        <h2>인테리어 편집</h2>
-        <div class="facility-tabs mb-2">
-          <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
-          <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
-        </div>
-        <v-btn
-          text="벽에 문 붙이기"
-          class="w-100 mb-4"
-          data-testid="interior-door"
-          :disabled="studio.busy"
-          @click="showDoorEditor"
-        />
-        <h2>보기</h2>
-        <div class="facility-tabs">
-          <v-btn
-            data-testid="scene-fit"
-            @click="scene?.fit()"
-          >
-            전체 보기
-          </v-btn>
-          <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
-          <v-btn
-            v-if="map.document.layout"
-            :class="{ active: showFloorPlan }"
-            :aria-pressed="showFloorPlan"
-            data-testid="interior-floor-plan"
-            @click="floorPlanVisible = !showFloorPlan"
-          >
-            배경 도면
-          </v-btn>
-        </div>
-        <p v-if="tool === 'wall'" class="text-caption mt-3" role="status">
-          {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
-        </p>
-        <div
-          v-if="floorDraft"
-          class="floor-drawing-tools d-flex flex-column ga-2 mt-3"
-        >
-          <span class="text-caption" role="status">
-            {{ floorGuide }}
-            <strong v-if="floorDraft.shape === 'polygon'">{{ floorDraft.points.length }}점</strong>
-          </span>
-          <select
-            v-if="!floorDraft.replaceId"
-            v-model="floorMaterial"
-            aria-label="새 바닥 재질"
-            data-testid="floor-draft-material"
-          >
-            <option v-for="(preset, type) in floorMaterials" :key="type" :value="type">
-              {{ preset.label }}
-            </option>
-          </select>
-          <v-btn
-            v-if="floorDraft.shape === 'polygon'"
-            :disabled="floorDraft.points.length < 3"
-            class="floor-drawing-apply"
-            text="바닥 적용"
-            data-testid="floor-finish"
-            @click="finishFloor"
-          />
-          <v-btn :disabled="!floorDraft.points.length" text="마지막 점 취소" @click="undoFloorPoint" />
-          <v-btn text="그리기 취소" @click="tool = 'select'" />
+            <span class="text-caption" role="status">
+              {{ floorGuide }}
+              <strong v-if="floorDraft.shape === 'polygon'">{{ floorDraft.points.length }}점</strong>
+            </span>
+            <select
+              v-if="!floorDraft.replaceId"
+              v-model="floorMaterial"
+              aria-label="새 바닥 재질"
+              data-testid="floor-draft-material"
+            >
+              <option v-for="(preset, type) in floorMaterials" :key="type" :value="type">
+                {{ preset.label }}
+              </option>
+            </select>
+            <v-btn
+              v-if="floorDraft.shape === 'polygon'"
+              :disabled="floorDraft.points.length < 3"
+              class="floor-drawing-apply"
+              text="바닥 적용"
+              data-testid="floor-finish"
+              @click="finishFloor"
+            />
+            <v-btn :disabled="!floorDraft.points.length" text="마지막 점 취소" @click="undoFloorPoint" />
+            <v-btn text="그리기 취소" @click="tool = 'select'" />
+          </div>
         </div>
       </v-sheet>
       <div class="facility-canvas-wrap position-relative d-flex flex-column">
@@ -977,7 +1086,7 @@ onBeforeUnmount(() => scene?.dispose())
           @keydown.enter="finishFloorOnEnter"
         ></div>
         <div
-          v-if="studio.selected"
+          v-if="studio.selected && !sitePreview"
           class="facility-selection-tools"
           data-testid="selection-tools"
         >
@@ -1045,19 +1154,20 @@ onBeforeUnmount(() => scene?.dispose())
           </small>
         </div>
         <div
-          v-if="!studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !floorDraft"
+          v-if="!sitePreview && !studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !floorDraft"
           class="facility-empty position-absolute text-center"
         >
           모델 만들기 → 포트 클릭 또는 Port ID 선택 → 1개 배치
           <br />
           <small>기존 MGS 노드·포트는 2D 맵에서 편집합니다.</small>
         </div>
-        <div class="facility-hint position-absolute text-center">
+        <div v-if="!sitePreview" class="facility-hint position-absolute text-center">
           왼쪽 드래그: 영역 선택 · Shift + 클릭: 추가 또는 해제 · Space + 왼쪽 드래그: 화면 이동
         </div>
       </div>
       <v-sheet
         tag="aside"
+        v-show="!sitePreview"
         class="facility-inspector overflow-auto"
       >
         <FloorAreaEditor
@@ -1168,7 +1278,7 @@ onBeforeUnmount(() => scene?.dispose())
             {{ displaySize(baseSize.z) }} mm
           </small>
           <small v-if="doorLimits.width" data-testid="wall-door-limits">
-            문을 유지하려면 벽의 가로는 {{ doorLimits.width }} mm, 높이는
+            부착물을 유지하려면 벽의 가로는 {{ doorLimits.width }} mm, 높이는
             {{ doorLimits.height }} mm 이상이어야 합니다.
           </small>
           <label v-if="wallPart" class="d-flex flex-column mt-2">
@@ -1270,6 +1380,7 @@ onBeforeUnmount(() => scene?.dispose())
             :doors="studio.selected.wallDoors ?? []"
             :width="selectedWall.size.x * (studio.selected.scale?.x ?? 1)"
             :height="selectedWall.size.z * (studio.selected.scale?.z ?? 1)"
+            :focus="focusedOpening"
             @apply="applyWallDoors"
           />
         </div>
@@ -1416,6 +1527,9 @@ select {
   flex: 1;
   min-height: 0;
 }
+.facility-layout.facility-site-preview {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
 .facility-tools-panel {
   min-width: 0;
   min-height: 0;
@@ -1446,6 +1560,15 @@ select {
 }
 .facility-tabs > * {
   flex: 1;
+}
+.facility-measure-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8b929b;
+}
+[aria-pressed='true'] .facility-measure-indicator {
+  background: #24ad5f;
 }
 .facility-form {
   display: grid;
@@ -1571,6 +1694,20 @@ select {
 .facility-canvas :deep(.facility-floor-first:disabled) {
   cursor: default;
 }
+.facility-canvas :deep(.facility-measure-label) {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, calc(-100% - 6px));
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
 .facility-empty {
   top: 45%;
   left: 0;
@@ -1674,6 +1811,9 @@ select {
   }
   .facility-layout {
     grid-template-columns: 214px minmax(0, 1fr) 235px;
+  }
+  .facility-layout.facility-site-preview {
+    grid-template-columns: 214px minmax(0, 1fr);
   }
   .facility-inspector {
     padding: 12px;

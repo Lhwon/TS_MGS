@@ -127,14 +127,17 @@ const createWallOverlapPass = (renderer: THREE.WebGLRenderer) => {
         }
         maskTexture.value = mask.texture
         const autoClear = renderer.autoClear
+        const shadowsPending = renderer.shadowMap.needsUpdate
         const cubeFace = renderer.getActiveCubeFace()
         const mipLevel = renderer.getActiveMipmapLevel()
         renderer.setRenderTarget(mask)
         renderer.autoClear = true
+        renderer.shadowMap.needsUpdate = false
         try {
           renderer.render(maskScene, camera)
         } finally {
           renderer.autoClear = autoClear
+          renderer.shadowMap.needsUpdate = shadowsPending
           renderer.setRenderTarget(target, cubeFace, mipLevel)
         }
       }

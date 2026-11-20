@@ -11,7 +11,7 @@ import { GlbModelCache } from '@bem/map3d/glb'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import type { FacilityAsset, FacilityDocument, FacilityInstance, FacilityPart } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FacilityDocument, FacilityInstance, FacilityPart, Point3 } from '@/entities/facility/index.ts'
 import { resolveFacilityInstance } from '@/entities/facility/index.ts'
 import {
   createMapTopology,
@@ -27,7 +27,10 @@ import { FACILITY_CYLINDER_SEGMENTS, facilityPartMatrix } from '@/entities/facil
 import { instanceParts, surfaceForPart, surfaceMaterials, wallBody, wallDoorLimits } from '@/entities/facility/index.ts'
 import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
 import { createFloorSurfaces } from '@/widgets/facility-studio/lib/floorSurfaces.ts'
+import { snapMeasureHit } from '@/widgets/facility-studio/lib/measureSnap.ts'
 import type { FloorPoint } from '@/entities/facility/index.ts'
+
+type FacilitySceneTool = 'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale' | 'attach' | 'measure'
 /**
  * 기준 지도와 설비 모델을 합성하는 삼차원 렌더러 생성
  * 포트 기준 배치와 이동 핸들 및 시점 조작을 독립적으로 관리하는 편집 화면 구성
@@ -44,6 +47,8 @@ export const createFacilityScene = (
     place(x: number, y: number): void
     finishFloor(): void
     placeAtPort(id: string): void
+    attachOpening(id: string | undefined, point: Point3): void
+    measurePoint(point: Point3): void
     move(
       id: string,
       position: {
@@ -69,6 +74,23 @@ export const createFacilityScene = (
   environmentGenerator.dispose()
   scene.environment = reflections.texture
   scene.environmentIntensity = 0.55
+  let siteView: { position: THREE.Vector3; target: THREE.Vector3 } | undefined
+  let siteLightingDirty = true
+  const siteFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshStandardMaterial({ color: 0xa6a39b, roughness: 0.82 }),
+  )
+  siteFloor.name = 'site-preview-floor'
+  siteFloor.position.z = -0.005
+  siteFloor.renderOrder = -170
+  siteFloor.receiveShadow = true
+  siteFloor.visible = false
+  const light = new THREE.DirectionalLight(0xffffff, 2.5)
+  const fill = new THREE.AmbientLight(0xffffff, 1.5)
+  light.shadow.mapSize.set(2048, 2048)
+  light.shadow.bias = -0.0001
+  renderer.shadowMap.type = THREE.PCFShadowMap
+  renderer.shadowMap.autoUpdate = false
   let controls: OrbitControls
   let transform: TransformControls
   let proxy = new THREE.Object3D()
@@ -106,6 +128,52 @@ export const createFacilityScene = (
     new THREE.LineBasicMaterial({ color: 0x25cfbb, depthWrite: false }),
   )
   floorOutline.visible = false
+  const measurement = new THREE.Group()
+  measurement.name = 'facility-measurement'
+  const measurementPositions = new THREE.BufferAttribute(new Float32Array(6), 3)
+  const measurementGeometry = new THREE.BufferGeometry().setAttribute('position', measurementPositions)
+  measurementGeometry.setDrawRange(0, 0)
+  const measurementLine = new THREE.Line(
+    measurementGeometry,
+    new THREE.LineBasicMaterial({ color: 0xf3a93b, depthTest: false, depthWrite: false, toneMapped: false }),
+  )
+  const measurementPoints = new THREE.Points(
+    measurementLine.geometry,
+    new THREE.PointsMaterial({
+      color: 0xf3a93b, size: 8, sizeAttenuation: false, depthTest: false, depthWrite: false, toneMapped: false,
+    }),
+  )
+  const edgePositions = new THREE.BufferAttribute(new Float32Array(6), 3)
+  const snapEdge = new THREE.Line(
+    new THREE.BufferGeometry().setAttribute('position', edgePositions),
+    new THREE.LineBasicMaterial({ color: 0x45e7a1, depthTest: false, depthWrite: false, toneMapped: false }),
+  )
+  snapEdge.name = 'measurement-snap-edge'
+  const snapPositions = new THREE.BufferAttribute(new Float32Array(3), 3)
+  const snapPoint = new THREE.Points(
+    new THREE.BufferGeometry().setAttribute('position', snapPositions),
+    new THREE.PointsMaterial({
+      color: 0x45e7a1, size: 11, sizeAttenuation: false, depthTest: false, depthWrite: false, toneMapped: false,
+    }),
+  )
+  snapPoint.name = 'measurement-snap-point'
+  for (const object of [measurementLine, measurementPoints, snapEdge, snapPoint])
+    object.frustumCulled = false
+  snapEdge.visible = snapPoint.visible = false
+  snapEdge.renderOrder = 13
+  snapPoint.renderOrder = 14
+  measurement.add(measurementLine, measurementPoints, snapEdge, snapPoint)
+  measurementLine.renderOrder = measurementPoints.renderOrder = 12
+  measurement.visible = false
+  const measurementLabel = document.createElement('output')
+  measurementLabel.className = 'facility-measure-label'
+  measurementLabel.dataset.testid = 'measure-distance'
+  measurementLabel.hidden = true
+  const measurementScreenStart = new THREE.Vector3()
+  const measurementScreenEnd = new THREE.Vector3()
+  const measureFormat = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 1 })
+  let measuredPoints: Point3[] = []
+  let measurementPointer: PointerEvent | undefined
   const firstFloorPoint = document.createElement('button')
   firstFloorPoint.type = 'button'
   firstFloorPoint.className = 'facility-floor-first'
@@ -172,7 +240,7 @@ export const createFacilityScene = (
   let selectedId: string | null = null
   let selectedIds: string[] = []
   let placing = false
-  let toolMode: 'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale' = 'select'
+  let toolMode: FacilitySceneTool = 'select'
   let animationFrame = 0
   let down = { x: 0, y: 0 }
   let downGizmo = false
@@ -215,6 +283,24 @@ export const createFacilityScene = (
     firstFloorPoint.style.left = `${((p.x + 1) / 2) * viewportHost.clientWidth}px`
     firstFloorPoint.style.top = `${((1 - p.y) / 2) * viewportHost.clientHeight}px`
   }
+
+  /** 카메라가 바뀌어도 측정선의 화면 중앙에 치수 배지를 배치 */
+  const drawMeasurementLabel = () => {
+    if (siteView || !measurement.visible || measurementGeometry.drawRange.count !== 2) {
+      measurementLabel.hidden = true
+      return
+    }
+    const start = measurementScreenStart.fromBufferAttribute(measurementPositions, 0).project(camera)
+    const end = measurementScreenEnd.fromBufferAttribute(measurementPositions, 1).project(camera)
+    const x = (start.x + end.x) / 2
+    const y = (start.y + end.y) / 2
+    measurementLabel.hidden =
+      !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 1 || Math.abs(y) > 1 ||
+      Math.abs(start.z) > 1 || Math.abs(end.z) > 1
+    if (measurementLabel.hidden) return
+    measurementLabel.style.left = `${(x + 1) * 50}%`
+    measurementLabel.style.top = `${(1 - y) * 50}%`
+  }
   /**
    * 중복 프레임 예약을 합치고 도형과 라벨을 함께 그리는 화면 갱신 예약
    */
@@ -231,9 +317,14 @@ export const createFacilityScene = (
         camera.far = far
         camera.updateProjectionMatrix()
       }
+      if (siteView && siteLightingDirty) fitSiteLighting(siteBounds())
+      if (toolMode === 'measure' && !siteView) updateMeasurement()
       wallOverlap.render(scene, camera)
-      drawLabels()
-      drawFloorStart()
+      drawMeasurementLabel()
+      if (!siteView) {
+        drawLabels()
+        drawFloorStart()
+      }
     })
   }
   /**
@@ -275,7 +366,7 @@ export const createFacilityScene = (
 
     const key = `${layout.id}:${JSON.stringify(layout.crop)}`
     if (key === floorPlanImageKey) {
-      floorPlan.visible = (floorPlanVisible ?? layout.visible) && !!floorPlan.material.map
+      floorPlan.visible = !siteView && (floorPlanVisible ?? layout.visible) && !!floorPlan.material.map
       return
     }
     floorPlanImageKey = key
@@ -289,7 +380,7 @@ export const createFacilityScene = (
       texture.colorSpace = THREE.SRGBColorSpace
       floorPlan.material.map = texture
       floorPlan.material.needsUpdate = true
-      floorPlan.visible = floorPlanVisible ?? !!mapDocument?.layout?.visible
+      floorPlan.visible = !siteView && (floorPlanVisible ?? !!mapDocument?.layout?.visible)
       requestRender()
     }
     image.src = layout.image
@@ -308,7 +399,8 @@ export const createFacilityScene = (
     visibleLayers = { ...layers }
     mapTheme = theme
     mapLabels = createMapLabels(map, visibleLayers, theme)
-    scene.background = new THREE.Color(theme.background)
+    if (!siteView) scene.background = new THREE.Color(theme.background)
+    if (geometryChanged) siteLightingDirty = true
     for (const material of Array.isArray(grid.material) ? grid.material : [grid.material]) {
       material.vertexColors = false
       material.color.set(theme.grid)
@@ -332,7 +424,7 @@ export const createFacilityScene = (
     portMeshes = ground.children.filter(
       (o) => o.visible && (o.userData.portIds || o.userData.portFaces),
     )
-    grid.visible = layers.grid
+    grid.visible = !siteView && layers.grid
     updateFloorPlan()
     if (mapChanged && requestedDocument) setDocument(requestedDocument)
     requestRender()
@@ -406,6 +498,8 @@ export const createFacilityScene = (
       bindings: { instance: FacilityInstance; part?: FacilityPart; local?: THREE.Matrix4 }[],
     ) => {
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      mesh.receiveShadow = true
+      mesh.castShadow = !Array.isArray(mesh.material) && !mesh.material.transparent
       mesh.userData.ids = bindings.map(({ instance }) => instance.id)
       bindings.forEach(({ instance, part, local }, index) => {
         const list = instanceBindings.get(instance.id) ?? []
@@ -453,6 +547,7 @@ export const createFacilityScene = (
             color: part.color,
             roughness,
             metalness,
+            envMapIntensity: surface === 'glass' ? 1.65 : 1,
             opacity,
             transparent: opacity < 1,
             depthWrite: opacity === 1,
@@ -566,6 +661,7 @@ export const createFacilityScene = (
     previewed.clear()
     meshes = [...batches.values()].flatMap((batch) => batch.meshes)
     if (libraryChanged) glbCache.retain(doc.assets)
+    siteLightingDirty = true
     setSelected(selectedIds)
   }
   /**
@@ -666,8 +762,12 @@ export const createFacilityScene = (
       transform.attach(proxy)
     }
     transform.getHelper().visible =
-      !!instance && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
+      !siteView && !!instance && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
     updateSelectionBounds()
+    if (siteView) {
+      selection.visible = false
+      batchOutline.visible = false
+    }
     requestRender()
   }
   /**
@@ -675,11 +775,15 @@ export const createFacilityScene = (
    *
    * @param tool 현재 활성화할 선택 또는 배치 및 이동 도구
    */
-  const setTool = (tool: 'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale') => {
+  const setTool = (tool: FacilitySceneTool) => {
     toolMode = tool
+    if (tool !== 'measure') {
+      measurementPointer = undefined
+      measurement.visible = false
+    }
     placing = tool === 'place' || tool === 'port'
     transform.enabled =
-      !spacePan.active() && (tool === 'translate' || tool === 'rotate' || tool === 'scale')
+      !siteView && !spacePan.active() && (tool === 'translate' || tool === 'rotate' || tool === 'scale')
     transform.getHelper().visible = !!selectedId && transform.enabled
     transform.setMode(tool === 'rotate' ? 'rotate' : tool === 'scale' ? 'scale' : 'translate')
     transform.setSpace(tool === 'scale' ? 'local' : 'world')
@@ -688,9 +792,87 @@ export const createFacilityScene = (
     transform.showZ = true
     renderer.domElement.style.cursor = spacePan.active()
       ? 'grab'
-      : placing
+      : (placing || tool === 'attach' || tool === 'measure') && !siteView
         ? 'crosshair'
         : 'default'
+    requestRender()
+  }
+  /** 현장 카메라와 조명이 공유하는 실측 좌표 영역 계산 */
+  const siteBounds = () => {
+    const bounds = new THREE.Box3().setFromObject(ground)
+    bounds.union(new THREE.Box3().setFromObject(floorSurfaces.group))
+    for (const instance of instanceBounds.values()) bounds.union(instance)
+    if (bounds.isEmpty()) bounds.set(new THREE.Vector3(-5, -5, 0), new THREE.Vector3(5, 5, 3))
+    return bounds
+  }
+
+  /** 현장 크기에 맞춘 바닥과 방향광 그림자 범위 적용 */
+  const fitSiteLighting = (bounds: THREE.Box3) => {
+    siteLightingDirty = false
+    const size = bounds.getSize(new THREE.Vector3())
+    const center = bounds.getCenter(new THREE.Vector3())
+    const extent = Math.max(size.x, size.y, size.z, 5)
+    siteFloor.position.set(center.x, center.y, -0.005)
+    const floorExtent = extent * 2 + 24
+    siteFloor.scale.set(floorExtent, floorExtent, 1)
+    light.position.copy(center).add(new THREE.Vector3(-0.45, -0.55, 1.2).multiplyScalar(extent))
+    light.target.position.copy(center)
+    light.shadow.normalBias = Math.max(0.004, extent / 1500)
+    Object.assign(light.shadow.camera, {
+      left: -extent, right: extent, top: extent, bottom: -extent, near: 0.1, far: extent * 4,
+    })
+    light.shadow.camera.updateProjectionMatrix()
+    renderer.shadowMap.needsUpdate = true
+  }
+
+  /** 편집 시점을 보관하고 눈높이 현장 보기와 편집 화면 사이를 전환 */
+  const setSitePreview = (enabled: boolean) => {
+    if (enabled === Boolean(siteView)) return
+    if (enabled) {
+      siteView = { position: camera.position.clone(), target: controls.target.clone() }
+      const bounds = siteBounds()
+      const size = bounds.getSize(new THREE.Vector3())
+      const center = bounds.getCenter(new THREE.Vector3())
+      controls.maxPolarAngle = Math.PI / 2
+      camera.position.set(center.x, bounds.min.y + Math.min(size.y * 0.12, 2) - 0.5, 1.6)
+      controls.target.copy(camera.position).add(new THREE.Vector3(0, 5, 0))
+      scene.background = new THREE.Color(0xc6cbd0)
+      renderer.toneMapping = THREE.ACESFilmicToneMapping
+      renderer.shadowMap.enabled = true
+      light.castShadow = true
+      light.intensity = 2.4
+      light.color.setHex(0xfff1e2)
+      fill.intensity = 0.42
+      scene.environmentIntensity = 0.8
+      siteLightingDirty = true
+    } else {
+      camera.position.copy(siteView!.position)
+      controls.target.copy(siteView!.target)
+      siteView = undefined
+      controls.maxPolarAngle = Math.PI / 2.2
+      scene.background = new THREE.Color(mapTheme.background)
+      renderer.toneMapping = THREE.NoToneMapping
+      renderer.shadowMap.enabled = false
+      light.castShadow = false
+      light.position.set(10, -20, 40)
+      light.target.position.set(0, 0, 0)
+      light.intensity = 2.5
+      light.color.setHex(0xffffff)
+      fill.intensity = 1.5
+      scene.environmentIntensity = 0.55
+    }
+    ground.visible = !enabled
+    grid.visible = !enabled && visibleLayers.grid
+    labels.style.visibility = enabled ? 'hidden' : ''
+    firstFloorPoint.style.visibility = enabled ? 'hidden' : ''
+    floorOutline.visible = !enabled && floorOutline.geometry.getAttribute('position')?.count > 1
+    measurement.visible = !enabled && toolMode === 'measure'
+    if (enabled) measurementPointer = undefined
+    siteFloor.visible = enabled
+    updateFloorPlan()
+    setSelected(selectedIds)
+    setTool(toolMode)
+    controls.update()
     requestRender()
   }
   /**
@@ -757,10 +939,14 @@ export const createFacilityScene = (
    */
   const pointerDown = (e: PointerEvent) => {
     renderer.domElement.focus()
+    if (siteView) return
     downWasSpace = spacePan.active()
     down = { x: e.clientX, y: e.clientY }
     downGizmo = transform.enabled && transform.axis !== null && !e.shiftKey
-    if (e.button !== 0 || !e.isPrimary || downWasSpace || downGizmo || placing || e.pointerType === 'touch') return
+    if (
+      e.button !== 0 || !e.isPrimary || downWasSpace || downGizmo || placing ||
+      toolMode === 'measure' || toolMode === 'attach' || e.pointerType === 'touch'
+    ) return
     selectionDrag = { id: e.pointerId, additive: e.shiftKey }
     renderer.domElement.setPointerCapture(e.pointerId)
     e.stopImmediatePropagation()
@@ -816,6 +1002,10 @@ export const createFacilityScene = (
   }
   /** 중앙 크기 핸들의 시작점 특이점을 방지하는 화면 이동량 기반 균등 배율 계산 */
   const pointerMove = (e: PointerEvent) => {
+    if (toolMode === 'measure' && !siteView) {
+      measurementPointer = e.buttons ? undefined : e
+      requestRender()
+    }
     if (uniformScaleStart)
       uniformScaleRatio = Math.exp(
         THREE.MathUtils.clamp((e.clientX - down.x - (e.clientY - down.y)) / 180, -8, 8),
@@ -829,6 +1019,99 @@ export const createFacilityScene = (
     marquee.style.height = `${height}px`
     marquee.hidden = false
   }
+
+  /** 렌더링 중인 모델의 가시 표면 중 포인터에 닿은 첫 교차점 확인 */
+  const firstModelHit = () => ray.intersectObjects(meshes).find((item) => {
+    const material = (item.object as THREE.InstancedMesh).material
+    return Array.isArray(material) || material.opacity > 0
+  })
+
+  /** 객체 바깥쪽 여백에서도 가까운 실루엣이나 노출된 꼭짓점 탐색 */
+  const findNearbyMeasureHit = (cursor: THREE.Vector2, viewport: DOMRect, vertexOnly: boolean) => {
+    const probe = new THREE.Vector2()
+    const horizontal = 16 / viewport.width
+    const vertical = 16 / viewport.height
+    for (const [dx, dy] of [[horizontal, 0], [-horizontal, 0], [0, vertical], [0, -vertical]]) {
+      probe.set(cursor.x + dx!, cursor.y + dy!)
+      ray.setFromCamera(probe, camera)
+      const hit = firstModelHit()
+      if (!hit) continue
+      const snapped = snapMeasureHit(hit, camera, viewport, cursor, vertexOnly)
+      if (snapped) return snapped
+    }
+  }
+
+  /** 커서 미리보기와 최종 클릭에서 동일한 표면과 가장자리를 선택 */
+  const pickMeasurement = (event: PointerEvent) => {
+    const viewport = renderer.domElement.getBoundingClientRect()
+    const cursor = new THREE.Vector2(
+      ((event.clientX - viewport.left) / viewport.width) * 2 - 1,
+      1 - ((event.clientY - viewport.top) / viewport.height) * 2,
+    )
+    if (Math.abs(cursor.x) > 1 || Math.abs(cursor.y) > 1) return
+    camera.updateMatrixWorld()
+    ray.setFromCamera(cursor, camera)
+    const hit = firstModelHit()
+    const fallback = hit?.point ?? ray.ray.intersectPlane(plane, new THREE.Vector3())
+    const snap = hit
+      ? snapMeasureHit(hit, camera, viewport, cursor, event.shiftKey)
+      : findNearbyMeasureHit(cursor, viewport, event.shiftKey)
+    const point = snap?.point ?? fallback
+    if (!point) return
+    return {
+      point: { x: point.x * 1000, y: point.y * 1000, z: point.z * 1000 },
+      snap,
+    }
+  }
+
+  /** 확정 점과 현재 포인터를 잇는 선 및 직선거리와 방향각 갱신 */
+  const updateMeasurement = () => {
+    const hovered = measurementPointer && !spacePan.active()
+      ? pickMeasurement(measurementPointer)
+      : undefined
+    const snap = hovered?.snap
+    snapPoint.visible = !!snap
+    snapEdge.visible = !!snap?.edge
+    if (snap) {
+      snapPositions.setXYZ(0, snap.point.x, snap.point.y, snap.point.z)
+      snapPositions.needsUpdate = true
+      if (snap.edge) {
+        for (const [i, vertex] of snap.edge.entries())
+          edgePositions.setXYZ(i, vertex.x, vertex.y, vertex.z)
+        edgePositions.needsUpdate = true
+      }
+    }
+
+    const [start, confirmed] = measuredPoints
+    const end = confirmed ?? hovered?.point
+    const count = !start ? 0 : end ? 2 : 1
+    if (start) measurementPositions.setXYZ(0, start.x / 1000, start.y / 1000, start.z / 1000)
+    if (start && end) measurementPositions.setXYZ(1, end.x / 1000, end.y / 1000, end.z / 1000)
+    measurementPositions.needsUpdate = true
+    measurementGeometry.setDrawRange(0, count)
+    measurement.visible = count > 0 || !!snap
+
+    if (!start || !end) return
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const dz = end.z - start.z
+    const horizontal = Math.hypot(dx, dy)
+    const heading = (Math.round(THREE.MathUtils.radToDeg(Math.atan2(dy, dx)) * 10) + 3600) % 3600 / 10
+    const slope = THREE.MathUtils.radToDeg(Math.atan2(dz, horizontal))
+    const headingText = horizontal >= 0.05 ? `${measureFormat.format(heading)}°` : '—'
+    const slopeText = `${measureFormat.format(Math.abs(slope) < 0.05 ? 0 : slope)}°`
+    const live = confirmed ? 'polite' : 'off'
+    if (measurementLabel.getAttribute('aria-live') !== live) measurementLabel.setAttribute('aria-live', live)
+    const label = `${measureFormat.format(Math.hypot(horizontal, dz))} mm · 수평 ${headingText} · 수직 ${slopeText}`
+    if (measurementLabel.textContent !== label) measurementLabel.textContent = label
+  }
+
+  /** 커서가 캔버스를 벗어나면 가장자리 강조와 미확정 선 제거 */
+  const clearMeasurementHover = () => {
+    if (!measurementPointer) return
+    measurementPointer = undefined
+    requestRender()
+  }
   /**
    * 드래그 상태와 이동량을 확인하여 화면 이동 또는 클릭과 영역 선택을 확정하는 입력 종료 처리
    *
@@ -837,6 +1120,7 @@ export const createFacilityScene = (
   const pointerUp = (e: PointerEvent) => {
     const drag = e.pointerId === selectionDrag?.id ? selectionDrag : undefined
     clearMarquee(e)
+    if (siteView) return
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4
     if (drag && moved && !spacePan.active() && !placing) {
       events.select(selectInArea(dragBounds(e)), drag.additive ? 'add' : 'replace')
@@ -851,14 +1135,18 @@ export const createFacilityScene = (
       moved
     )
       return
+    if (toolMode === 'measure') {
+      measurementPointer = e
+      const picked = pickMeasurement(e)
+      if (picked) events.measurePoint(picked.point)
+      return
+    }
     const rect = renderer.domElement.getBoundingClientRect()
-    ray.setFromCamera(
-      new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        1 - ((e.clientY - rect.top) / rect.height) * 2,
-      ),
-      camera,
+    const cursor = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      1 - ((e.clientY - rect.top) / rect.height) * 2,
     )
+    ray.setFromCamera(cursor, camera)
     if (toolMode === 'port') {
       ground.updateMatrixWorld(true)
       const hit = ray.intersectObjects(portMeshes)[0]
@@ -876,11 +1164,15 @@ export const createFacilityScene = (
       if (p) events.place(Math.round(p.x * 100) * 10, Math.round(p.y * 100) * 10)
       return
     }
-    const hit = ray.intersectObjects(meshes).find((item) => {
-      const material = (item.object as THREE.InstancedMesh).material
-      return Array.isArray(material) || material.opacity > 0
-    })
+    const hit = firstModelHit()
     const id = hit?.instanceId === undefined ? undefined : hit.object.userData.ids[hit.instanceId]
+    if (toolMode === 'attach') {
+      const point = hit?.point ?? ray.ray.intersectPlane(plane, new THREE.Vector3())
+      if (!point) return
+      const position = { x: point.x * 1000, y: point.y * 1000, z: point.z * 1000 }
+      events.attachOpening(id, position)
+      return
+    }
     events.select(id ? [id] : [], drag?.additive ? 'toggle' : 'replace')
   }
   /**
@@ -900,6 +1192,7 @@ export const createFacilityScene = (
     transform.dispose()
     renderer.domElement.removeEventListener('pointerdown', pointerDown, true)
     renderer.domElement.removeEventListener('pointermove', pointerMove, true)
+    renderer.domElement.removeEventListener('pointerleave', clearMeasurementHover)
     renderer.domElement.removeEventListener('pointerup', pointerUp)
     renderer.domElement.removeEventListener('pointercancel', clearMarquee)
     renderer.domElement.removeEventListener('lostpointercapture', clearMarquee)
@@ -920,8 +1213,19 @@ export const createFacilityScene = (
     cylinder.dispose()
     clearGround()
     floorSurfaces.dispose()
+    siteFloor.geometry.dispose()
+    siteFloor.material.dispose()
+    light.shadow.dispose()
     floorOutline.geometry.dispose()
     floorOutline.material.dispose()
+    measurementLine.geometry.dispose()
+    measurementLine.material.dispose()
+    measurementPoints.material.dispose()
+    snapEdge.geometry.dispose()
+    snapEdge.material.dispose()
+    snapPoint.geometry.dispose()
+    snapPoint.material.dispose()
+    measurementLabel.remove()
     labels.remove()
     floorPlanGeneration++
     floorPlan.geometry.dispose()
@@ -950,6 +1254,7 @@ export const createFacilityScene = (
   host.append(labels)
   host.append(marquee)
   host.append(firstFloorPoint)
+  host.append(measurementLabel)
   firstFloorPoint.addEventListener('click', () => {
     callbacks.finishFloor()
     renderer.domElement.focus()
@@ -973,8 +1278,11 @@ export const createFacilityScene = (
   const spacePan = createSpacePan((pressed) => {
     controls.mouseButtons.LEFT = pressed ? THREE.MOUSE.PAN : null
     transform.enabled =
-      !pressed && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
-    renderer.domElement.style.cursor = pressed ? 'grab' : placing ? 'crosshair' : 'default'
+      !siteView && !pressed && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
+    renderer.domElement.style.cursor = pressed
+      ? 'grab'
+      : (placing || toolMode === 'attach' || toolMode === 'measure') && !siteView ? 'crosshair' : 'default'
+    if (pressed) clearMeasurementHover()
   })
   transform = new TransformControls(camera, renderer.domElement)
   transform.setSize(0.85)
@@ -1050,24 +1358,27 @@ export const createFacilityScene = (
   for (const material of Array.isArray(grid.material) ? grid.material : [grid.material])
     material.depthWrite = false
   grid.rotation.x = Math.PI / 2
-  const light = new THREE.DirectionalLight(0xffffff, 2.5)
   light.position.set(10, -20, 40)
   scene.add(
     models,
     selection,
     batchOutline,
     ground,
+    siteFloor,
     floorSurfaces.group,
     floorOutline,
+    measurement,
     floorPlan,
     grid,
     proxy,
     transform.getHelper(),
-    new THREE.AmbientLight(0xffffff, 1.5),
+    fill,
     light,
+    light.target,
   )
   renderer.domElement.addEventListener('pointerdown', pointerDown, true)
   renderer.domElement.addEventListener('pointermove', pointerMove, true)
+  renderer.domElement.addEventListener('pointerleave', clearMeasurementHover)
   renderer.domElement.addEventListener('pointerup', pointerUp)
   renderer.domElement.addEventListener('pointercancel', clearMarquee)
   renderer.domElement.addEventListener('lostpointercapture', clearMarquee)
@@ -1089,7 +1400,7 @@ export const createFacilityScene = (
       floorOutline.geometry = new THREE.BufferGeometry().setFromPoints(
         outline.map((p) => new THREE.Vector3(p.x / 1000, p.y / 1000, 0.02)),
       )
-      floorOutline.visible = outline.length > 1
+      floorOutline.visible = !siteView && outline.length > 1
       requestRender()
     },
     /** 3D 편집 화면에서 도면 배경의 표시 상태를 독립적으로 설정 */
@@ -1107,6 +1418,12 @@ export const createFacilityScene = (
       requestRender()
     },
     setDocument: setDocument,
+    /** 줄자 시작점과 끝점 및 직선거리를 화면에 표시 */
+    setMeasurement: (points: Point3[]) => {
+      measuredPoints = points
+      requestRender()
+    },
+    setSitePreview,
     setSelected: setSelected,
     setTool: setTool,
     fit: fit,

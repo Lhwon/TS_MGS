@@ -16,6 +16,7 @@ import type {
   AssistantToolCall,
   AssistantTurn,
 } from '@/features/ai-assistant/model/proposal.ts'
+
 /** 완결된 이전 사용자 대화부터 줄이며 도구 호출과 결과를 함께 유지하는 문맥 제한 */
 export const compactAgentHistory = (history: AssistantHistory[]) => {
   let start = 0
@@ -29,6 +30,7 @@ export const compactAgentHistory = (history: AssistantHistory[]) => {
   }
   return history.slice(start)
 }
+
 /**
  * 필요한 도구만 실행하고 완료 또는 질문 응답까지 이어가는 대화 실행
  * @param options 현재 문맥과 도구 실행 및 상태 콜백

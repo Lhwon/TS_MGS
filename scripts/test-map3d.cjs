@@ -73,7 +73,7 @@ assert.deepEqual(movedPlacements.instances[0].position, { x: 123, y: 456, z: 789
 assert.throws(() => contract.validateFacilityPlacements(roundtrip, [
   { ...roundtrip.instances[0], scale: { x: 0, y: 1, z: 1 } },
 ]))
-const { createInteriorModel } = load('src/entities/facility/interiorModels.ts')
+const { createInteriorModel, fillLegacyStainlessPipe } = load('src/entities/facility/interiorModels.ts')
 const interior = contract.emptyFacilityDocument()
 interior.assets = [createInteriorModel('doorway'), createInteriorModel('glass')]
 interior.instances = [
@@ -95,9 +95,30 @@ const restoredPipe = contract.parseFacilityDocument(JSON.stringify({
   assets: [pipe],
 })).assets[0]
 assert.equal(restoredPipe.catalogCategory, 'interior')
-assert.equal(restoredPipe.parts.length, 4)
-assert.ok(restoredPipe.parts.every((part) => part.surface === 'stainlessSteel'))
-assert.equal(restoredPipe.parts.reduce((area, part) => area + part.size.x * part.size.y, 0), 40 ** 2 - 36 ** 2)
+assert.equal(restoredPipe.parts.length, 1)
+assert.equal(restoredPipe.parts[0].surface, 'stainlessSteel')
+assert.deepEqual(restoredPipe.parts[0].size, { x: 40, y: 40, z: 2600 })
+const hollowPipe = {
+  ...restoredPipe,
+  parts: [
+    [-19, 0, 2, 40],
+    [0, -19, 36, 2],
+    [19, 0, 2, 40],
+    [0, 19, 36, 2],
+  ].map(([x, y, width, depth], index) => ({
+    ...restoredPipe.parts[0],
+    id: `part-${index + 1}`,
+    position: { x, y, z: 1300 },
+    size: { x: width, y: depth, z: 2600 },
+  })),
+}
+const filledPipe = fillLegacyStainlessPipe(hollowPipe)
+assert.equal(filledPipe.id, hollowPipe.id)
+assert.equal(filledPipe.parts.length, 1)
+assert.deepEqual(filledPipe.parts[0].size, restoredPipe.parts[0].size)
+assert.deepEqual(filledPipe.parts[0].position, restoredPipe.parts[0].position)
+hollowPipe.parts[0].size.z = 2400
+assert.equal(fillLegacyStainlessPipe(hollowPipe), hollowPipe)
 const doorWall = createInteriorModel('wall')
 assert.equal(contract.surfaceForPart(doorWall.parts[0]), 'plaster')
 doorWall.parts[0].surface = 'wood'

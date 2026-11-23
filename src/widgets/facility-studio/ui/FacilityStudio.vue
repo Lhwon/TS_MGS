@@ -79,20 +79,10 @@ const sizeFields = [
 type SizeAxis = (typeof sizeFields)[number]['axis']
 const minScale = 0.001
 const maxScale = 1000
-const quickStepMm = 10
-const quickResize = shallowRef<{
-  id: string
-  axis: SizeAxis
-  pointerId: number
-  startX: number
-  startSize: number
-  scale: Record<SizeAxis, number>
-}>()
-
 /** 표시 정밀도를 정리하면서 작은 치수의 유효 숫자를 유지 */
 const displaySize = (size: number) => Number(size.toPrecision(12))
 
-const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'translate' | 'rotate' | 'scale' | 'door' | 'window' | 'measure'>('select')
+const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'door' | 'window' | 'measure'>('select')
 const sceneTool = computed(() => {
   if (tool.value === 'wall' || tool.value === 'floor') return 'place'
   if (tool.value === 'door' || tool.value === 'window') return 'attach'
@@ -139,9 +129,7 @@ const selectInstances = (ids: string[], operation: 'replace' | 'add' | 'toggle' 
     else next.add(id)
   }
   studio.selectedIds = [...next]
-  if (next.size > 1) tool.value = 'select'
-  else if (next.size === 1 && tool.value !== 'rotate' && tool.value !== 'scale')
-    tool.value = 'translate'
+  tool.value = 'select'
 }
 
 const error = ref('')
@@ -176,7 +164,6 @@ let scene: ReturnType<typeof createFacilityScene> | undefined
 /** 지도 편집 위치를 보존한 채 현장 눈높이 미리보기로 전환 */
 const toggleSitePreview = () => {
   if (!scene) return
-  cancelQuickResize()
   sitePreview.value = !sitePreview.value
   scene.setSitePreview(sitePreview.value)
 }
@@ -321,99 +308,9 @@ const scaleFromSize = () => {
   return scale
 }
 
-/** 입력 초안과 독립적으로 실제 배치 크기 또는 드래그 중인 치수 표시 */
-const quickSize = (axis: SizeAxis) => {
-  const scale = quickResize.value?.scale ?? studio.selected?.scale
-  return (baseSize.value?.[axis] ?? 0) * (scale?.[axis] ?? 1)
-}
-
-/** 변경할 축의 치수를 적용하면서 나머지 축의 배율 유지 */
-const quickScale = (axis: SizeAxis, size: number, source = studio.selected?.scale) => {
-  const base = baseSize.value?.[axis]
-  if (!base || !Number.isFinite(size)) return
-  const scale = { x: source?.x ?? 1, y: source?.y ?? 1, z: source?.z ?? 1 }
-  scale[axis] = Math.max(minScale, minimumDoorSize(axis) / base, Math.min(maxScale, size / base))
-  return scale
-}
-
 /** 부착한 문의 위치와 크기를 유지하는 데 필요한 벽의 축별 최소 치수 */
 const minimumDoorSize = (axis: SizeAxis) =>
   axis === 'x' ? doorLimits.value.width : axis === 'z' ? doorLimits.value.height : 0
-
-/** 빠른 크기 조절을 시작할 때 선택 배치와 기준 치수 및 포인터를 기록 */
-const startQuickResize = (event: PointerEvent, axis: SizeAxis) => {
-  const instance = studio.selected
-  if (event.button !== 0 || !instance || quickResize.value || !baseSize.value) return
-  const handle = event.currentTarget as HTMLElement
-  handle.focus()
-  handle.setPointerCapture(event.pointerId)
-  quickResize.value = {
-    id: instance.id,
-    axis,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startSize: quickSize(axis),
-    scale: { x: instance.scale?.x ?? 1, y: instance.scale?.y ?? 1, z: instance.scale?.z ?? 1 },
-  }
-}
-
-/** 좌우 드래그를 밀리미터 단위의 변경량으로 바꾸고 씬에 미리 적용 */
-const moveQuickResize = (event: PointerEvent) => {
-  const draft = quickResize.value
-  if (!draft || draft.pointerId !== event.pointerId) return
-  const delta = Math.round(event.clientX - draft.startX) * quickStepMm
-  const scale = quickScale(draft.axis, draft.startSize + delta, draft.scale)
-  if (!scale || scale[draft.axis] === draft.scale[draft.axis]) return
-  quickResize.value = { ...draft, scale }
-  scene?.previewScale(draft.id, scale)
-}
-
-/** 포인터 취소와 선택 변경 시 마지막으로 저장한 배치 크기를 복원 */
-const cancelQuickResize = (event?: PointerEvent) => {
-  const draft = quickResize.value
-  if (!draft || (event && event.pointerId !== draft.pointerId)) return
-  quickResize.value = undefined
-  scene?.previewScale(draft.id)
-}
-
-/** 드래그가 끝난 크기 편집을 하나의 실행 취소 단위로 반영 */
-const finishQuickResize = (event: PointerEvent) => {
-  if (quickResize.value?.pointerId !== event.pointerId) return
-  moveQuickResize(event)
-  const draft = quickResize.value
-  cancelQuickResize()
-  if (
-    draft &&
-    studio.selected?.id === draft.id &&
-    draft.scale[draft.axis] !== (studio.selected.scale?.[draft.axis] ?? 1)
-  )
-    attempt(() => studio.updateInstance(draft.id, { scale: draft.scale }))
-}
-
-/** 크기 조절 버튼에 포커스를 둔 상태에서 키보드로 치수를 변경 */
-const quickResizeKey = (event: KeyboardEvent, axis: SizeAxis) => {
-  if (event.key === 'Escape' && quickResize.value) {
-    event.stopPropagation()
-    cancelQuickResize()
-    return
-  }
-  if (event.ctrlKey || event.metaKey || event.altKey || quickResize.value) return
-  const direction =
-    event.key === 'ArrowRight' || event.key === 'ArrowUp'
-      ? 1
-      : event.key === 'ArrowLeft' || event.key === 'ArrowDown'
-        ? -1
-        : 0
-  const instance = studio.selected
-  if (!direction || !instance) return
-  event.preventDefault()
-  const scale = quickScale(
-    axis,
-    quickSize(axis) + direction * quickStepMm * (event.shiftKey ? 10 : 1),
-  )
-  if (scale && scale[axis] !== (instance.scale?.[axis] ?? 1))
-    attempt(() => studio.updateInstance(instance.id, { scale }))
-}
 
 /**
  * 자유 편집한 부품 모델을 라이브러리와 기존 배치에 함께 적용하는 모델 저장
@@ -544,7 +441,7 @@ const placeOnFloor = (x: number, y: number) => {
     } else {
       studio.place(x, y)
     }
-    tool.value = 'translate'
+    tool.value = 'select'
   })
 }
 
@@ -565,7 +462,7 @@ const placeCenter = () => {
     const x = nodes.length ? nodes.reduce((sum, n) => sum + n.x, 0) / nodes.length : 0
     const y = nodes.length ? nodes.reduce((sum, n) => sum + n.y, 0) / nodes.length : 0
     studio.place(Math.round(x / 10) * 10, Math.round(y / 10) * 10)
-    tool.value = 'translate'
+    tool.value = 'select'
     requestAnimationFrame(() => scene?.fit())
   })
 }
@@ -581,7 +478,7 @@ const placeAtPort = (id: string) => {
     if (!port) throw new Error('배치할 포트를 선택하세요.')
     studio.place(port.x, port.y, port.id)
     placementPort.value = port.id
-    tool.value = 'translate'
+    tool.value = 'select'
   })
 }
 
@@ -766,7 +663,6 @@ onMounted(() => {
 watch(
   () => studio.document,
   (doc) => {
-    cancelQuickResize()
     attempt(() => scene?.setDocument(doc))
   },
 )
@@ -774,7 +670,6 @@ watch(
 watch(
   () => studio.selectedIds,
   (ids) => {
-    cancelQuickResize()
     if (ids.length) floorId.value = ''
     Object.assign(batchOffset, { x: 0, y: 0 })
     try {
@@ -795,7 +690,6 @@ watch(
   () => map.mapRevision,
   () => {
     if (sitePreview.value) toggleSitePreview()
-    cancelQuickResize()
     error.value = ''
     placementPort.value = ''
     floorId.value = ''
@@ -838,7 +732,7 @@ onBeforeUnmount(() => scene?.dispose())
   <section
     class="facility-studio d-flex flex-column"
     aria-label="3D 시설 설계"
-    @keydown.esc="sitePreview ? toggleSitePreview() : (['wall', 'floor', 'door', 'window', 'measure'].includes(tool) && (tool = 'select'))"
+    @keydown.esc="sitePreview ? toggleSitePreview() : (scene?.cancelDirectMove(), tool = 'select')"
   >
     <div class="facility-toolbar d-flex flex-wrap align-center ga-2">
       <div>
@@ -941,14 +835,10 @@ onBeforeUnmount(() => scene?.dispose())
                 ['select', '선택'],
                 ['place', '바닥 배치'],
                 ['port', '포트 클릭 배치'],
-                ['translate', '이동'],
-                ['rotate', '회전'],
-                ['scale', '크기'],
               ] as const"
               :key="value"
               :data-testid="`tool-${value}`"
-              :disabled="((value === 'place' || value === 'port') && !studio.asset) ||
-                (multiSelected && (value === 'translate' || value === 'rotate' || value === 'scale'))"
+              :disabled="value !== 'select' && !studio.asset"
               :class="{ active: tool === value }"
               @click="tool = value"
             >
@@ -1086,74 +976,6 @@ onBeforeUnmount(() => scene?.dispose())
           @keydown.enter="finishFloorOnEnter"
         ></div>
         <div
-          v-if="studio.selected && !sitePreview"
-          class="facility-selection-tools"
-          data-testid="selection-tools"
-        >
-          <strong :title="studio.selected.name">{{ studio.selected.name }}</strong>
-          <div class="d-flex ga-1">
-            <v-btn
-              data-testid="selection-focus"
-              @click="scene?.focusSelected()"
-            >
-              선택 보기
-            </v-btn>
-            <v-btn
-              v-for="[value, label] in [
-                ['translate', '이동'],
-                ['rotate', '회전'],
-                ['scale', '크기'],
-              ] as const"
-              :key="value"
-              :class="{ active: tool === value }"
-              :data-testid="`selection-${value}`"
-              @click="tool = value"
-            >
-              {{ label }}
-            </v-btn>
-          </div>
-          <div
-            v-if="baseSize"
-            class="facility-quick-size"
-            role="group"
-            aria-label="빠른 크기 조절"
-          >
-            <v-btn
-              v-for="{ axis, label } in sizeFields"
-              :key="axis"
-              :data-testid="`quick-size-${axis}`"
-              :class="{ active: quickResize?.axis === axis }"
-              :aria-label="`${label} ${displaySize(quickSize(axis))} mm`"
-              :title="`${label} 조절 · 좌우 드래그 또는 방향키`"
-              @pointerdown.prevent="startQuickResize($event, axis)"
-              @pointermove="moveQuickResize"
-              @pointerup="finishQuickResize"
-              @pointercancel="cancelQuickResize($event)"
-              @lostpointercapture="cancelQuickResize($event)"
-              @keydown="quickResizeKey($event, axis)"
-            >
-              <span>{{ label }}</span>
-              <b>
-                {{
-                  displaySize(quickSize(axis)).toLocaleString('ko-KR', { maximumFractionDigits: 2 })
-                }}
-                mm
-              </b>
-            </v-btn>
-          </div>
-          <small v-if="baseSize">치수 버튼을 좌우로 드래그해 빠르게 조절</small>
-          <small>
-            {{
-              tool === 'scale'
-                ? '축 끝 사각형 드래그 · 중앙 사각형 전체 크기'
-                : tool === 'rotate'
-                  ? '회전 링 드래그'
-                  : '축 화살표 또는 평면 사각형 드래그'
-            }}
-            · 우측 패널 정밀 입력
-          </small>
-        </div>
-        <div
           v-if="!sitePreview && !studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !floorDraft"
           class="facility-empty position-absolute text-center"
         >
@@ -1162,7 +984,9 @@ onBeforeUnmount(() => scene?.dispose())
           <small>기존 MGS 노드·포트는 2D 맵에서 편집합니다.</small>
         </div>
         <div v-if="!sitePreview" class="facility-hint position-absolute text-center">
-          왼쪽 드래그: 영역 선택 · Shift + 클릭: 추가 또는 해제 · Space + 왼쪽 드래그: 화면 이동
+          {{ studio.selected
+            ? '객체 드래그: 이동 · 모서리와 X·Y·Z: 크기 · ↻: 회전'
+            : '빈 곳 드래그: 영역 선택 · Shift + 클릭: 추가 또는 해제 · Space + 드래그: 화면 이동' }}
         </div>
       </div>
       <v-sheet
@@ -1352,6 +1176,9 @@ onBeforeUnmount(() => scene?.dispose())
             배치 변경 적용
           </v-btn>
           <div class="facility-tabs mb-3">
+            <v-btn type="button" data-testid="selection-focus" @click="scene?.focusSelected()">
+              선택 보기
+            </v-btn>
             <v-btn
               type="button"
               data-testid="instance-duplicate"
@@ -1658,6 +1485,62 @@ select {
   height: 100%;
 }
 
+.facility-canvas :deep(.facility-direct-frame) {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid #48bdac;
+  pointer-events: none;
+}
+.facility-canvas :deep(.facility-direct-handle) {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #48bdac;
+  border-radius: 3px;
+  transform: translate(-50%, -50%);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+.facility-canvas :deep(.facility-direct-handle:hover),
+.facility-canvas :deep(.facility-direct-handle:focus-visible) {
+  outline: 2px solid #48bdac;
+}
+.facility-canvas :deep(.facility-direct-nw),
+.facility-canvas :deep(.facility-direct-se) { cursor: nwse-resize; }
+.facility-canvas :deep(.facility-direct-ne),
+.facility-canvas :deep(.facility-direct-sw) { cursor: nesw-resize; }
+.facility-canvas :deep(.facility-direct-x) { left: 100%; top: 50%; cursor: ew-resize; }
+.facility-canvas :deep(.facility-direct-y) { left: 50%; top: 100%; cursor: ns-resize; }
+.facility-canvas :deep(.facility-direct-z) { left: 50%; top: 0; cursor: ns-resize; }
+.facility-canvas :deep(.facility-direct-nw) { left: 0; top: 0; }
+.facility-canvas :deep(.facility-direct-ne) { left: 100%; top: 0; }
+.facility-canvas :deep(.facility-direct-sw) { left: 0; top: 100%; }
+.facility-canvas :deep(.facility-direct-se) { left: 100%; top: 100%; }
+.facility-canvas :deep(.facility-direct-rotate) {
+  left: 50%;
+  top: -24px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 14px;
+  cursor: grab;
+}
+.facility-canvas :deep(.facility-direct-rotate::after) {
+  position: absolute;
+  top: 100%;
+  height: 7px;
+  border-left: 1px solid #48bdac;
+  content: '';
+}
+
 .facility-canvas :deep(.facility-marquee) {
   position: absolute;
   z-index: 2;
@@ -1732,53 +1615,6 @@ select {
 .facility-status {
   font-size: 11px;
   background: var(--surface-muted);
-}
-.facility-selection-tools {
-  position: absolute;
-  top: 112px;
-  left: 12px;
-  z-index: 2;
-  display: grid;
-  gap: 8px;
-  max-width: min(360px, calc(100% - 24px));
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-}
-.facility-selection-tools strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.facility-selection-tools small {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.facility-quick-size {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-}
-.facility-studio .facility-quick-size button {
-  min-width: 0;
-  height: auto;
-  padding-inline: 4px;
-  cursor: ew-resize;
-  touch-action: none;
-  user-select: none;
-}
-.facility-quick-size :deep(.v-btn__content) {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  white-space: normal;
-  font-variant-numeric: tabular-nums;
-}
-.facility-quick-size span {
-  font-size: 10px;
-  color: var(--text-secondary);
 }
 .facility-status.error {
   background: color-mix(in srgb, var(--app-danger) 12%, var(--surface));

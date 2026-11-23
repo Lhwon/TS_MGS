@@ -11,6 +11,7 @@ import {
   emptyFacilityDocument,
   exportFacilityFiles,
   facilityModelSize,
+  fillLegacyStainlessPipe,
   type FacilityPort,
   parseEquipmentLibrary,
   parseFacilityDocument,
@@ -260,6 +261,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    */
   const load = (content: string, name: string) => {
     const doc = parseFacilityDocument(content)
+    doc.assets = doc.assets.map(fillLegacyStainlessPipe)
     for (const asset of doc.assets)
       if (asset.id.startsWith('ceram-mp5-'))
         asset.name = defaultModelLabel(asset.name) || '기본 모델'
@@ -409,7 +411,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
       const library = parseEquipmentLibrary(file.content)
       commit((doc) => {
         if (!doc.mapRef.geometryKey) doc.mapRef = mapRef
-        for (const asset of library.assets) {
+        for (const asset of library.assets.map(fillLegacyStainlessPipe)) {
           if (asset.id.startsWith('ceram-mp5-'))
             asset.name = defaultModelLabel(asset.name) || '기본 모델'
           const old = doc.assets.find((a) => a.id === asset.id)

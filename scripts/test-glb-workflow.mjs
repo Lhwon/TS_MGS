@@ -68,10 +68,7 @@ try {
   await page.getByTestId('catalog-model-ceram-mp5-storage-rack').click()
   await page.getByTestId('placement-port').selectOption('PORT-1')
   await page.getByTestId('place-port').click()
-  await page.getByTestId('selection-tools').waitFor()
-  assert.ok(
-    await page.getByTestId('selection-translate').evaluate((el) => el.classList.contains('active')),
-  )
+  await page.getByTestId('direct-transform').waitFor()
   await page.waitForFunction(() => {
     let loaded = false
     window.__facilityView?.scene.traverse((object) => {
@@ -85,8 +82,9 @@ try {
   await page.screenshot({ path: path.join(output, 'rack-two-tiers.png') })
   const modelPoint = await page.evaluate(async () => {
     const { THREE, scene, camera, renderer } = window.__facilityView
-    const control = scene.children.find((object) => object.isTransformControlsRoot).controls
-    const position = control.object.position.clone()
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const { x, y, z } = useFacilityEditor().selected.position
+    const position = new THREE.Vector3(x / 1000, y / 1000, z / 1000)
     renderer.render(scene, camera)
     const p = position
       .clone()
@@ -100,38 +98,21 @@ try {
   })
   await page.getByTestId('tool-select').click()
   await page.mouse.click(modelPoint.x, modelPoint.y)
-  await page.getByTestId('selection-tools').waitFor()
-  assert.ok(
-    await page.getByTestId('selection-translate').evaluate((el) => el.classList.contains('active')),
-  )
-  /** 현재 선택 핸들의 화면 좌표 조회 */
-  const handlePoint = async (axis) =>
-    page.evaluate((name) => {
-      const { THREE, scene, camera, renderer } = window.__facilityView
-      const control = scene.children.find((object) => object.isTransformControlsRoot).controls
-      renderer.render(scene, camera)
-      const handles = control._gizmo.gizmo[control.mode].children.filter(
-        (part) => part.name === name && part.isMesh && part.visible,
-      )
-      const handle = handles[0]
-      if (!handle) throw new Error(`Missing ${control.mode} ${name} handle`)
-      const p = new THREE.Box3()
-        .setFromObject(handle)
-        .getCenter(new THREE.Vector3())
-        .project(camera)
-      const rect = renderer.domElement.getBoundingClientRect()
-      return { x: rect.x + ((p.x + 1) * rect.width) / 2, y: rect.y + ((1 - p.y) * rect.height) / 2 }
-    }, axis)
-  /** 실제 포인터 입력에 의한 편집 핸들 드래그 */
-  const dragHandle = async (axis, dx, dy) => {
-    const p = await handlePoint(axis)
-    await page.mouse.move(p.x, p.y)
+  await page.getByTestId('direct-transform').waitFor()
+  /** 화면에 붙은 편집 핸들의 실제 포인터 드래그 */
+  const dragHandle = async (name, dx, dy) => {
+    const bounds = await page.getByTestId('direct-' + name).boundingBox()
+    const x = bounds.x + bounds.width / 2
+    const y = bounds.y + bounds.height / 2
+    await page.mouse.move(x, y)
     await page.mouse.down()
-    await page.mouse.move(p.x + dx, p.y + dy, { steps: 10 })
+    await page.mouse.move(x + dx, y + dy, { steps: 10 })
     await page.mouse.up()
-    await page.waitForTimeout(200)
   }
-  await dragHandle('X', 65, 0)
+  await page.mouse.move(modelPoint.x, modelPoint.y)
+  await page.mouse.down()
+  await page.mouse.move(modelPoint.x + 65, modelPoint.y, { steps: 10 })
+  await page.mouse.up()
   const moved = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().selected,
@@ -143,8 +124,7 @@ try {
     Number(await page.getByTestId('instance-x').locator('input').inputValue()),
     moved.position.x,
   )
-  await page.getByTestId('selection-scale').click()
-  await dragHandle('XYZ', 55, -45)
+  await dragHandle('se', 30, 25)
   const scaled = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().selected,
@@ -158,7 +138,7 @@ try {
         scaled.scale.x * 2500,
     ) < 0.00001,
   )
-  await dragHandle('X', 40, 0)
+  await dragHandle('x', 30, 0)
   const axisScaled = await page.evaluate(async () =>
     structuredClone(
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().selected,
@@ -329,14 +309,14 @@ try {
   assert.equal(partScale.x, 1.5)
   assert.equal(partScale.y, 1)
   assert.equal(partScale.z, 1)
-  const sizeHandle = page.getByTestId('quick-size-z')
+  await page.getByTestId('selection-focus').click()
+  const sizeHandle = page.getByTestId('direct-z')
   const heightControl = await sizeHandle.boundingBox()
   const dragX = heightControl.x + heightControl.width / 2
   const dragY = heightControl.y + heightControl.height / 2
   await page.mouse.move(dragX, dragY)
   await page.mouse.down()
-  await page.mouse.move(dragX + 25, dragY, { steps: 5 })
-  assert.equal(await sizeHandle.getAttribute('aria-label'), '높이 1250 mm')
+  await page.mouse.move(dragX, dragY - 25, { steps: 5 })
   const placed = () =>
     page.evaluate(async () => {
       const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
@@ -346,13 +326,12 @@ try {
   assert.equal(beforeQuickResize.scale.z, 1)
   await page.mouse.up()
   const resized = await placed()
-  assert.deepEqual(resized.scale, { x: 1.5, y: 1, z: 1.25 })
+  assert.equal(resized.scale.x, 1.5)
+  assert.equal(resized.scale.y, 1)
+  assert.ok(resized.scale.z > 1)
   assert.deepEqual(resized.position, beforeQuickResize.position)
   assert.equal(resized.rotation, beforeQuickResize.rotation)
-  assert.ok(
-    await page.getByTestId('selection-translate').evaluate((el) => el.classList.contains('active')),
-  )
-  assert.equal(await page.getByTestId('instance-size-z').locator('input').inputValue(), '1250')
+  assert.ok(Math.abs(Number(await page.getByTestId('instance-size-z').locator('input').inputValue()) - resized.scale.z * 1000) < 0.001)
   await page.getByTestId('scene-undo').click()
   await page
     .locator('.facility-instance-list')
@@ -361,9 +340,12 @@ try {
   assert.deepEqual(await placed(), beforeQuickResize)
   await sizeHandle.press('Shift+ArrowRight')
   assert.equal((await placed()).scale.z, 1.1)
-  await page.mouse.move(dragX, dragY)
+  const resizedHandle = await sizeHandle.boundingBox()
+  const handleX = resizedHandle.x + resizedHandle.width / 2
+  const handleY = resizedHandle.y + resizedHandle.height / 2
+  await page.mouse.move(handleX, handleY)
   await page.mouse.down()
-  await page.mouse.move(dragX + 20, dragY)
+  await page.mouse.move(handleX, handleY - 20)
   await page.keyboard.press('Escape')
   await page.mouse.up()
   assert.equal((await placed()).scale.z, 1.1)

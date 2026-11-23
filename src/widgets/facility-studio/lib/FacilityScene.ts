@@ -9,7 +9,6 @@ import { createSpacePan } from '@/shared/lib/input/index.ts'
 import * as THREE from 'three'
 import { GlbModelCache } from '@bem/map3d/glb'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { FacilityAsset, FacilityDocument, FacilityInstance, FacilityPart, Point3 } from '@/entities/facility/index.ts'
 import { resolveFacilityInstance } from '@/entities/facility/index.ts'
@@ -28,9 +27,10 @@ import { instanceParts, surfaceForPart, surfaceMaterials, wallBody, wallDoorLimi
 import { getWallOverlapPass } from '@/widgets/facility-studio/lib/wallOverlapPass.ts'
 import { createFloorSurfaces } from '@/widgets/facility-studio/lib/floorSurfaces.ts'
 import { snapMeasureHit } from '@/widgets/facility-studio/lib/measureSnap.ts'
+import { createDirectTransform } from '@/widgets/facility-studio/lib/directTransform.ts'
 import type { FloorPoint } from '@/entities/facility/index.ts'
 
-type FacilitySceneTool = 'select' | 'place' | 'port' | 'translate' | 'rotate' | 'scale' | 'attach' | 'measure'
+type FacilitySceneTool = 'select' | 'place' | 'port' | 'attach' | 'measure'
 /**
  * 기준 지도와 설비 모델을 합성하는 삼차원 렌더러 생성
  * 포트 기준 배치와 이동 핸들 및 시점 조작을 독립적으로 관리하는 편집 화면 구성
@@ -92,8 +92,6 @@ export const createFacilityScene = (
   renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.shadowMap.autoUpdate = false
   let controls: OrbitControls
-  let transform: TransformControls
-  let proxy = new THREE.Object3D()
   let models = new THREE.Group()
   const selectionBounds = new THREE.Box3()
   const selection = new THREE.Box3Helper(selectionBounds, 0x57d4be)
@@ -243,12 +241,14 @@ export const createFacilityScene = (
   let toolMode: FacilitySceneTool = 'select'
   let animationFrame = 0
   let down = { x: 0, y: 0 }
-  let downGizmo = false
   let selectionDrag: { id: number; additive: boolean } | undefined
+  let moveDrag: {
+    id: number
+    instance: FacilityInstance
+    start: THREE.Vector3
+    position?: Point3
+  } | undefined
   let downWasSpace = false
-  let uniformScaleStart: THREE.Vector3 | undefined
-  let uniformScaleRatio = 1
-  const resizeMinimum = new THREE.Vector3()
   let ray = new THREE.Raycaster()
   let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
   /**
@@ -320,6 +320,7 @@ export const createFacilityScene = (
       if (siteView && siteLightingDirty) fitSiteLighting(siteBounds())
       if (toolMode === 'measure' && !siteView) updateMeasurement()
       wallOverlap.render(scene, camera)
+      directTransform.draw(canEditDirectly() ? selectionBounds : undefined)
       drawMeasurementLabel()
       if (!siteView) {
         drawLabels()
@@ -563,6 +564,8 @@ export const createFacilityScene = (
 
   /** 기존 모델의 캐시를 보존하며 문서에서 바뀐 형상 또는 변환만 반영 */
   const setDocument = async (doc: FacilityDocument) => {
+    cancelDirectMove()
+    directTransform.cancel()
     requestedDocument = doc
     const generation = ++documentGeneration
     const ports = mapDocument?.ports ?? emptyPorts
@@ -600,8 +603,6 @@ export const createFacilityScene = (
         models.visible = false
         selection.visible = false
         batchOutline.visible = false
-        transform.detach()
-        transform.getHelper().visible = false
         requestRender()
       }
       events.error(error instanceof Error ? error.message : String(error))
@@ -740,29 +741,58 @@ export const createFacilityScene = (
       batchOutline.geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
     }
   }
+
+  /** 벽의 개구부와 모델 치수에 맞춰 직접 조절 배율의 하한 계산 */
+  const minimumScale = (instance?: FacilityInstance) => {
+    const minimum = { x: 0.001, y: 0.001, z: 0.001 }
+    if (!instance?.wallDoors?.length) return minimum
+    const asset = facilityDocument?.assets.find((item) => item.id === instance.assetId)
+    const wall = wallBody(asset)
+    if (!wall) return minimum
+    const limits = wallDoorLimits(instance.wallDoors)
+    minimum.x = Math.max(minimum.x, limits.width / wall.size.x)
+    minimum.z = Math.max(minimum.z, limits.height / wall.size.z)
+    return minimum
+  }
+
+  /** 선택과 직접 편집이 가능한 도구 상태 확인 */
+  const canEditDirectly = () =>
+    !!selectedId && models.visible && !siteView && !spacePan.active() && toolMode === 'select'
+
+  const directTransform = createDirectTransform(host, camera, {
+    target: () => {
+      if (!canEditDirectly()) return
+      const instance = facilityDocument?.instances.find((item) => item.id === selectedId)
+      return instance && resolveFacilityInstance(instance, mapDocument?.ports ?? [])
+    },
+    minimum: minimumScale,
+    update: (instance, pose, commit) => {
+      if (commit) {
+        if (!events.move(instance.id, pose.position, pose.rotation, pose.scale))
+          updateMatrices(instance)
+      } else {
+        previewed.add(instance.id)
+        updateMatrices({ ...instance, ...pose, portOffset: undefined })
+      }
+      requestRender()
+    },
+    restore: (instance) => {
+      updateMatrices(instance)
+      requestRender()
+    },
+  })
   /**
    * 현재 선택 대상과 강조 표시 또는 이동 핸들을 갱신하는 렌더러 선택 반영
    *
    * @param ids 선택된 설비 식별자 목록
    */
   const setSelected = (ids: string[]) => {
+    if (ids.length !== 1 || ids[0] !== selectedId) {
+      cancelDirectMove()
+      directTransform.cancel()
+    }
     selectedIds = ids
     selectedId = ids.length === 1 ? ids[0]! : null
-    transform.detach()
-    const source = facilityDocument?.instances.find((i) => i.id === selectedId)
-    const instance = source ? resolveFacilityInstance(source, mapDocument?.ports ?? []) : undefined
-    if (instance) {
-      proxy.position.set(
-        instance.position.x / 1000,
-        instance.position.y / 1000,
-        instance.position.z / 1000,
-      )
-      proxy.rotation.set(0, 0, THREE.MathUtils.degToRad(instance.rotation))
-      proxy.scale.set(instance.scale?.x ?? 1, instance.scale?.y ?? 1, instance.scale?.z ?? 1)
-      transform.attach(proxy)
-    }
-    transform.getHelper().visible =
-      !siteView && !!instance && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
     updateSelectionBounds()
     if (siteView) {
       selection.visible = false
@@ -776,20 +806,16 @@ export const createFacilityScene = (
    * @param tool 현재 활성화할 선택 또는 배치 및 이동 도구
    */
   const setTool = (tool: FacilitySceneTool) => {
+    if (tool !== toolMode) {
+      cancelDirectMove()
+      directTransform.cancel()
+    }
     toolMode = tool
     if (tool !== 'measure') {
       measurementPointer = undefined
       measurement.visible = false
     }
     placing = tool === 'place' || tool === 'port'
-    transform.enabled =
-      !siteView && !spacePan.active() && (tool === 'translate' || tool === 'rotate' || tool === 'scale')
-    transform.getHelper().visible = !!selectedId && transform.enabled
-    transform.setMode(tool === 'rotate' ? 'rotate' : tool === 'scale' ? 'scale' : 'translate')
-    transform.setSpace(tool === 'scale' ? 'local' : 'world')
-    transform.showX = tool !== 'rotate'
-    transform.showY = tool !== 'rotate'
-    transform.showZ = true
     renderer.domElement.style.cursor = spacePan.active()
       ? 'grab'
       : (placing || tool === 'attach' || tool === 'measure') && !siteView
@@ -829,6 +855,8 @@ export const createFacilityScene = (
   const setSitePreview = (enabled: boolean) => {
     if (enabled === Boolean(siteView)) return
     if (enabled) {
+      cancelDirectMove()
+      directTransform.cancel()
       siteView = { position: camera.position.clone(), target: controls.target.clone() }
       const bounds = siteBounds()
       const size = bounds.getSize(new THREE.Vector3())
@@ -942,11 +970,26 @@ export const createFacilityScene = (
     if (siteView) return
     downWasSpace = spacePan.active()
     down = { x: e.clientX, y: e.clientY }
-    downGizmo = transform.enabled && transform.axis !== null && !e.shiftKey
     if (
-      e.button !== 0 || !e.isPrimary || downWasSpace || downGizmo || placing ||
+      e.button !== 0 || !e.isPrimary || downWasSpace || placing ||
       toolMode === 'measure' || toolMode === 'attach' || e.pointerType === 'touch'
     ) return
+    if (!e.shiftKey && canEditDirectly()) {
+      setPointerRay(e)
+      const hit = firstModelHit()
+      const id = hit?.instanceId === undefined ? undefined : hit.object.userData.ids[hit.instanceId]
+      const source = facilityDocument?.instances.find((item) => item.id === id && id === selectedId)
+      if (source && hit) {
+        moveDrag = {
+          id: e.pointerId,
+          instance: resolveFacilityInstance(source, mapDocument?.ports ?? []),
+          start: hit.point,
+        }
+        renderer.domElement.setPointerCapture(e.pointerId)
+        e.stopImmediatePropagation()
+        return
+      }
+    }
     selectionDrag = { id: e.pointerId, additive: e.shiftKey }
     renderer.domElement.setPointerCapture(e.pointerId)
     e.stopImmediatePropagation()
@@ -1002,14 +1045,27 @@ export const createFacilityScene = (
   }
   /** 중앙 크기 핸들의 시작점 특이점을 방지하는 화면 이동량 기반 균등 배율 계산 */
   const pointerMove = (e: PointerEvent) => {
+    if (e.pointerId === moveDrag?.id) {
+      if (!moveDrag.position && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) return
+      setPointerRay(e)
+      const drag = moveDrag
+      const hit = ray.ray.intersectPlane(new THREE.Plane(plane.normal, -drag.start.z), new THREE.Vector3())
+      if (!hit) return
+      const { instance } = drag
+      drag.position = {
+        x: instance.position.x + Math.round((hit.x - drag.start.x) * 1000),
+        y: instance.position.y + Math.round((hit.y - drag.start.y) * 1000),
+        z: instance.position.z,
+      }
+      previewed.add(instance.id)
+      updateMatrices({ ...instance, position: drag.position, portOffset: undefined })
+      requestRender()
+      return
+    }
     if (toolMode === 'measure' && !siteView) {
       measurementPointer = e.buttons ? undefined : e
       requestRender()
     }
-    if (uniformScaleStart)
-      uniformScaleRatio = Math.exp(
-        THREE.MathUtils.clamp((e.clientX - down.x - (e.clientY - down.y)) / 180, -8, 8),
-      )
     if (e.pointerId !== selectionDrag?.id || Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4)
       return
     const { left, top, width, height } = dragBounds(e)
@@ -1025,6 +1081,26 @@ export const createFacilityScene = (
     const material = (item.object as THREE.InstancedMesh).material
     return Array.isArray(material) || material.opacity > 0
   })
+
+  /** 캔버스의 포인터를 현재 카메라의 광선으로 변환 */
+  const setPointerRay = (event: PointerEvent) => {
+    const rect = renderer.domElement.getBoundingClientRect()
+    ray.setFromCamera(new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      1 - ((event.clientY - rect.top) / rect.height) * 2,
+    ), camera)
+  }
+
+  /** 완료되지 않은 객체 몸체 이동을 취소하고 모델을 원위치에 복원 */
+  const cancelDirectMove = (event?: PointerEvent) => {
+    const drag = moveDrag
+    if (!drag || (event && drag.id !== event.pointerId)) return
+    moveDrag = undefined
+    if (drag.position) {
+      updateMatrices(drag.instance)
+      requestRender()
+    }
+  }
 
   /** 객체 바깥쪽 여백에서도 가까운 실루엣이나 노출된 꼭짓점 탐색 */
   const findNearbyMeasureHit = (cursor: THREE.Vector2, viewport: DOMRect, vertexOnly: boolean) => {
@@ -1118,6 +1194,14 @@ export const createFacilityScene = (
    * @param e 클릭 또는 드래그 판정에 사용하는 포인터 이벤트
    */
   const pointerUp = (e: PointerEvent) => {
+    if (e.pointerId === moveDrag?.id) {
+      const { instance, position } = moveDrag
+      moveDrag = undefined
+      if (position && !events.move(instance.id, position, instance.rotation, instance.scale ?? { x: 1, y: 1, z: 1 }))
+        updateMatrices(instance)
+      requestRender()
+      return
+    }
     const drag = e.pointerId === selectionDrag?.id ? selectionDrag : undefined
     clearMarquee(e)
     if (siteView) return
@@ -1130,8 +1214,6 @@ export const createFacilityScene = (
       e.button !== 0 ||
       downWasSpace ||
       spacePan.active() ||
-      downGizmo ||
-      transform.dragging ||
       moved
     )
       return
@@ -1141,12 +1223,7 @@ export const createFacilityScene = (
       if (picked) events.measurePoint(picked.point)
       return
     }
-    const rect = renderer.domElement.getBoundingClientRect()
-    const cursor = new THREE.Vector2(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      1 - ((e.clientY - rect.top) / rect.height) * 2,
-    )
-    ray.setFromCamera(cursor, camera)
+    setPointerRay(e)
     if (toolMode === 'port') {
       ground.updateMatrixWorld(true)
       const hit = ray.intersectObjects(portMeshes)[0]
@@ -1189,13 +1266,15 @@ export const createFacilityScene = (
     observer.disconnect()
     window.removeEventListener('resize', resizeViewport)
     controls.dispose()
-    transform.dispose()
     renderer.domElement.removeEventListener('pointerdown', pointerDown, true)
     renderer.domElement.removeEventListener('pointermove', pointerMove, true)
     renderer.domElement.removeEventListener('pointerleave', clearMeasurementHover)
     renderer.domElement.removeEventListener('pointerup', pointerUp)
     renderer.domElement.removeEventListener('pointercancel', clearMarquee)
+    renderer.domElement.removeEventListener('pointercancel', cancelDirectMove)
     renderer.domElement.removeEventListener('lostpointercapture', clearMarquee)
+    renderer.domElement.removeEventListener('lostpointercapture', cancelDirectMove)
+    directTransform.dispose()
     marquee.remove()
     firstFloorPoint.remove()
     batchOutline.geometry.dispose()
@@ -1277,80 +1356,13 @@ export const createFacilityScene = (
   controls.addEventListener('change', requestRender)
   const spacePan = createSpacePan((pressed) => {
     controls.mouseButtons.LEFT = pressed ? THREE.MOUSE.PAN : null
-    transform.enabled =
-      !siteView && !pressed && (toolMode === 'translate' || toolMode === 'rotate' || toolMode === 'scale')
     renderer.domElement.style.cursor = pressed
       ? 'grab'
       : (placing || toolMode === 'attach' || toolMode === 'measure') && !siteView ? 'crosshair' : 'default'
     if (pressed) clearMeasurementHover()
-  })
-  transform = new TransformControls(camera, renderer.domElement)
-  transform.setSize(0.85)
-  transform.setTranslationSnap(0.01)
-  transform.setRotationSnap(Math.PI / 12)
-  transform.addEventListener('dragging-changed', (event) => {
-    controls.enabled = !event.value
-    if (event.value) {
-      uniformScaleStart =
-        transform.mode === 'scale' && transform.axis === 'XYZ' ? proxy.scale.clone() : undefined
-      uniformScaleRatio = 1
-      resizeMinimum.setScalar(0.001)
-      if (transform.mode === 'scale') {
-        const instance = facilityDocument?.instances.find((item) => item.id === selectedId)
-        const doors = instance?.wallDoors
-        if (instance && doors?.length) {
-          const wall = wallBody(facilityDocument?.assets.find((asset) => asset.id === instance.assetId))
-          if (wall) {
-            const limits = wallDoorLimits(doors)
-            // 부착한 문의 상대 위치와 실제 치수를 유지하는 벽 크기 제한
-            resizeMinimum.x = Math.max(resizeMinimum.x, limits.width / wall.size.x)
-            resizeMinimum.z = Math.max(resizeMinimum.z, limits.height / wall.size.z)
-          }
-        }
-      }
-    }
-    if (!event.value && selectedId) {
-      const applied = events.move(
-        selectedId,
-        {
-          x: Math.round(proxy.position.x * 1000),
-          y: Math.round(proxy.position.y * 1000),
-          z: Math.round(proxy.position.z * 1000),
-        },
-        THREE.MathUtils.radToDeg(proxy.rotation.z),
-        { x: proxy.scale.x, y: proxy.scale.y, z: proxy.scale.z },
-      )
-      if (!applied) {
-        const instance = facilityDocument?.instances.find((item) => item.id === selectedId)
-        if (instance) updateMatrices(instance)
-        setSelected(selectedIds)
-      }
-    }
-    if (!event.value) uniformScaleStart = undefined
-  })
-  transform.addEventListener('objectChange', () => {
-    if (uniformScaleStart) {
-      const minimumRatio = Math.max(
-        resizeMinimum.x / uniformScaleStart.x,
-        resizeMinimum.y / uniformScaleStart.y,
-        resizeMinimum.z / uniformScaleStart.z,
-      )
-      proxy.scale.copy(uniformScaleStart).multiplyScalar(Math.max(minimumRatio, uniformScaleRatio))
-    }
-    proxy.scale.clampScalar(0.001, 1000).max(resizeMinimum)
-    if (selectedId) {
-      previewed.add(selectedId)
-      updateMatrices({
-        ...facilityDocument!.instances.find((i) => i.id === selectedId)!,
-        portOffset: undefined,
-        position: {
-          x: proxy.position.x * 1000,
-          y: proxy.position.y * 1000,
-          z: proxy.position.z * 1000,
-        },
-        rotation: THREE.MathUtils.radToDeg(proxy.rotation.z),
-        scale: { x: proxy.scale.x, y: proxy.scale.y, z: proxy.scale.z },
-      })
+    if (pressed) {
+      cancelDirectMove()
+      directTransform.cancel()
     }
     requestRender()
   })
@@ -1370,8 +1382,6 @@ export const createFacilityScene = (
     measurement,
     floorPlan,
     grid,
-    proxy,
-    transform.getHelper(),
     fill,
     light,
     light.target,
@@ -1381,7 +1391,9 @@ export const createFacilityScene = (
   renderer.domElement.addEventListener('pointerleave', clearMeasurementHover)
   renderer.domElement.addEventListener('pointerup', pointerUp)
   renderer.domElement.addEventListener('pointercancel', clearMarquee)
+  renderer.domElement.addEventListener('pointercancel', cancelDirectMove)
   renderer.domElement.addEventListener('lostpointercapture', clearMarquee)
+  renderer.domElement.addEventListener('lostpointercapture', cancelDirectMove)
   observer = new ResizeObserver(() => resizeViewport())
   observer.observe(host)
   window.addEventListener('resize', resizeViewport)
@@ -1409,14 +1421,6 @@ export const createFacilityScene = (
       updateFloorPlan()
       requestRender()
     },
-    /** 선택 도구를 전환하지 않고 배치 크기를 미리 표시하거나 원래 크기를 복원 */
-    previewScale: (id: string, scale?: FacilityInstance['scale']) => {
-      const instance = facilityDocument?.instances.find((item) => item.id === id)
-      if (!instance) return
-      previewed.add(id)
-      updateMatrices(scale ? { ...instance, scale } : instance)
-      requestRender()
-    },
     setDocument: setDocument,
     /** 줄자 시작점과 끝점 및 직선거리를 화면에 표시 */
     setMeasurement: (points: Point3[]) => {
@@ -1424,6 +1428,7 @@ export const createFacilityScene = (
       requestRender()
     },
     setSitePreview,
+    cancelDirectMove,
     setSelected: setSelected,
     setTool: setTool,
     fit: fit,

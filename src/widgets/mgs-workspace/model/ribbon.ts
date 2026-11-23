@@ -617,45 +617,45 @@ export const MGS_RIBBON = [
       },
     ],
   },
-  {
-    name: 'Setting',
-    groups: [
-      {
-        name: '',
-        buttons: [
-          {
-            id: 'BT_select_theme',
-            label: 'Theme\nSetting',
-            toggle: false,
-            width: 80,
-          },
-        ],
-      },
-      {
-        name: 'Prepared Theme',
-        buttons: [
-          {
-            id: 'BT_set_theme_Office2010Blue',
-            label: 'Blue',
-            toggle: false,
-            width: 80,
-          },
-          {
-            id: 'BT_set_theme_Office2010Black',
-            label: 'Dark',
-            toggle: false,
-            width: 80,
-          },
-          {
-            id: 'BT_set_theme_Office2010Silver',
-            label: 'Silver',
-            toggle: false,
-            width: 80,
-          },
-        ],
-      },
-    ],
-  },
+  // {
+  //   name: 'Setting',
+  //   groups: [
+  //     {
+  //       name: '',
+  //       buttons: [
+  //         {
+  //           id: 'BT_select_theme',
+  //           label: 'Theme\nSetting',
+  //           toggle: false,
+  //           width: 80,
+  //         },
+  //       ],
+  //     },
+  //     {
+  //       name: 'Prepared Theme',
+  //       buttons: [
+  //         {
+  //           id: 'BT_set_theme_Office2010Blue',
+  //           label: 'Blue',
+  //           toggle: false,
+  //           width: 80,
+  //         },
+  //         {
+  //           id: 'BT_set_theme_Office2010Black',
+  //           label: 'Dark',
+  //           toggle: false,
+  //           width: 80,
+  //         },
+  //         {
+  //           id: 'BT_set_theme_Office2010Silver',
+  //           label: 'Silver',
+  //           toggle: false,
+  //           width: 80,
+  //         },
+  //       ],
+  //     },
+  //   ],
+  // },
   {
     name: 'GRID',
     groups: [

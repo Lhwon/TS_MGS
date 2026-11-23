@@ -6,7 +6,7 @@
  */
 export * from '@bem/map3d'
 export { buildWipRacks, wipRackKey } from './wipRacks'
-export { createInteriorModel, interiorModels, type InteriorModel } from './interiorModels'
+export { createInteriorModel, fillLegacyStainlessPipe, interiorModels, type InteriorModel } from './interiorModels'
 export {
   FACILITY_CYLINDER_SEGMENTS,
   facilityModelSize,

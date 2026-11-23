@@ -529,29 +529,36 @@ export const executeAgentTool = async (
       })),
     }
   }
+
   if (name === 'calibrate_drawing' && Number(args.realWidthMm) > 0) {
     const width = Number(args.realWidthMm)
+
     if (map.drawing) {
-      const a = map.nodes[0],
-        b = map.nodes.find((node) => a && Math.hypot(node.x - a.x, node.y - a.y) > 0)
+      const a = map.nodes[0], b = map.nodes.find((node) => a && Math.hypot(node.x - a.x, node.y - a.y) > 0)
+
       if (!a || !b) throw new Error('서로 다른 두 기준 지점이 필요합니다.')
+
       const distance =
         (Math.hypot(a.x - b.x, a.y - b.y) * width) /
         (map.drawing.width * (map.drawing.scaleMmPerPixel ?? map.drawing.workingScale ?? 1))
+
       const calibrated = calibrateDrawingMap(map, [a.id, b.id], distance)
+
       mutate(() => editor.commit((document) => Object.assign(document, calibrated)))
     } else if (map.layout) {
-      const drawing = await options.drawing(),
-        layout = createLayout(map, drawing, { widthMm: width })
+      const drawing = await options.drawing(), layout = createLayout(map, drawing, { widthMm: width })
+
       mutate(() =>
         editor.commit((document) => {
           document.layout = layout
-        }),
+        })
       )
     } else throw new Error('비율을 맞출 도면이 없습니다.')
     options.generated()
+    
     return { calibrated: true, realWidthMm: width }
   }
+
   const drawing = [
     'plan_drawing_route',
     'generate_drawing_map',
@@ -568,6 +575,7 @@ export const executeAgentTool = async (
     },
   })
 }
+
 /** 부품으로 수정 가능한 모델의 제작과 삭제를 연결하는 설비 도구 */
 const editEquipment = (args: Record<string, unknown>, mutate: (change: () => void) => void) => {
   const editor = useEditor(),

@@ -14,6 +14,10 @@ export const interiorModels = {
 
 export type InteriorModel = keyof typeof interiorModels | 'doorway'
 
+const stainlessPipeId = 'interior-stainless-pipe'
+const pipeSection = 40
+const pipeHeight = 2600
+
 /** 지도 바닥을 높이 원점으로 사용하며 문 개구부를 부품 사이에 남기는 시작 모델 생성 */
 export const createInteriorModel = (type: InteriorModel): FacilityAsset => {
   const parts: FacilityPart[] = []
@@ -30,13 +34,12 @@ export const createInteriorModel = (type: InteriorModel): FacilityAsset => {
     size: FacilityPart['size'],
     color: string,
     finish: Pick<FacilityPart, 'wall' | 'opacity' | 'surface'> = {},
-    y = 0,
   ) => {
     parts.push({
       id: `part-${parts.length + 1}`,
       name,
       shape: 'box',
-      position: { x, y, z: bottom + size.z / 2 },
+      position: { x, y: 0, z: bottom + size.z / 2 },
       size,
       rotation: 0,
       color,
@@ -71,30 +74,9 @@ export const createInteriorModel = (type: InteriorModel): FacilityAsset => {
       opacity: 0.32,
     })
   } else {
-    const section = 40
-    const thickness = 2
-    const center = (section - thickness) / 2
-    const finish = { surface: 'stainlessSteel' } as const
-    // 양쪽 판재를 안쪽에 맞춰 가운데가 열린 사각 단면 구성
-    for (const direction of [-1, 1]) {
-      box(
-        '측면 스테인리스',
-        direction * center,
-        0,
-        { x: thickness, y: section, z: height },
-        '#bdc6ca',
-        finish,
-      )
-      box(
-        '전후면 스테인리스',
-        0,
-        0,
-        { x: section - 2 * thickness, y: thickness, z: height },
-        '#bdc6ca',
-        finish,
-        direction * center,
-      )
-    }
+    box('스테인리스 본체', 0, 0, { x: pipeSection, y: pipeSection, z: pipeHeight }, '#bdc6ca', {
+      surface: 'stainlessSteel',
+    })
   }
 
   return {
@@ -104,4 +86,30 @@ export const createInteriorModel = (type: InteriorModel): FacilityAsset => {
     catalogCategory: 'interior',
     parts,
   }
+}
+
+/** 이전 기본 파이프를 같은 외곽과 기준점을 가진 솔리드 모델로 교체 */
+export const fillLegacyStainlessPipe = (asset: FacilityAsset): FacilityAsset => {
+  const plates = [
+    [-19, 0, 2, 40],
+    [0, -19, 36, 2],
+    [19, 0, 2, 40],
+    [0, 19, 36, 2],
+  ]
+  const first = asset.parts[0]
+  if (asset.id !== stainlessPipeId || !first || asset.parts.length !== plates.length) return asset
+
+  const matches = plates.every(([x, y, width, depth], index) => {
+    const part = asset.parts[index]!
+    return (
+      part.shape === 'box' && part.position.x === x && part.position.y === y &&
+      part.position.z === pipeHeight / 2 && part.size.x === width && part.size.y === depth &&
+      part.size.z === pipeHeight && !part.rotation && !part.tiltX && !part.tiltY && !part.wall &&
+      part.surface === 'stainlessSteel' && part.color === first.color && part.opacity === first.opacity
+    )
+  })
+  if (!matches) return asset
+
+  const solid = createInteriorModel('stainless-pipe').parts[0]!
+  return { ...asset, parts: [{ ...solid, color: first.color, opacity: first.opacity }] }
 }

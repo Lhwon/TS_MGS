@@ -115,7 +115,7 @@ try {
   await page.mouse.click(upper.x, upper.y)
   await page.keyboard.up('Shift')
   assert.equal((await read()).selectedIds.length, 2)
-  assert.equal(await page.getByTestId('tool-scale').isDisabled(), true)
+  assert.equal(await page.getByTestId('direct-transform').isVisible(), false)
   await page.getByTestId('facility-batch-x').locator('input').fill('1234')
   await page.getByTestId('facility-batch-y').locator('input').fill('-780')
   await page.getByTestId('facility-batch-apply').click()

@@ -83,6 +83,7 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
   const colors: number[] = []
   const arrowPositions: number[] = []
   const arrowColors: number[] = []
+  const arrowIndices: number[] = []
   /**
    * 경로 선분의 양 끝점과 정점별 색상을 버퍼에 추가하는 선분 누적
    *
@@ -142,6 +143,35 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
       colors.push(color.r, color.g, color.b)
     }
   }
+  /**
+   * 양방향 표식의 네 모서리를 연결해 노드 중심의 단일 다이아몬드 구성
+   * @param x 표식 중심의 지도 가로 좌표
+   * @param y 표식 중심의 지도 세로 좌표
+   * @param angle 연결 경로의 진행 각도
+   * @param halfLength 진행 축을 따라 측정한 중심과 끝점 사이의 거리
+   * @param halfWidth 진행 축에 수직인 중심과 모서리 사이의 거리
+   * @param color 방향과 테마를 반영한 표식 채움 색상
+   */
+  const addPathDiamond = (
+    x: number,
+    y: number,
+    angle: number,
+    halfLength: number,
+    halfWidth: number,
+    color: THREE.Color,
+  ) => {
+    const first = arrowPositions.length / 3
+    const ux = Math.cos(angle)
+    const uy = Math.sin(angle)
+    arrowPositions.push(
+      x + ux * halfLength, y + uy * halfLength, 2,
+      x - uy * halfWidth, y + ux * halfWidth, 2,
+      x - ux * halfLength, y - uy * halfLength, 2,
+      x + uy * halfWidth, y - ux * halfWidth, 2,
+    )
+    arrowIndices.push(first, first + 1, first + 2, first, first + 2, first + 3)
+    for (let corner = 0; corner < 4; corner++) arrowColors.push(color.r, color.g, color.b)
+  }
   for (const edge of map.edges) {
     const a = byId.get(edge.from),
       b = byId.get(edge.to)
@@ -157,35 +187,31 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
     const size = Math.min(length * 0.14, theme.arrowSize / 3)
     if (mgs2d && theme.arrowSize > 0 && !a.curve) {
       const side = theme.arrowSize
-      const ux = dx / length
-      const uy = dy / length
       const fill = new THREE.Color(
         mgsNodeFill({ ...a, direction: edge.direction ?? a.direction }, theme),
       )
-      const sides = [
-        [a.x + uy * side, a.y - ux * side],
-        [a.x - uy * side, a.y + ux * side],
-      ]
-      const triangles = [[sides[0]!, [a.x - ux * side * 3, a.y - uy * side * 3], sides[1]!]]
-      if (both) triangles.push([sides[0]!, sides[1]!, [a.x + ux * side * 3, a.y + uy * side * 3]])
-      for (const triangle of triangles)
-        for (const [x, y] of triangle) {
-          arrowPositions.push(x!, y!, 2)
-          arrowColors.push(fill.r, fill.g, fill.b)
-        }
-    } else if (!mgs2d && size > 0 && (!a.curve || !b.curve)) {
-      const t = both ? 0.67 : 0.5
-      directionMarker(arrowPositions, arrowColors, a.x + dx * t, a.y + dy * t, angle, size, color)
-      if (both)
-        directionMarker(
-          arrowPositions,
-          arrowColors,
-          a.x + dx * (1 - t),
-          a.y + dy * (1 - t),
-          angle + Math.PI,
-          size,
-          color,
+      if (both) {
+        addPathDiamond(a.x, a.y, angle, side * 3, side, fill)
+      } else {
+        const first = arrowPositions.length / 3
+        const ux = dx / length
+        const uy = dy / length
+        arrowPositions.push(
+          a.x + uy * side, a.y - ux * side, 2,
+          a.x - ux * side * 3, a.y - uy * side * 3, 2,
+          a.x - uy * side, a.y + ux * side, 2,
         )
+        for (let vertex = 0; vertex < 3; vertex++) arrowColors.push(fill.r, fill.g, fill.b)
+        arrowIndices.push(first, first + 1, first + 2)
+      }
+    } else if (!mgs2d && size > 0 && (!a.curve || !b.curve)) {
+      if (both) {
+        if (!a.curve) addPathDiamond(a.x, a.y, angle, size * 2.5, size, color)
+      } else {
+        const first = arrowPositions.length / 3
+        directionMarker(arrowPositions, arrowColors, (a.x + b.x) / 2, (a.y + b.y) / 2, angle, size, color)
+        arrowIndices.push(first, first + 1, first + 2)
+      }
     }
     if (a.virtual || b.virtual || a.curve || b.curve) continue
     // 지도 연결 방향과 별도로 방향별 차량 유지각과 후진 설정을 나타내는 표시
@@ -230,7 +256,8 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
   const arrows = new THREE.Mesh(
     new THREE.BufferGeometry()
       .setAttribute('position', new THREE.Float32BufferAttribute(arrowPositions, 3))
-      .setAttribute('color', new THREE.Float32BufferAttribute(arrowColors, 3)),
+      .setAttribute('color', new THREE.Float32BufferAttribute(arrowColors, 3))
+      .setIndex(arrowIndices),
     new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
   )
   arrows.name = 'arrows'

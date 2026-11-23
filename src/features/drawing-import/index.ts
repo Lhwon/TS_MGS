@@ -25,6 +25,8 @@ export {
 export {
   applyDrawingObjects,
   drawingObjectBounds,
+  drawingObjectPixelBox,
+  patchDrawingObjects,
   roundDrawingPaths,
   drawingFacility,
   validateDrawingMap,

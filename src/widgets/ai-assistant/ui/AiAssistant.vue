@@ -33,7 +33,7 @@ import {
 import { emptyFacilityDocument } from '@/entities/facility/index.ts'
 import {
   prepareDrawing,
-  applyDrawingObjects,
+  patchDrawingObjects,
   drawingFacility,
   validateDrawingMap,
   type DrawingAttachment,
@@ -204,12 +204,8 @@ watch(
 const patchDrawingObject = (id: string, patch: Partial<DrawingObject>) => {
   if (sending.value || props.busy || editor.readOnly) return
   try {
-    const objects = structuredClone(editor.document.drawing?.objects ?? [])
-    const object = objects.find((item) => item.id === id)
-    if (!object) throw new Error('수정할 도면 객체를 찾지 못했습니다.')
-    Object.assign(object, patch, { id, locked: true })
-    const updated = applyDrawingObjects(editor.document, objects)
-    editor.commit((document) => Object.assign(document, updated))
+    const updated = patchDrawingObjects(editor.document, [id], () => patch)
+    editor.applyComputedMap(updated)
     if (attachment.value?.id === updated.drawing?.id)
       attachment.value!.detections = structuredClone(updated.drawing!.objects ?? [])
     editor.message = `${id} 도면 객체 수정 완료`
@@ -221,7 +217,7 @@ const patchDrawingObject = (id: string, patch: Partial<DrawingObject>) => {
 /** 도면 패널의 작업을 대화 요청으로 연결하는 실행 */
 const drawingTask = (message: string) => {
   prompt.value = message
-  void send()
+  void handleSendMessage()
 }
 
 const history = ref<AssistantHistory[]>([])
@@ -329,10 +325,6 @@ let pendingAnswer:
     }
   | undefined
 let controller: AbortController | undefined
-
-const selected = computed(() => [
-  ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-])
 
 /** 내부망 AI 서비스의 연결과 모델 준비 상태 확인 */
 const connect = async () => {
@@ -533,8 +525,8 @@ const consumeAttachment = (messageId: string) => {
   if (message) message.image = drawing.visionImage
   pendingAttachment.value = undefined
 }
-/** 대화와 질문 응답 및 진행 중인 작업의 새 지시를 연결하는 전송 */
-const send = async () => {
+/** 대기 중인 확인 질문에 답하거나 입력한 메시지로 새 추론 시작 */
+const handleSendMessage = async () => {
   const question = prompt.value.trim()
   if (!question || attaching.value) return
   if (awaiting.value) {
@@ -548,24 +540,38 @@ const send = async () => {
     return
   }
   if (props.busy) return
+  await runConversationTurn(question)
+}
+
+/**
+ * 입력 메시지와 첨부를 기록하고 에이전트 실행 결과를 현재 답변에 반영
+ *
+ * @param question 입력칸에서 읽은 공백 제거 메시지
+ */
+const runConversationTurn = async (question: string) => {
   if (controller) cancel('새 메시지를 반영하기 위해 이전 작업을 중단했습니다.')
-  const sequence = conversationSequence,
-    request = new AbortController()
+  const sequence = conversationSequence
+  const request = new AbortController()
   controller = request
   phase.value = 'running'
   error.value = ''
   prompt.value = ''
   const userId = addMessage('user', question)
   consumeAttachment(userId)
-  let replyId = addMessage('assistant', '', 'loading'),
-    reply = messages.value.find((message) => message.id === replyId)!
-  activeReplyId = replyId
-  reply.tasks = []
+  /** 추론 시작과 확인 질문 응답 직후에 새 작업 내역을 가진 답변 생성 */
+  const createLoadingReply = () => {
+    const id = addMessage('assistant', '', 'loading')
+    const message = messages.value.find((item) => item.id === id)!
+    activeReplyId = id
+    message.tasks = []
+    return message
+  }
+  let reply = createLoadingReply()
   let activeTask: NonNullable<ChatMessage['tasks']>[number] | undefined
+  const isCurrentRequest = () => controller === request && !request.signal.aborted
   /** 새 지시나 취소 뒤 도착한 이전 진행 표시를 차단하는 상태 갱신 */
   const progress = (message: string) => {
-    if (controller === request && !request.signal.aborted)
-      updateMessage(replyId, message, 'loading')
+    if (isCurrentRequest()) updateMessage(reply.id, message, 'loading')
   }
   try {
     const answer = await runAgent({
@@ -574,12 +580,9 @@ const send = async () => {
       history: history.value,
       signal: request.signal,
       context: () => agentContext(attachment.value),
-      ask: (question, signal) =>
-        waitForAnswer(question, signal, replyId, () => {
-          replyId = addMessage('assistant', '', 'loading')
-          reply = messages.value.find((message) => message.id === replyId)!
-          reply.tasks = []
-          activeReplyId = replyId
+      ask: (confirmation, signal) =>
+        waitForAnswer(confirmation, signal, reply.id, () => {
+          reply = createLoadingReply()
         }),
       execute: async (call) => {
         request.signal.throwIfAborted()
@@ -600,7 +603,7 @@ const send = async () => {
       },
       progress,
       step: (name, state, summary) => {
-        if (controller !== request || request.signal.aborted) return
+        if (!isCurrentRequest()) return
         if (state === 'running') {
           reply.tasks!.push({ name: toolLabel(name), state, summary: '' })
           activeTask = reply.tasks!.at(-1)
@@ -610,17 +613,17 @@ const send = async () => {
           activeTask.summary = summary ?? ''
         }
       },
-      remember: (messages) => {
+      remember: (conversationHistory) => {
         if (sequence === conversationSequence && (controller === request || !controller))
-          history.value = messages
+          history.value = conversationHistory
       },
     })
-    if (controller !== request || request.signal.aborted) return
+    if (!isCurrentRequest()) return
     connected.value = true
-    updateMessage(replyId, answer)
+    updateMessage(reply.id, answer)
   } catch (cause) {
-    if (controller === request && !request.signal.aborted)
-      updateMessage(replyId, cause instanceof Error ? cause.message : String(cause), 'error')
+    if (isCurrentRequest())
+      updateMessage(reply.id, cause instanceof Error ? cause.message : String(cause), 'error')
   } finally {
     if (controller === request) {
       controller = undefined
@@ -651,7 +654,7 @@ const newConversation = () => {
 const composeKey = (event: KeyboardEvent) => {
   if (event.isComposing || event.keyCode === 229 || event.shiftKey) return
   event.preventDefault()
-  void send()
+  void handleSendMessage()
 }
 watch(() => [editor.document, facility.document, editor.readOnly], invalidate, { flush: 'sync' })
 watch(open, (value) => {
@@ -686,7 +689,7 @@ onBeforeUnmount(() => cancel())
       <div>
         <strong>
           AI 에이전트
-          <span>{{ selectedModel }}</span>
+          <span data-testid="ai-selected-model">{{ selectedModel }}</span>
         </strong>
         <span
           class="connection-state d-block"
@@ -720,26 +723,6 @@ onBeforeUnmount(() => cancel())
         />
       </div>
     </header>
-
-    <!-- <div class="assistant-context px-4 py-2 text-caption flex-shrink-0">
-      <span
-        class="d-block text-truncate"
-        :text="editor.sourceName"
-      >
-        {{ editor.sourceName }}
-      </span>
-
-      <div class="d-flex align-center justify-space-between ga-2">
-        <span>노드 {{ selected.length }}개 선택</span>
-        <span
-          class="text-truncate text-caption"
-          :title="selectedModel"
-          data-testid="ai-selected-model"
-        >
-          {{ selectedModel }}
-        </span>
-      </div>
-    </div> -->
 
     <div
       ref="conversation"
@@ -910,7 +893,7 @@ onBeforeUnmount(() => cancel())
           </span>
         </div>
       </div>
-      <form @submit.prevent="send">
+      <form @submit.prevent="handleSendMessage">
         <textarea
           id="ai-request"
           data-testid="ai-prompt"
@@ -1018,8 +1001,7 @@ onBeforeUnmount(() => cancel())
   box-shadow: -8px 0 32px color-mix(in srgb, var(--app-background) 24%, transparent);
 }
 
-header,
-.assistant-context {
+header {
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
 }
@@ -1043,7 +1025,6 @@ header,
   background: currentColor;
 }
 
-.assistant-context,
 .message-author,
 .message-state,
 .composer-hint {

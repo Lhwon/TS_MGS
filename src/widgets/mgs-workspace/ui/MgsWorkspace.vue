@@ -20,12 +20,14 @@ import {
   findFeatureBoundaries,
   makeLotDistance,
 } from '@/features/map-editor/index.ts'
-import { parseDocument } from '@/entities/map/index.ts'
+import { parseDocument, PORT_DISPLAY_STYLES } from '@/entities/map/index.ts'
 import type { Layers } from '@/entities/map/index.ts'
 import { AppIcon, TextAction } from '@/shared/ui/index.ts'
 import { downloadJson } from '@/shared/lib/files/index.ts'
 import { MGS_RIBBON } from '@/widgets/mgs-workspace/model/ribbon.ts'
 import MgsSummary from '@/widgets/mgs-workspace/ui/MgsSummary.vue'
+import PathPlanTest from '@/widgets/mgs-workspace/ui/PathPlanTest.vue'
+import BlockReview from '@/widgets/mgs-workspace/ui/BlockReview.vue'
 
 const props = defineProps<{
   busy: boolean
@@ -43,7 +45,6 @@ const emit = defineEmits<{
   create: []
   facility: []
   assistant: []
-  fit: []
   focus: [id: number]
   layer: [key: keyof Layers, value: boolean]
   capture: []
@@ -52,12 +53,12 @@ const editor = useEditor()
 const tab = ref('File')
 const summary = ref<InstanceType<typeof MgsSummary>>()
 const layoutOpen = ref(false)
+const blockReview = ref<'fmd' | 'blk' | null>(null)
+const portDisplayTypes = ['', ...Object.keys(PORT_DISPLAY_STYLES)]
 /** 지도 객체를 유지하며 선택한 배경만 적용하는 수동 명령 */
 const applyLayout = (layout: MapLayout) => {
   try {
-    editor.commit((map) => {
-      map.layout = layout
-    })
+    editor.setLayout(layout)
     editor.message = '편집용 배경 도면 적용 완료'
   } catch (cause) {
     editor.message = String(cause)
@@ -65,9 +66,7 @@ const applyLayout = (layout: MapLayout) => {
 }
 /** 배경 도면의 표시 상태 전환 */
 const toggleLayout = () =>
-  editor.commit((map) => {
-    if (map.layout) map.layout.visible = !map.layout.visible
-  })
+  editor.setLayoutVisible(!editor.document.layout?.visible)
 const curveForm = reactive({ radius: 1000, angle: 90, divide: 15, direction: 0 })
 watch(
   () => editor.curveSettingsOpen,
@@ -94,9 +93,7 @@ const report = ref('')
 const reportTitle = ref('')
 const messages = ref<string[]>([])
 const activeTab = computed(() => MGS_RIBBON.find((item) => item.name === tab.value)!)
-const selected = computed(() => [
-  ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-])
+const selected = computed(() => editor.selectedNodeIds)
 watch(
   () => editor.message,
   (message) => {
@@ -159,6 +156,12 @@ const drawingChecks = computed<Record<string, boolean>>(() => ({
   BT_check_overlab: editor.drawingOptions.checkOverlap,
   TBT_check_auto_conn: editor.drawingOptions.autoConnectDelete,
 }))
+const fileTestIds: Record<string, string> = {
+  BT_open_file: 'open-map',
+  BT_save_file: 'save-map',
+  BT_init_project: 'new-map',
+  TS_save_as: 'save-map-as',
+}
 const icons: Record<string, string> = {
   BT_open_file: 'folder',
   BT_save_file: 'save',
@@ -168,12 +171,24 @@ const icons: Record<string, string> = {
   BT_init_project: 'new',
   BT_open_project_folder: 'folder',
   BT_save_jmapx: 'save',
+  TS_save_as: 'save',
+  BT_apply_xlsx: 'target',
 }
 
 /** 필요한 작업 탭을 지정하고 공통 편집창을 여는 메뉴 전환 */
 const openOperations = (tab: string) => {
   editor.operationTab = tab
   editor.operationsOpen = true
+}
+
+/** 포트와 도형 편집을 해제하고 차량 배치 전용 우클릭 명령으로 전환 */
+const toggleVehiclePreviewMode = () => {
+  editor.vehiclePreviewMode = !editor.vehiclePreviewMode
+  if (!editor.vehiclePreviewMode) return
+  editor.portMode = false
+  editor.shapeTool = null
+  editor.tool = 'select'
+  editor.pathPlanOpen = false
 }
 
 /**
@@ -196,6 +211,27 @@ watch(
   },
 )
 
+const idGaps = computed(() => {
+  const ids = editor.document.nodes.map((node) => node.id).sort((a, b) => a - b)
+  return ids.flatMap((id, index) => {
+    const start = (ids[index - 1] ?? 0) + 1
+    return start < id ? [{ start, end: id - 1 }] : []
+  })
+})
+
+/** 확인 후 누락 노드 번호를 참조와 함께 순서대로 정리 */
+const fillNodeGaps = () => {
+  if (!idGaps.value.length || editor.readOnly) return
+  if (!window.confirm('노드 ID의 빈 구간을 정리하고 경로와 포트 연결을 함께 갱신할까요?')) return
+  try {
+    editor.renumberNodeIds()
+    editor.message = '노드 ID 빈 구간 정리 완료'
+    verify('Check Illegal Node')
+  } catch (cause) {
+    report.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
 /**
  * 원본 지도와 선택 목록을 기준으로 무결성과 통계 결과를 표시하는 보고서 열기
  * @param title 보고서 창 제목
@@ -205,10 +241,41 @@ const verify = (title = 'Map Report') => {
   try {
     parseDocument(JSON.stringify(editor.document))
     const map = editor.document
-    const duplicatePositions = map.nodes.filter(
-      (node, index, nodes) =>
-        nodes.findIndex((other) => other.x === node.x && other.y === node.y) !== index,
-    )
+    if (title === 'Check Illegal Node') {
+      const gaps = idGaps.value.map(({ start, end }) => start === end ? String(start) : `${start}–${end}`)
+      report.value = gaps.length
+        ? 'Blank Node ID\n' + gaps.join(', ')
+        : 'Blank Node ID · None'
+      return
+    }
+
+    const positions = new Set<string>()
+    const duplicatePositions = map.nodes.filter(({ x, y }) => {
+      const key = `${x},${y}`
+      const repeated = positions.has(key)
+      positions.add(key)
+      return repeated
+    })
+    const linked = new Set(map.edges.flatMap((edge) => [edge.from, edge.to]))
+    const isolated = map.nodes.filter((node) => !linked.has(node.id))
+    const noRealId = map.nodes.filter((node) => !node.virtual && !node.curve && (node.realId ?? -1) < 0)
+    const pathDirections = new Set<string>()
+    const repeatedPaths = map.edges.filter((edge) => {
+      const key = `${edge.from}:${edge.to}`
+      const reverse = `${edge.to}:${edge.from}`
+      const repeated = pathDirections.has(key) || ((edge.direction ?? 1) === 1 && pathDirections.has(reverse))
+      pathDirections.add(key)
+      if ((edge.direction ?? 1) === 1) pathDirections.add(reverse)
+      return repeated
+    })
+    const nodeDetails = [
+      `Duplicate Position : ${duplicatePositions.map((node) => node.id).join(', ') || 'None'}`,
+      `Unconnected Node : ${isolated.map((node) => node.id).join(', ') || 'None'}`,
+      `Missing Real ID : ${noRealId.map((node) => node.id).join(', ') || 'None'}`,
+    ]
+    const pathDetails = [
+      `Duplicate Direction : ${repeatedPaths.map((edge) => `N${edge.from} → N${edge.to}`).join(', ') || 'None'}`,
+    ]
     report.value = [
       `Map : ${editor.sourceName}`,
       `Version : ${map.legacy?.version ?? 25}`,
@@ -218,10 +285,7 @@ const verify = (title = 'Map Report') => {
       `Shape : ${map.shapes?.length ?? 0}`,
       `Port Group : ${map.portGroups?.length ?? 0}`,
       `Selected Node : ${selected.value.length}`,
-      `Duplicate Position : ${duplicatePositions.map((node) => node.id).join(', ') || 'None'}`,
-      '',
-      '현재 문서의 ID 중복과 노드 참조 및 수치 형식 검증 통과',
-      '운행 제어값과 AES 및 Blocking 검증은 원본 전용 검증의 추가 이관 대상',
+      ...(title === 'Verify Path' ? pathDetails : title === 'Verify Node' ? nodeDetails : [...nodeDetails, ...pathDetails]),
     ].join('\n')
   } catch (cause) {
     report.value = cause instanceof Error ? cause.message : String(cause)
@@ -241,6 +305,21 @@ const clearControl = (key: string, toggle = false) => {
   })
   editor.message = '경로 제어값 적용'
 }
+const shapeCommandPrefix = 'TBT_shape_'
+const shapeTypes: Record<string, number> = {
+  line: 5,
+  rectangle: 1,
+  round_rectangle: 2,
+  circle: 4,
+  ellipse: 3,
+  text: 6,
+}
+
+/** 원본 밝은 리본 테마 명령의 공통 적용 */
+const selectLightTheme = () => {
+  if (editor.colorMode !== 'light') editor.toggleColorMode()
+}
+
 const commands: Record<string, () => void> = {
   TBT_auto_reverse_orthogonal: () => {
     editor.drawingOptions.autoReverseOrthogonal = !editor.drawingOptions.autoReverseOrthogonal
@@ -278,6 +357,7 @@ const commands: Record<string, () => void> = {
     editor.areaCategory = 'offsets'
     editor.areaEditorOpen = true
   },
+  BT_search_illegal_node: () => verify('Check Illegal Node'),
   BT_limit_ports: () => {
     editor.areaCategory = 'limits'
     editor.areaEditorOpen = true
@@ -380,6 +460,7 @@ const commands: Record<string, () => void> = {
   },
   BT_open_file: () => emit('open'),
   BT_save_file: () => emit('save'),
+  TS_save_as: () => emit('saveAs'),
   BT_save_jmapx: () => emit('saveNative'),
   BT_select_project: () => emit('folder'),
   BT_open_project_folder: () => emit('showFolder'),
@@ -388,12 +469,8 @@ const commands: Record<string, () => void> = {
   BT_set_theme_Office2010Black: () => {
     if (editor.colorMode !== 'dark') editor.toggleColorMode()
   },
-  BT_set_theme_Office2010Blue: () => {
-    if (editor.colorMode !== 'light') editor.toggleColorMode()
-  },
-  BT_set_theme_Office2010Silver: () => {
-    if (editor.colorMode !== 'light') editor.toggleColorMode()
-  },
+  BT_set_theme_Office2010Blue: selectLightTheme,
+  BT_set_theme_Office2010Silver: selectLightTheme,
   BT_select_theme: () => editor.toggleColorMode(),
   BT_clear_property: () => {
     editor.commit((map) => {
@@ -405,26 +482,18 @@ const commands: Record<string, () => void> = {
 }
 
 /**
- * 지원하는 원본 명령 또는 현재 표시 옵션으로 원본 리본 입력을 연결하는 명령 실행
+ * 표시 레이어와 도형 도구를 우선 판정하고 나머지 원본 명령을 등록된 동작으로 전달
  * @param id 원본 XAML 명령 식별자
  */
-const execute = (id: string) => {
+const handleRibbonCommand = (id: string) => {
   try {
     const layer = viewCommands[id]
     if (layer) {
       emit('layer', layer, !props.layers[layer])
       return
     }
-    if (id.startsWith('TBT_shape_')) {
-      const types: Record<string, number> = {
-        line: 5,
-        rectangle: 1,
-        round_rectangle: 2,
-        circle: 4,
-        ellipse: 3,
-        text: 6,
-      }
-      editor.shapeTool = types[id.replace('TBT_shape_', '')] ?? null
+    if (id.startsWith(shapeCommandPrefix)) {
+      editor.shapeTool = shapeTypes[id.slice(shapeCommandPrefix.length)] ?? null
       editor.tool = 'select'
       editor.message = '지도에서 왼쪽 드래그로 도형의 범위를 지정하세요. Escape로 종료합니다.'
       return
@@ -440,8 +509,8 @@ const execute = (id: string) => {
  * @param id 원본 명령 식별자
  * @returns 실행 가능한 명령 여부
  */
-const supported = (id: string) =>
-  !!commands[id] || !!viewCommands[id] || id.startsWith('TBT_shape_')
+const isRibbonCommandSupported = (id: string) =>
+  !!commands[id] || !!viewCommands[id] || id.startsWith(shapeCommandPrefix)
 </script>
 
 <template>
@@ -465,6 +534,7 @@ const supported = (id: string) =>
             v-for="item in MGS_RIBBON"
             :key="item.name"
             role="tab"
+            :aria-selected="tab === item.name"
             :active="tab === item.name"
             :data-tab="item.name"
             @activate="tab = item.name"
@@ -509,7 +579,7 @@ const supported = (id: string) =>
         <div
           v-for="(group, index) in activeTab.groups"
           :key="index"
-          :class="{ 'named-group': group.name }"
+          :class="{ 'named-group': group.name, 'ungrouped-ribbon': !group.name }"
           class="ribbon-group"
           role="group"
           :aria-label="group.name || tab"
@@ -520,13 +590,24 @@ const supported = (id: string) =>
           >
             {{ group.name }}
           </div>
-          <div :class="group.name ? 'compact-buttons' : 'file-buttons'">
+          <div
+            v-if="!group.selector"
+            class="ribbon-buttons"
+            :class="{
+              'view-buttons': group.columns,
+              'stacked-buttons': group.name && !group.columns,
+              'tile-buttons': !group.name,
+              'drawing-buttons': tab === 'Drawing',
+            }"
+            :style="{ '--ribbon-columns': group.columns }"
+          >
             <v-btn
               v-for="button in group.buttons"
               :key="button.id"
-              :disabled="busy || !supported(button.id)"
+              :disabled="busy || !isRibbonCommandSupported(button.id)"
               :class="{
                 'large-button': !group.name,
+                'magnet-button': button.id === 'BT_x_magnet' || button.id === 'BT_y_magnet',
                 checked:
                   drawingChecks[button.id] ||
                   (viewCommands[button.id] && layers[viewCommands[button.id]!]),
@@ -540,27 +621,37 @@ const supported = (id: string) =>
                   : undefined
               "
               :title="
-                supported(button.id)
+                isRibbonCommandSupported(button.id)
                   ? button.label.replace(/\s+/g, ' ')
                   : `${button.label.replace(/\s+/g, ' ')} · 원본 기능 이관 중`
               "
+              :style="{ '--command-width': button.width + 'px' }"
               :data-command="button.id"
-              @click="execute(button.id)"
+              :data-testid="fileTestIds[button.id]"
+              @click="handleRibbonCommand(button.id)"
             >
               <AppIcon
-                v-if="!group.name"
-                :name="icons[button.id] ?? 'node'"
+                v-if="tab === 'File' || tab === 'Shape'"
+                :name="icons[button.id] ?? (tab === 'Shape' ? 'port' : 'node')"
                 :size="24"
               />
-              <span>{{ button.label.replace(/\s+/g, ' ') }}</span>
+              <span class="ribbon-label">{{ button.label.trim().replace(/ *\n */g, '\n') }}</span>
             </v-btn>
           </div>
+          <select
+            v-else
+            v-model="editor.portDisplayType"
+            aria-label="Port Type"
+            class="port-type-select"
+          >
+            <option v-for="name in portDisplayTypes" :key="name" :value="name">{{ name || 'All' }}</option>
+          </select>
         </div>
       </div>
     </header>
     <MgsSummary
+      v-show="!hiddenMenu"
       ref="summary"
-      v-if="!hiddenMenu"
       @focus="emit('focus', $event)"
     />
     <nav
@@ -571,7 +662,8 @@ const supported = (id: string) =>
       <v-btn
         icon
         size="x-small"
-        title="Hide Menu"
+        :title="hiddenMenu ? 'Show Menu' : 'Hide Menu'"
+        :aria-label="hiddenMenu ? 'Show Menu' : 'Hide Menu'"
         @click="hiddenMenu = !hiddenMenu"
       >
         <AppIcon
@@ -580,21 +672,13 @@ const supported = (id: string) =>
         />
       </v-btn>
       <v-btn
-        title="Bay Filter"
-        @click="openOperations('bays')"
-      >
-        Bay Filter
-      </v-btn>
-      <v-btn
         icon
         size="x-small"
-        title="Fit Map"
-        @click="emit('fit')"
+        title="Rotate Map"
+        aria-label="Rotate Map"
+        @click="editor.viewTurns = (editor.viewTurns + 1) % 4"
       >
-        <AppIcon
-          name="fit"
-          :size="19"
-        />
+        <AppIcon name="refresh" :size="19" />
       </v-btn>
       <v-btn
         icon
@@ -626,24 +710,20 @@ const supported = (id: string) =>
         size="small"
         :class="{ 'port-mode-active': editor.portMode }"
         data-testid="port-mode"
-        @click="editor.portMode = !editor.portMode"
+        @click="editor.portMode = !editor.portMode; editor.vehiclePreviewMode = false"
       >
         [E] Edit Port
       </v-btn>
       <v-btn
         size="small"
-        disabled
-        title="원본 차량 외형과 렌더링 이관 중"
+        :class="{ checked: editor.vehiclePreviewMode }"
+        :aria-pressed="editor.vehiclePreviewMode"
+        :disabled="editor.document.units !== 'mm'"
+        @click="toggleVehiclePreviewMode"
       >
         Render VHL
       </v-btn>
-      <v-btn
-        size="small"
-        disabled
-        title="원본 식별자 일괄 편집 이관 중"
-      >
-        Set Real ID
-      </v-btn>
+      <v-btn size="small" @click="openOperations('ids')">Set Real ID</v-btn>
       <v-btn
         size="small"
         @click="verify('Verify Node')"
@@ -658,14 +738,13 @@ const supported = (id: string) =>
       </v-btn>
       <v-btn
         size="small"
-        @click="verify('Verify Port')"
+        @click="openOperations('port-audit')"
       >
         Verify Port
       </v-btn>
       <v-btn
         size="small"
-        disabled
-        title="운행 경로 탐색 이관 중"
+        @click="editor.openPathPlan()"
       >
         [P] Path Plan Test
       </v-btn>
@@ -680,39 +759,19 @@ const supported = (id: string) =>
       </v-btn>
       <v-btn
         size="small"
-        @click="emit('capture')"
+        :class="{ checked: editor.showCrosshair }"
+        :aria-pressed="editor.showCrosshair"
+        @click="editor.showCrosshair = !editor.showCrosshair"
       >
-        Capture
+        Use Crosshair
       </v-btn>
+      <v-btn size="small" @click="emit('capture')">Capture</v-btn>
       <v-btn
         size="small"
-        data-testid="new-map"
-        @click="emit('create')"
+        disabled
+        title="원본 Map Copy 이관 중"
       >
-        New
-      </v-btn>
-      <v-btn
-        size="small"
-        data-testid="open-map"
-        @click="emit('open')"
-      >
-        Open
-      </v-btn>
-      <v-btn
-        size="small"
-        data-testid="save-map"
-        :disabled="busy"
-        @click="emit('save')"
-      >
-        Save
-      </v-btn>
-      <v-btn
-        size="small"
-        data-testid="save-map-as"
-        :disabled="busy"
-        @click="emit('saveAs')"
-      >
-        Save As
+        Map Copy
       </v-btn>
     </nav>
     <div class="mgs-map position-relative overflow-hidden">
@@ -805,30 +864,30 @@ const supported = (id: string) =>
           data-testid="edit-selected-node"
           @click="selectedEditor = 'node'"
         >
-          Selected Node Edit
+          <span>Selected<br />Node Edit</span>
         </v-btn>
-        <v-btn @click="selectedEditor = 'path'">Selected Path Edit</v-btn>
+        <v-btn @click="selectedEditor = 'path'"><span>Selected<br />Path Edit</span></v-btn>
         <v-btn
           data-testid="edit-map-objects"
           @click="selectedEditor = 'port'"
         >
-          Selected Port Edit
-        </v-btn>
-        <v-btn @click="openOperations('approach')">포트 진입 설정</v-btn>
-        <v-btn
-          disabled
-          title="원본 Block 데이터 이관 중"
-        >
-          Verify Block Data
+          <span>Selected<br />Port Edit</span>
         </v-btn>
         <v-btn
-          disabled
-          title="원본 Blocking 데이터 이관 중"
+          @click="blockReview = 'fmd'"
         >
-          Verify Blocking Data
+          <span>Verify<br />Block Data</span>
         </v-btn>
-        <v-btn @click="openOperations('around')">Verify Around Data</v-btn>
-        <v-btn @click="openOperations('aes')">AES 데이터 생성</v-btn>
+        <v-btn
+          @click="blockReview = 'blk'"
+        >
+          <span>Verify<br />Blocking Data</span>
+        </v-btn>
+        <v-btn @click="openOperations('around')"><span>Verify<br />Around Data</span></v-btn>
+      </div>
+      <div class="map-utilities" aria-label="TS_MGS 도구">
+        <v-btn size="x-small" @click="openOperations('approach')">포트 진입 설정</v-btn>
+        <v-btn size="x-small" @click="openOperations('aes')">AES 데이터 생성</v-btn>
       </div>
     </div>
     <footer
@@ -838,7 +897,7 @@ const supported = (id: string) =>
       <span class="status-login text-center">
         Map {{ editor.document.legacy?.version ?? 25 }}{{ editor.dirty ? ' *' : '' }}
       </span>
-      <span>Real = ({{ Math.trunc(cursor.x) }}, {{ Math.trunc(cursor.y) }})</span>
+      <span class="status-coordinates">Real = ({{ Math.trunc(cursor.x) }}, {{ Math.trunc(cursor.y) }})</span>
       <span>Scale = {{ zoom.toFixed(3) }}</span>
       <span
         class="text-truncate flex-grow-1"
@@ -942,6 +1001,9 @@ const supported = (id: string) =>
           <pre class="report-content">{{ report }}</pre>
         </v-card-text>
         <v-card-actions>
+          <v-btn v-if="reportTitle === 'Check Illegal Node'" :disabled="editor.readOnly || !idGaps.length" @click="fillNodeGaps">
+            Fill Blank IDs
+          </v-btn>
           <v-spacer />
           <v-btn @click="report = ''">Close</v-btn>
         </v-card-actions>
@@ -949,6 +1011,8 @@ const supported = (id: string) =>
     </v-dialog>
   </section>
   <MapOperations @focus="emit('focus', $event)" />
+  <PathPlanTest />
+  <BlockReview v-model="blockReview" @focus="emit('focus', $event)" />
   <SelectedMapEditor
     v-model="selectedEditor"
     @focus="emit('focus', $event)"
@@ -959,11 +1023,7 @@ const supported = (id: string) =>
     v-model="layoutOpen"
     :map="editor.document"
     @apply="applyLayout"
-    @remove="
-      editor.commit((map) => {
-        delete map.layout
-      })
-    "
+    @remove="editor.setLayout()"
   />
 </template>
 
@@ -978,8 +1038,8 @@ const supported = (id: string) =>
   flex: 1;
   min-height: 0;
   min-width: 0;
-  grid-template-columns: clamp(170px, 19vw, 252px) minmax(0, 1fr);
-  grid-template-rows: auto 38px minmax(0, 1fr) auto 29px;
+  grid-template-columns: clamp(156px, 20%, 280px) minmax(0, 1fr);
+  grid-template-rows: auto minmax(39px, auto) minmax(0, 1fr) auto 28px;
   color: var(--text);
   background: var(--mgs-panel);
 }
@@ -1072,25 +1132,48 @@ const supported = (id: string) =>
   line-height: 1.2;
 }
 
-.file-buttons,
-.compact-buttons {
+.ribbon-buttons {
   display: grid;
+  gap: 4px;
+}
+
+.view-buttons {
+  grid-template-columns: repeat(var(--ribbon-columns), max-content);
+  grid-auto-rows: minmax(31px, auto);
+}
+
+.stacked-buttons {
+  grid-template-rows: repeat(2, minmax(31px, auto));
   grid-auto-flow: column;
-  gap: 5px;
+  grid-auto-columns: max-content;
 }
 
-.compact-buttons {
-  grid-template-rows: repeat(2, minmax(34px, auto));
-  grid-auto-columns: 98px;
+.tile-buttons {
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  grid-template-rows: repeat(2, minmax(32px, auto));
 }
 
-.file-buttons {
-  grid-auto-columns: 94px;
+.tile-buttons :deep(.v-btn) {
+  grid-row: span 2;
 }
 
+.drawing-buttons :deep(.magnet-button) {
+  grid-row: span 1;
+}
+
+.port-type-select {
+  width: 112px;
+  min-height: 32px;
+  padding: 4px 7px;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--mgs-border);
+  border-radius: 6px;
+}
 .ribbon-group :deep(.v-btn),
 .selected-actions :deep(.v-btn) {
-  width: 100%;
+  width: var(--command-width, 100%);
   min-width: 0;
   height: auto;
   min-height: 34px;
@@ -1115,9 +1198,24 @@ const supported = (id: string) =>
 }
 
 .ribbon-group :deep(.large-button) {
-  min-height: 70px;
+  min-height: 68px;
   padding: 6px 8px;
   background: var(--surface-muted);
+}
+
+.stacked-buttons :deep(.v-btn) {
+  width: max(94px, var(--command-width));
+  min-height: 38px;
+}
+
+.ribbon-label {
+  white-space: pre-line;
+  overflow-wrap: normal;
+}
+
+.drawing-buttons :deep(.magnet-button) {
+  min-height: 31px;
+  padding-block: 3px;
 }
 
 .large-button :deep(.v-btn__content) {
@@ -1173,7 +1271,8 @@ const supported = (id: string) =>
   flex-shrink: 0;
   box-shadow: none;
 }
-.mgs-quick .port-mode-active {
+.mgs-quick .port-mode-active,
+.mgs-quick .checked {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -1203,12 +1302,10 @@ const supported = (id: string) =>
   grid-column: 1 / -1;
   grid-row: 4;
   display: grid;
-  grid-template-columns: minmax(120px, 1.1fr) minmax(126px, 0.8fr) minmax(96px, 0.58fr) minmax(
-      320px,
-      1.4fr
-    );
-  gap: 8px;
-  padding: 8px 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) clamp(102px, 13cqw, 200px) clamp(222px, 25cqw, 340px);
+  grid-template-rows: minmax(0, 108px) auto;
+  gap: 5px 8px;
+  padding: 7px 10px 5px;
   border-top: 1px solid var(--mgs-border);
   background: var(--surface-muted);
 }
@@ -1251,18 +1348,57 @@ const supported = (id: string) =>
 
 .selected-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-auto-rows: minmax(36px, auto);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 5px;
 }
 
-@container (max-width: 760px) {
+.map-utilities {
+  grid-column: 4;
+  display: flex;
+  gap: 4px;
+}
+
+.map-utilities :deep(.v-btn) {
+  min-width: 0;
+  flex: 1;
+  padding-inline: 4px;
+}
+
+@container (max-width: 600px) {
   .mgs-bottom {
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.8fr);
-    grid-template-rows: 66px auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 82px minmax(205px, 1fr);
+    gap: 4px;
+    padding-inline: 5px;
   }
 
-  .selected-actions {
+  .mgs-status .status-login {
+    width: auto;
+  }
+}
+
+@media (max-height: 650px) {
+  .mgs-bottom {
+    grid-template-rows: 90px auto;
+  }
+
+  .ribbon-content {
+    padding-block: 5px;
+  }
+}
+
+@container (max-width: 430px) {
+  .mgs-bottom {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) 80px;
+    grid-template-rows: 58px 74px auto;
+  }
+
+  .status-coordinates {
+    display: none;
+  }
+
+  .selected-actions,
+  .map-utilities {
     grid-column: 1 / -1;
   }
 }

@@ -4,7 +4,7 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
-import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS, PORT_TAIL_FLAGS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 import {
   emptyDocument,
@@ -249,7 +249,10 @@ export const previewLegacy = (content: string, name: string, groupContent = ''):
                     : Number(fields[field.column]),
                 ],
               ],
-        ),
+        ).concat(PORT_TAIL_FLAGS.flatMap((field, index) => {
+          const value = fields[listOffset + bayCount + 1 + index]
+          return value === '1' ? [[field.key, 1]] : []
+        })),
       ),
       x: num(9),
       y: num(10),

@@ -18,11 +18,7 @@ import {
   resolveFacilityInstance,
   validateFacilityPlacements,
 } from '@/entities/facility/index.ts'
-import type {
-  FacilityAsset,
-  FacilityDocument,
-  FacilityInstance,
-} from '@/entities/facility/index.ts'
+import type { FacilityAsset, FacilityDocument, FacilityInstance } from '@/entities/facility/index.ts'
 import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
 
 /**
@@ -33,19 +29,25 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const document = shallowRef(emptyFacilityDocument())
   const saved = shallowRef(document.value)
   const selectedIds = shallowRef<string[]>([])
+
   const selectedId = computed({
     get: () => selectedIds.value.length === 1 ? selectedIds.value[0]! : null,
     set: (id: string | null) => {
       selectedIds.value = id ? [id] : []
-    },
+    }
   })
+
   const selectedAssetId = ref<string | null>(null)
   const filename = ref('Untitled.map3d.json')
   const message = ref('사용자 모델을 디자인한 뒤 포트 또는 지도 위에 배치하세요.')
+
   const busy = ref(false)
+
   let copied: { instance: FacilityInstance; nextX: number; gap: number } | undefined
+
   const past = shallowRef<FacilityDocument[]>([]),
     future = shallowRef<FacilityDocument[]>([])
+
   const dirty = computed(() => document.value !== saved.value)
   const selected = computed(() => document.value.instances.find((i) => i.id === selectedId.value))
   const asset = computed(() => document.value.assets.find((a) => a.id === selectedAssetId.value))
@@ -90,6 +92,39 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   }
 
   /**
+   * 지도나 포트에 모델을 배치하고 일괄 배치에 기준 지도 참조 적용
+   * 직접 배치는 사용자가 구별할 수 있는 순번 이름과 기존 라이브러리 참조 유지
+   * @param model 배치에 사용할 라이브러리 모델
+   * @param targets 지도 좌표와 선택적인 포트 및 변환
+   * @param mapRef 일괄 배치의 기준 지도 식별값
+   * @returns 새로 생성한 배치 목록
+   */
+  const placeInstances = (
+    model: FacilityAsset,
+    targets: Array<{
+      x: number
+      y: number
+      portId?: string
+      transform?: Pick<FacilityInstance, 'rotation' | 'scale'>
+    }>,
+    mapRef?: FacilityDocument['mapRef'],
+  ) => {
+    const existingCount = document.value.instances.filter((item) => item.assetId === model.id).length
+    const placements: FacilityInstance[] = targets.map(({ x, y, portId, transform }, index) => ({
+      id: crypto.randomUUID(),
+      assetId: model.id,
+      name: mapRef ? model.name : `${model.name} ${existingCount + index + 1}`,
+      position: { x, y, z: 0 },
+      rotation: 0,
+      ...transform,
+      ...(portId ? { portId, portOffset: { x: 0, y: 0, z: 0 } } : {}),
+    }))
+    if (mapRef) addPlacements(model, placements, mapRef)
+    else commitPlacements([...document.value.instances, ...placements])
+    return placements
+  }
+
+  /**
    * 선택한 설비 모델의 독립 배치를 만들고 선택 상태를 갱신하는 설비 추가
    *
    * @param x 지도 또는 모델 기준 가로 좌표
@@ -104,21 +139,9 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     transform?: Pick<FacilityInstance, 'rotation' | 'scale'>,
   ) => {
     if (!asset.value) return
-    const model = asset.value
-    const id = crypto.randomUUID()
-    commitPlacements([
-      ...document.value.instances,
-      {
-        id,
-        assetId: model.id,
-        name: `${model.name} ${document.value.instances.filter((i) => i.assetId === model.id).length + 1}`,
-        position: { x, y, z: 0 },
-        rotation: 0,
-        ...transform,
-        ...(portId ? { portId, portOffset: { x: 0, y: 0, z: 0 } } : {}),
-      },
-    ])
-    selectedId.value = id
+
+    const [placement] = placeInstances(asset.value, [{ x, y, portId, transform }])
+    selectedId.value = placement.id
   }
 
   /**
@@ -129,9 +152,37 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    */
   const updateInstance = (id: string, patch: Partial<FacilityInstance>) => {
     if (!document.value.instances.some((instance) => instance.id === id)) return
+
     commitPlacements(document.value.instances.map((instance) =>
       instance.id === id ? { ...instance, ...patch, id } : instance,
     ))
+  }
+
+  /**
+   * 절대 좌표로 받은 설비 변환을 배치와 기준 포트의 상대 좌표에 함께 반영
+   * @param id 이동하거나 변환할 배치 식별자
+   * @param patch 변경할 위치와 회전과 크기 또는 연결 속성
+   * @param ports 연결 기준이 되는 현재 지도의 포트
+   * @throws 연결할 포트가 현재 지도에서 삭제된 경우
+   */
+  const applyPlacementPose = (
+    id: string,
+    patch: Partial<FacilityInstance>,
+    ports: FacilityPort[],
+  ) => {
+    const previous = document.value.instances.find((instance) => instance.id === id)
+    if (!previous) return
+    const portId = 'portId' in patch ? patch.portId : previous.portId
+    const port = ports.find((item) => item.id === portId)
+    if (portId && !port) throw new Error('연결 포트를 찾을 수 없습니다.')
+    const position = patch.position ?? resolveFacilityInstance(previous, ports).position
+    updateInstance(id, {
+      ...patch,
+      position,
+      portOffset: port
+        ? { x: position.x - port.x, y: position.y - port.y, z: position.z }
+        : undefined,
+    })
   }
 
   /**
@@ -167,23 +218,44 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   }
 
   /**
-   * 선택 배치를 새로운 식별자로 복제하고 포트 기준 오프셋을 함께 이동하는 배치 복사
+   * 새 식별자로 배치를 복제하고 복제 옵션에 따라 포트 소속과 이름 및 선택 갱신
+   * @param source 복제할 원본 시설물
+   * @param position 복제물의 목표 배치 좌표
+   * @param detachPort 요청 좌표에 독립 배치할 때 사용할 포트 분리 옵션
    */
-  const insertCopy = (source: FacilityInstance, x: number) => {
+  const insertCopy = (
+    source: FacilityInstance,
+    position: FacilityInstance['position'],
+    detachPort = false,
+  ) => {
     const copy = {
       ...structuredClone(source),
       id: crypto.randomUUID(),
-      name: `${source.name.slice(0, 297)} 복사`,
-      position: { ...source.position, x },
+      name: detachPort ? source.name : `${source.name.slice(0, 297)} 복사`,
+      position,
     }
-    if (copy.portOffset) copy.portOffset.x += x - source.position.x
+    if (detachPort) {
+      delete copy.portId
+      delete copy.portOffset
+    } else if (copy.portOffset) {
+      copy.portOffset.x += position.x - source.position.x
+    }
     commitPlacements([...document.value.instances, copy])
-    selectedId.value = copy.id
+    if (!detachPort) selectedId.value = copy.id
   }
 
-  /** 선택 시설을 기존 복제 버튼의 포트 연결 규칙으로 추가 */
-  const duplicate = () => {
-    if (selected.value) insertCopy(selected.value, selected.value.position.x + 1000)
+  /**
+   * 선택 시설을 기본 간격이나 직접 지정한 위치에 복제
+   * @param detachedPosition 포트에서 분리해 배치할 때 지정하는 목표 좌표
+   */
+  const duplicate = (detachedPosition?: FacilityInstance['position']) => {
+    const source = selected.value
+    if (!source) return
+    insertCopy(
+      source,
+      detachedPosition ?? { ...source.position, x: source.position.x + 1000 },
+      detachedPosition !== undefined,
+    )
   }
 
   /** 실제 배치 좌표를 복사하고 원본과 분리되는 붙여넣기 위치를 계산 */
@@ -212,10 +284,25 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     if (!copied || busy.value) return false
     if (!document.value.assets.some((item) => item.id === copied?.instance.assetId))
       throw new Error('복사한 시설의 모델이 현재 라이브러리에 없습니다.')
-    insertCopy(copied.instance, copied.nextX)
+    insertCopy(copied.instance, { ...copied.instance.position, x: copied.nextX })
     copied.nextX += copied.gap
     message.value = '복사한 시설을 배치했습니다.'
     return true
+  }
+
+  /**
+   * 사용 중인 모델을 보호하면서 라이브러리에서 미배치 모델을 제거
+   * @param id 제거할 모델 식별자
+   * @throws 모델이 없거나 하나 이상의 시설 배치가 모델을 참조하는 경우
+   */
+  const removeAsset = (id: string) => {
+    if (!document.value.assets.some((asset) => asset.id === id))
+      throw new Error('모델을 찾지 못했습니다.')
+    if (document.value.instances.some((instance) => instance.assetId === id))
+      throw new Error('배치된 모델은 배치를 먼저 정리해야 합니다.')
+    commit((doc) => {
+      doc.assets = doc.assets.filter((asset) => asset.id !== id)
+    })
   }
 
   /**
@@ -516,7 +603,10 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     future,
     setAsset,
     place,
+    placeInstances,
     updateInstance,
+    applyPlacementPose,
+    removeAsset,
     moveSelectionXY,
     remove,
     duplicate,

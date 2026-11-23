@@ -562,35 +562,58 @@ export const createFacilityScene = (
     batches.set(asset.id, { asset, instances, meshes: batchMeshes, source })
   }
 
-  /** 기존 모델의 캐시를 보존하며 문서에서 바뀐 형상 또는 변환만 반영 */
-  const setDocument = async (doc: FacilityDocument) => {
+  /**
+   * 문서 변경에 필요한 모델 재사용 여부와 배치 목록 계산
+   *
+   * @param document 새로 표시할 삼차원 설계 문서
+   * @param ports 상대 오프셋의 기준이 되는 현재 지도 포트
+   * @returns 모델별 배치 목록과 다시 생성할 배치 버퍼 및 사용 가능한 원본
+   */
+  const planDocumentUpdate = (document: FacilityDocument, ports: MapDocument['ports']) => {
+    const instancesByAsset = new Map<string, FacilityInstance[]>()
+    for (const instance of document.instances) {
+      resolveFacilityInstance(instance, ports)
+      const instances = instancesByAsset.get(instance.assetId) ?? []
+      instances.push(instance)
+      instancesByAsset.set(instance.assetId, instances)
+    }
+    const sources = new Map<string, THREE.Group>()
+    const changes = document.assets.flatMap((asset) => {
+      const instances = instancesByAsset.get(asset.id)
+      if (!instances) return []
+      const previous = batches.get(asset.id)
+      const canAppend = !!previous?.source && previous.instances.length < instances.length &&
+        (previous.meshes[0]?.instanceMatrix.count ?? 0) >= instances.length
+      const rebuild = previous?.asset !== asset ||
+        (previous.instances.length !== instances.length && !canAppend) ||
+        !previous.instances.every((instance, index) => sameGeometry(instance, instances[index]!))
+      if (previous?.asset === asset && previous.source) sources.set(asset.id, previous.source)
+      return [{ asset, instances, rebuild }]
+    })
+    return { instancesByAsset, sources, changes }
+  }
+
+  /** 배치 버퍼를 해제하고 공유 GLB 재질의 소유권을 모델 캐시에 유지 */
+  const disposePlacementMesh = (mesh: THREE.InstancedMesh) => {
+    mesh.dispose()
+    if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
+  }
+
+  /**
+   * 비동기 모델 로딩 뒤 최신 요청에 한해 배치 버퍼와 변환 행렬 반영
+   *
+   * @param document 배치와 모델 및 바닥을 포함하는 최신 설계 문서
+   */
+  const setDocument = async (document: FacilityDocument) => {
     cancelDirectMove()
     directTransform.cancel()
-    requestedDocument = doc
+    requestedDocument = document
     const generation = ++documentGeneration
     const ports = mapDocument?.ports ?? emptyPorts
-    const instancesByAsset = new Map<string, FacilityInstance[]>()
-    const sources = new Map<string, THREE.Group>()
-    let changes: { asset: FacilityAsset; instances: FacilityInstance[]; rebuild: boolean }[]
+    let plan: ReturnType<typeof planDocumentUpdate>
     try {
-      for (const instance of doc.instances) {
-        resolveFacilityInstance(instance, ports)
-        const items = instancesByAsset.get(instance.assetId) ?? []
-        items.push(instance)
-        instancesByAsset.set(instance.assetId, items)
-      }
-      changes = doc.assets.flatMap((asset) => {
-        const instances = instancesByAsset.get(asset.id)
-        if (!instances) return []
-        const previous = batches.get(asset.id)
-        const canAppend = !!previous?.source && previous.instances.length < instances.length &&
-          (previous.meshes[0]?.instanceMatrix.count ?? 0) >= instances.length
-        const rebuild = previous?.asset !== asset ||
-          (previous.instances.length !== instances.length && !canAppend) ||
-          !previous.instances.every((instance, index) => sameGeometry(instance, instances[index]!))
-        if (previous?.asset === asset && previous.source) sources.set(asset.id, previous.source)
-        return [{ asset, instances, rebuild }]
-      })
+      plan = planDocumentUpdate(document, ports)
+      const { changes, sources } = plan
       const loading = changes.filter(({ asset, rebuild }) => rebuild && asset.glb && !sources.has(asset.id))
       if (loading.length) {
         for (const [id, source] of await Promise.all(loading.map(async ({ asset }) =>
@@ -610,6 +633,7 @@ export const createFacilityScene = (
     }
     if (generation !== documentGeneration) return
 
+    const { instancesByAsset, sources, changes } = plan
     const rebuilt = new Set(changes.filter((change) => change.rebuild).map(({ asset }) => asset.id))
     for (const [id, batch] of batches) {
       if (instancesByAsset.has(id) && !rebuilt.has(id))
@@ -617,8 +641,7 @@ export const createFacilityScene = (
       for (const mesh of batch.meshes) {
         wallOverlap.setWall(mesh, false)
         mesh.removeFromParent()
-        mesh.dispose()
-        if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
+        disposePlacementMesh(mesh)
       }
       for (const { id: instanceId } of batch.instances) {
         instanceBindings.delete(instanceId)
@@ -628,10 +651,10 @@ export const createFacilityScene = (
       batches.delete(id)
     }
 
-    const libraryChanged = facilityDocument?.assets !== doc.assets
-    facilityDocument = doc
+    const libraryChanged = facilityDocument?.assets !== document.assets
+    facilityDocument = document
     models.visible = true
-    floorSurfaces.setAreas(doc.floors)
+    floorSurfaces.setAreas(document.floors)
     for (const { asset, instances, rebuild } of changes) {
       if (rebuild) buildBatch(asset, instances, sources.get(asset.id))
       const batch = batches.get(asset.id)!
@@ -661,7 +684,7 @@ export const createFacilityScene = (
     drawnPorts = ports
     previewed.clear()
     meshes = [...batches.values()].flatMap((batch) => batch.meshes)
-    if (libraryChanged) glbCache.retain(doc.assets)
+    if (libraryChanged) glbCache.retain(document.assets)
     siteLightingDirty = true
     setSelected(selectedIds)
   }
@@ -1279,10 +1302,7 @@ export const createFacilityScene = (
     firstFloorPoint.remove()
     batchOutline.geometry.dispose()
     batchOutline.material.dispose()
-    for (const mesh of meshes) {
-      mesh.dispose()
-      if (!mesh.userData.sharedGlb) (mesh.material as THREE.Material).dispose()
-    }
+    for (const mesh of meshes) disposePlacementMesh(mesh)
     box.dispose()
     selection.geometry.dispose()
     for (const material of Array.isArray(selection.material)

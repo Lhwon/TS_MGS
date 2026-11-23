@@ -7,7 +7,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { DrawingObject, MapDocument } from '@/entities/map/index.ts'
-import { drawingObjectBounds, type DrawingFinding } from '@/features/drawing-import/index.ts'
+import { drawingObjectBounds, drawingObjectPixelBox, type DrawingFinding } from '@/features/drawing-import/index.ts'
 const props = defineProps<{ map: MapDocument; findings: DrawingFinding[]; disabled: boolean }>()
 const settings = defineModel<{
   recognize: boolean
@@ -67,22 +67,12 @@ watch(selected, (object) => {
 /** 지도 단위의 수정값을 원본 픽셀 좌표로 환산하는 인식 객체 적용 */
 const apply = () => {
   if (!selected.value || !props.map.drawing) return
-  const scale = props.map.drawing.scaleMmPerPixel ?? props.map.drawing.workingScale ?? 1
   const value = draft.value
-  const frame = props.map.drawing.frame,
-    angle = (-(frame?.rotation ?? 0) * Math.PI) / 180,
-    dx = value.x - (frame?.x ?? 0),
-    dy = value.y - (frame?.y ?? 0)
-  const localX = dx * Math.cos(angle) - dy * Math.sin(angle),
-    localY = dx * Math.sin(angle) + dy * Math.cos(angle)
   emit('patch', selected.value.id, {
     label: value.label,
     portId: value.portId || undefined,
     kind: value.kind,
-    x: (localX - value.width / 2) / scale,
-    y: props.map.drawing.height - (localY + value.height / 2) / scale,
-    width: value.width / scale,
-    height: value.height / scale,
+    ...drawingObjectPixelBox(props.map.drawing, value),
     rotation: value.rotation,
     heightMm: value.heightMm,
     status: value.status,

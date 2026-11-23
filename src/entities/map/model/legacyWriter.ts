@@ -4,7 +4,7 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
-import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS, PORT_TAIL_FLAGS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 import { previewLegacy } from '@/entities/map/model/legacy.ts'
 import { parseDocument } from '@/entities/map/model/map.ts'
@@ -726,17 +726,20 @@ export const serializeLegacy = (
       row[13] = integer(port.x - node.x)
       row[14] = integer(port.y - node.y)
     }
+    let bayCount = Number(row[reservationOffset])
     if (port.bays !== undefined && !same(port.bays, oldPorts.get(port.id)?.bays)) {
-      let offset = 246
-      for (let list = 0; list < 8; list++) {
-        const count = Number(row[offset])
-        if (!Number.isSafeInteger(count) || count < 0 || offset + count >= row.length)
-          throw new Error('포트 예약 개수를 확인하세요.')
-        offset += 1 + count
-      }
-      const count = Number(row[offset])
-      if (!Number.isSafeInteger(count) || count < 0) throw new Error('포트 Bay 개수를 확인하세요.')
-      row.splice(offset, 1 + count, String(port.bays.length), ...port.bays.map(String))
+      if (!Number.isSafeInteger(bayCount) || bayCount < 0)
+        throw new Error('포트 Bay 개수를 확인하세요.')
+      row.splice(reservationOffset, 1 + bayCount, String(port.bays.length), ...port.bays.map(String))
+      bayCount = port.bays.length
+    }
+    for (const [index, field] of PORT_TAIL_FLAGS.entries()) {
+      const value = port.settings?.[field.key]
+      if (value === undefined || value === oldPorts.get(port.id)?.settings?.[field.key]) continue
+      const column = reservationOffset + 1 + bayCount + index
+      if (!Number.isSafeInteger(bayCount) || bayCount < 0 || column + 2 >= row.length)
+        throw new Error('포트 후행 속성의 원본 형식을 확인하세요.')
+      row[column] = String(value)
     }
     if (!same(before?.portGroups, map.portGroups))
       row[244] = String(

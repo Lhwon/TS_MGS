@@ -6,6 +6,26 @@
  */
 import { systemPalette } from '@/shared/theme/index.ts'
 import type { MapNode, MapDocument, MapPort } from '@/entities/map/model/map.ts'
+export const PORT_DISPLAY_STYLES = {
+  Load: { field: 'b_load_port', fill: 0xff00ff },
+  Unload: { field: 'b_unload_port', fill: 0x0000ff },
+  Standby: { field: 'b_standby_port', fill: 0x008000 },
+  Charge: { field: 'b_charge_port', fill: 0xffff00 },
+  Ready: { field: 'b_ready_port', fill: 0xff0000 },
+  Lift: { field: 'b_lift', fill: 0xff0000 },
+  Door: { field: 'b_door', fill: 0xff0000 },
+  AirShower: { field: 'b_air_shower', fill: 0xff0000 },
+  Wait: { field: 'b_wait_port', fill: 0xff0000 },
+  Conveyor: { field: 'b_conveyor_port', fill: 0xff0000 },
+  'LOT Manage': { field: 'b_lot_management', fill: 0xff0000 },
+  'Barcode Read': { field: 'b_barcode_read', fill: 0xff0000 },
+  'Under Entry': { field: 'b_under_entry', fill: 0xff0000 },
+  'Isolation Port': { field: 'b_isolation_port', fill: 0xff0000 },
+  'LowHeight Port': { field: 'b_low_height_port', fill: 0xff0000 },
+} as const
+
+export type PortDisplayType = '' | keyof typeof PORT_DISPLAY_STYLES
+
 export interface Layers {
   vehicleHeadings?: boolean
   portIndices?: boolean

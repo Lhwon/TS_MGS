@@ -569,3 +569,9 @@ export const PORT_SETTINGS = [
     kind: 'flag',
   },
 ] as const
+
+
+export const PORT_TAIL_FLAGS = [
+  { key: 'b_isolation_port', label: 'Isolation Port' },
+  { key: 'b_low_height_port', label: 'LowHeight Port' },
+] as const

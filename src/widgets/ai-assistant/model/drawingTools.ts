@@ -24,6 +24,8 @@ import {
   visionDrawingGraph,
   applyDrawingObjects,
   drawingObjectBounds,
+  drawingObjectPixelBox,
+  patchDrawingObjects,
   roundDrawingPaths,
   validateDrawingMap,
   planDrawingRoute,
@@ -77,12 +79,7 @@ export const executeDrawingTool = async (
   const context = assistantContext(
     map,
     scene,
-    [
-      ...new Set([
-        ...editor.selectedIds,
-        ...(editor.selectedId === null ? [] : [editor.selectedId]),
-      ]),
-    ],
+    editor.selectedNodeIds,
     editor.selectedPortId,
     facility.selectedAssetId,
   )
@@ -229,7 +226,7 @@ export const executeDrawingTool = async (
         )
         for (const object of detected.filter(inside)) combined.set(object.id, object)
         merged = applyDrawingObjects(merged, [...combined.values()])
-        editor.commit((document) => Object.assign(document, merged))
+        editor.applyComputedMap(merged)
       }
     } finally {
       options.internal(false)
@@ -292,39 +289,22 @@ export const executeDrawingTool = async (
       next = result.map
       report = `모서리 ${result.rounded}개를 접선 곡선으로 변경했습니다. 공간이 부족한 반경은 구간 길이에 맞춰 줄였습니다.`
     } else if (plan.action === 'edit_drawing_objects') {
-      const objects = structuredClone(map.drawing.objects ?? [])
-      const factor = map.drawing.scaleMmPerPixel ?? map.drawing.workingScale ?? 1
-
-      for (const id of plan.objectIds ?? []) {
-        const object = objects.find((item) => item.id === id)
-
-        if (!object) throw new Error(`도면 객체 ${id}를 찾지 못했습니다.`)
-
-        if (plan.operation === 'move') {
-          object.x += plan.dx / factor
-          object.y -= plan.dy / factor
+      next = patchDrawingObjects(map, plan.objectIds ?? [], (object, sourceDrawing) => {
+        if (plan.operation === 'move' || plan.operation === 'resize') {
+          const bounds = drawingObjectBounds(map, object)
+          return drawingObjectPixelBox(sourceDrawing, {
+            x: bounds.x + (plan.operation === 'move' ? plan.dx : 0),
+            y: bounds.y + (plan.operation === 'move' ? plan.dy : 0),
+            width: plan.operation === 'resize' ? plan.width || bounds.width : bounds.width,
+            height: plan.operation === 'resize' ? plan.height || bounds.height : bounds.height,
+          })
         }
-
-        if (plan.operation === 'resize') {
-          const cx = object.x + object.width / 2,
-            cy = object.y + object.height / 2
-          if (plan.width) object.width = plan.width / factor
-          if (plan.height) object.height = plan.height / factor
-          object.x = cx - object.width / 2
-          object.y = cy - object.height / 2
-        }
-
-        if (plan.operation === 'rename') object.label = plan.label!
-        if (plan.operation === 'rotate') object.rotation = plan.rotation
-        if (plan.operation === 'classify') object.kind = plan.objectKind as DrawingObject['kind']
-        if (plan.operation === 'height') object.heightMm = plan.heightMm
-        if (plan.operation === 'accept') object.status = 'accepted'
-        if (plan.operation === 'reject') object.status = 'rejected'
-
-        object.locked = true
-      }
-
-      next = applyDrawingObjects(map, objects)
+        if (plan.operation === 'rename') return { label: plan.label! }
+        if (plan.operation === 'rotate') return { rotation: plan.rotation }
+        if (plan.operation === 'classify') return { kind: plan.objectKind as DrawingObject['kind'] }
+        if (plan.operation === 'height') return { heightMm: plan.heightMm }
+        return { status: plan.operation === 'accept' ? 'accepted' : 'rejected' }
+      })
       if (drawing) drawing.detections = structuredClone(next.drawing!.objects ?? [])
       report = `${plan.objectIds?.join(', ')} 객체 수정 완료`
     }
@@ -335,7 +315,7 @@ export const executeDrawingTool = async (
     if (next !== map) {
       options.internal(true)
       try {
-        editor.commit((document) => Object.assign(document, next))
+        editor.applyComputedMap(next)
       } finally {
         options.internal(false)
       }
@@ -357,7 +337,7 @@ export const executeDrawingTool = async (
     const calibrated = calibrateDrawingMap(map, plan.nodeIds, plan.referenceDistanceMm!)
     options.internal(true)
     try {
-      editor.commit((document) => Object.assign(document, calibrated))
+      editor.applyComputedMap(calibrated)
     } finally {
       options.internal(false)
     }
@@ -386,15 +366,7 @@ export const executeDrawingTool = async (
     if (!targets.size) throw new Error('해당 구역에 변경할 경로가 없습니다.')
     options.internal(true)
     try {
-      editor.commit((document) => {
-        for (const edge of document.edges) if (targets.has(edge.id)) edge.direction = plan.direction
-        for (const node of document.nodes)
-          node.direction = document.edges.some(
-            (edge) => (edge.from === node.id || edge.to === node.id) && edge.direction === 1,
-          )
-            ? 1
-            : 0
-      })
+      editor.setPathDirections(targets, plan.direction!)
     } finally {
       options.internal(false)
     }

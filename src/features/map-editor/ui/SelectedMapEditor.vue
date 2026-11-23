@@ -7,13 +7,12 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import {
-  editMapObjects,
-  editSelectedNodes,
   legacyColor,
   MAX_PORTS,
   NODE_FLAGS,
   PATH_CONTROLS,
   PORT_SETTINGS,
+  PORT_TAIL_FLAGS,
   repairPortGroups,
 } from '@/entities/map/index.ts'
 import { useEditor } from '@/features/map-editor/model/editor.ts'
@@ -42,10 +41,7 @@ const values = reactive<Record<string, string | number | null>>({})
 const shift = reactive({ x: 0, y: 0, target: '', clear: false })
 const portCreate = reactive({ prefix: '', suffix: 'number', start: 1 })
 const excluded = ref(new Set<string>())
-const selected = computed(
-  () =>
-    new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-)
+const selected = computed(() => new Set(editor.selectedNodeIds))
 const nodes = computed(() => editor.document.nodes.filter((node) => selected.value.has(node.id)))
 const realIds = computed(() => new Map(nodes.value.map((node) => [node.id, node.realId])))
 const edges = computed(() =>
@@ -104,7 +100,7 @@ const mainPort = new Set([
   'ucs_setting_idx',
   'id_port_parent',
 ])
-const portSettings: Field[] = PORT_SETTINGS.map((field) => ({
+const portSettings: Field[] = [...PORT_SETTINGS, ...PORT_TAIL_FLAGS.map((field) => ({ ...field, kind: 'flag' as const }))].map((field) => ({
   key: field.key,
   label: field.label,
   kind: field.kind === 'number' ? undefined : field.kind,
@@ -314,7 +310,7 @@ const move = (axis?: 'x' | 'y') =>
         id: String(id),
         value: { [axis]: Number(shift.target) },
       }))
-      editor.commit((map) => Object.assign(map, editMapObjects(map, changes, 15000).map))
+      editor.applyMapEdits(changes, 15000)
     }
     if (shift.clear) editor.clearSelection()
   }, '선택 노드 이동 완료')
@@ -387,23 +383,18 @@ const remove = () => {
   )
     return
   run(
-    () =>
+    () => {
+      if (mode.value === 'node') {
+        editor.applyNodeSelectionEdit(nodes.value.map((node) => node.id), { operation: 'delete' })
+        return
+      }
       editor.commit((map) => {
-        if (mode.value === 'node')
-          Object.assign(
-            map,
-            editSelectedNodes(
-              map,
-              nodes.value.map((node) => node.id),
-              { operation: 'delete' },
-            ).map,
-          )
-        else if (mode.value === 'port') {
-          const ids = new Set(ports.value.map((port) => port.id))
-          map.ports = map.ports.filter((port) => !ids.has(port.id))
-          repairPortGroups(map)
-        }
-      }),
+        if (mode.value !== 'port') return
+        const ids = new Set(ports.value.map((port) => port.id))
+        map.ports = map.ports.filter((port) => !ids.has(port.id))
+        repairPortGroups(map)
+      })
+    },
     '선택 항목 삭제 완료',
   )
 }

@@ -6,6 +6,7 @@
  */
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { randomUUID } = require('node:crypto')
 const MAX_BYTES = 32 * 1024 * 1024
 /**
  * 지원 확장자와 파일 크기를 확인하고 인접 테마를 함께 읽는 지도 파일 로딩
@@ -122,4 +123,105 @@ const openMapFolder = async (folder, allowEmpty = false) => {
     throw new Error('MAP 폴더 또는 RCS 폴더를 선택하세요. YYYYMMDD_HHmmss.jmapx 파일이 필요합니다.')
   return { ...(await readMapFile(path.join(directory, maps[0].name))), directory }
 }
-module.exports = { readMapFile, openMapFolder }
+/** 연결 MAP 폴더에 대응하는 SYSTEM.INI의 기존 문자 인코딩과 본문 읽기 */
+const readBaySettings = async (directory) => {
+  if (path.basename(directory).toLowerCase() !== 'map')
+    throw new Error('먼저 RCS 프로젝트 또는 MAP 폴더를 선택하세요.')
+  const target = path.join(directory, '..', 'SETTING', 'SYSTEM.INI')
+  let raw
+  try {
+    if ((await fs.stat(target)).size > 1024 * 1024) throw new Error('SYSTEM.INI 파일이 너무 큽니다.')
+    raw = await fs.readFile(target)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    raw = Buffer.alloc(0)
+  }
+  const encoding = raw[0] === 255 && raw[1] === 254 ? 'utf16le' : 'latin1'
+  const encodedBom = encoding === 'utf16le' ? 2 : raw.subarray(0, 3).equals(Buffer.from([239, 187, 191])) ? 3 : 0
+  return { target, encoding, bom: raw.subarray(0, encodedBom), content: raw.subarray(encodedBom).toString(encoding) }
+}
+
+const bayLine = /^[ \t]*bay_to_use[ \t]*=[ \t]*([^\r\n]*)/im
+
+/** 다른 섹션과 줄바꿈을 그대로 두기 위한 Bay 본문 범위 조회 */
+const locateBaySection = (content) => {
+  const header = /^[ \t]*\[bay\][^\r\n]*(?:\r?\n|$)/im.exec(content)
+  if (!header) return undefined
+  const start = header.index + header[0].length
+  const boundary = content.slice(start).search(/^[ \t]*\[[^\r\n]+]/m)
+  return { start, end: boundary === -1 ? content.length : start + boundary }
+}
+
+/**
+ * 프로젝트 원본 설정에서 적용 후보로 저장한 Bay 번호 조회
+ * @param directory 발급한 프로젝트 식별자와 연결된 MAP 폴더
+ * @returns 오름차순의 유효한 Bay 번호
+ */
+const readProjectBayFilter = async (directory) => {
+  if (path.basename(directory).toLowerCase() !== 'map') return []
+  const { content } = await readBaySettings(directory)
+  const section = locateBaySection(content)
+  const value = section ? (content.slice(section.start, section.end).match(bayLine)?.[1] ?? '') : ''
+  return [...new Set(value.split(';').filter((item) => /^\d+$/.test(item.trim())).map(Number))]
+    .filter((id) => Number.isSafeInteger(id) && id > 0)
+    .sort((a, b) => a - b)
+}
+
+/**
+ * 다른 INI 섹션과 기존 인코딩을 보존하면서 Bay 필터 목록만 원자적으로 저장
+ * @param directory 발급한 프로젝트 식별자와 연결된 MAP 폴더
+ * @param bayIds 화면에서 지정한 Bay 번호
+ */
+const saveProjectBayFilter = async (directory, bayIds) => {
+  if (!Array.isArray(bayIds) || bayIds.length > 9999 ||
+    bayIds.some((id) => !Number.isSafeInteger(id) || id < 1 || id > 1000000))
+    throw new Error('저장할 Bay 번호 목록을 확인하세요.')
+  const { target, encoding, bom, content } = await readBaySettings(directory)
+  const newline = content.includes('\n') && !content.includes('\r\n') ? '\n' : '\r\n'
+  const unique = [...new Set(bayIds)].sort((a, b) => a - b)
+  const assignment = 'bay_to_use=' + (unique.length ? unique.join(';') + ';' : '')
+  const section = locateBaySection(content)
+  let next
+  if (!section) {
+    const separator = content && !content.endsWith('\n') ? newline : ''
+    next = content + separator + '[Bay]' + newline + assignment + newline
+  } else {
+    const { start, end } = section
+    const body = content.slice(start, end)
+    const updatedBody = bayLine.test(body) ? body.replace(bayLine, assignment) : assignment + newline + body
+    const header = content.slice(0, start)
+    next = header + (header.endsWith('\n') ? '' : newline) + updatedBody + content.slice(end)
+  }
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  const temporary = target + '.' + randomUUID() + '.tmp'
+  try {
+    await fs.writeFile(temporary, Buffer.concat([bom, Buffer.from(next, encoding)]), { flag: 'wx' })
+    await fs.rename(temporary, target)
+  } finally {
+    await fs.rm(temporary, { force: true })
+  }
+}
+
+/**
+ * 원본 지도 파일과 이름이 일치하는 Block 또는 Blocking 검토 자료 조회
+ * @param directory 승인된 프로젝트의 지도 디렉터리
+ * @param name 현재 열린 JMAPX 파일명
+ * @param type 읽을 고정 자료 확장자
+ * @returns 원본 검토 자료 또는 파일 부재를 나타내는 값
+ */
+const readProjectBlockData = async (directory, name, type) => {
+  if (path.basename(directory).toLowerCase() !== 'map') return null
+  if (typeof name !== 'string' || !/^[^\\/:*?"<>|\u0000-\u001f]+\.jmapx$/i.test(name) ||
+    name !== path.basename(name) || !['fmd', 'blk'].includes(type))
+    throw new Error('Block 자료의 기준 지도와 형식을 확인하세요.')
+  const target = path.join(directory, '..', 'DATA', path.parse(name).name + '.' + type)
+  try {
+    if ((await fs.stat(target)).size > MAX_BYTES) throw new Error('Block 자료가 32MB를 초과합니다.')
+    return { name: path.basename(target), content: await fs.readFile(target, 'utf8') }
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+module.exports = { readMapFile, openMapFolder, readProjectBayFilter, saveProjectBayFilter, readProjectBlockData }

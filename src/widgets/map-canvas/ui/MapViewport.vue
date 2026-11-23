@@ -43,7 +43,7 @@ const calibrate = () => {
       [referenceFrom.value, referenceTo.value],
       referenceDistance.value,
     )
-    editor.commit((map) => Object.assign(map, calibrated))
+    editor.applyComputedMap(calibrated)
     calibrationError.value = ''
     editor.message = '도면 축척을 mm로 확정했습니다.'
     scene?.fit()
@@ -140,10 +140,10 @@ const closeMenu = () => {
   shapeMenu.value = undefined
 }
 /**
- * 포트 편집 모드에서 원본 표시 순서의 가장 앞 포트를 찾는 포트 선택 판정
+ * 원본 표시 순서에서 포인터와 겹치는 가장 앞 포트 그룹 조회
  * @param x 지도 가로 좌표
  * @param y 지도 세로 좌표
- * @returns 포인터 아래 포트 식별자 또는 빈 결과
+ * @returns 포인터 아래 포트 그룹 또는 빈 결과
  */
 const pickPortGroup = (x: number, y: number) =>
   [...(editor.visibleDocument.portGroups ?? [])]
@@ -152,17 +152,15 @@ const pickPortGroup = (x: number, y: number) =>
       (group) =>
         Math.abs(x - group.x) <= group.width / 2 && Math.abs(y - group.y) <= group.height / 2,
     )
-const pickPort = (x: number, y: number) => {
-  return (
-    [...editor.visibleDocument.ports]
-      .reverse()
-      .find(
-        (port) =>
-          Math.abs(x - port.x) <= (port.width ?? 420) / 2 &&
-          Math.abs(y - port.y) <= (port.height ?? 260) / 2,
-      )?.id ?? null
-  )
-}
+/** 포인터 아래 포트 중 가장 앞 포트의 식별자 조회 */
+const pickPort = (x: number, y: number) =>
+  [...editor.visibleDocument.ports]
+    .reverse()
+    .find(
+      (port) =>
+        Math.abs(x - port.x) <= (port.width ?? 420) / 2 &&
+        Math.abs(y - port.y) <= (port.height ?? 260) / 2,
+    )?.id ?? null
 /** 두 끝점으로 이루어진 선분에 대한 투영 위치와 수직 거리 계산 */
 const projectPoint = (
   point: { x: number; y: number },
@@ -643,7 +641,7 @@ const add = () => {
 }
 let scene: ReturnType<typeof createMapScene> | undefined
 /**
- * 편집 명령의 예외를 화면 상태로 변환하고 정상 처리 시 이전 오류를 해제하는 작업 실행
+ * 편집 명령의 예외를 지도 상태 메시지로 변환
  *
  * @param action 검증 범위 안에서 실행할 편집 명령
  */
@@ -654,131 +652,193 @@ const attempt = (action: () => void) => {
     editor.message = cause instanceof Error ? cause.message : String(cause)
   }
 }
+/**
+ * 대기 중인 도형 이동을 먼저 처리하고 활성 도구에 따라 지도 클릭을 선택이나 편집으로 전달
+ *
+ * @param nodeId 포인터 아래 노드 식별자
+ * @param worldX 클릭한 지도 가로 좌표
+ * @param worldY 클릭한 지도 세로 좌표
+ */
+const handleMapClick = (nodeId: number | null, worldX: number, worldY: number) =>
+  attempt(() => {
+    closeMenu()
+    if (editor.pathPlanOpen) {
+      if (nodeId !== null)
+        editor.pathPlanTargets = editor.pathPlanTargets.length === 1
+          ? [editor.pathPlanTargets[0], nodeId]
+          : [nodeId]
+      return
+    }
+    if (editor.vehiclePreviewMode) {
+      if (nodeId !== null) editor.selectedId = nodeId
+      return
+    }
+    const pendingShapeMove = shapeMove.value
+    if (pendingShapeMove) {
+      const dx = Math.round(worldX - pendingShapeMove.x)
+      const dy = Math.round(worldY - pendingShapeMove.y)
+      if (dx || dy)
+        editor.commit((map) => {
+          const shape = map.shapes?.find((item) => item.id === pendingShapeMove.id)
+          if (!shape) throw new Error('이동할 도형이 없습니다.')
+          shape.x1 += dx
+          shape.x2 += dx
+          shape.centerX += dx
+          shape.y1 += dy
+          shape.y2 += dy
+          shape.centerY += dy
+        })
+      shapeMove.value = undefined
+      editor.message = `도형 ${pendingShapeMove.id} 이동 완료`
+      return
+    }
+    if (editor.shapeTool !== null) return
+    if (editor.portMode) {
+      editor.selectedPortId = pickPortGroup(worldX, worldY)?.portIds[0] ?? pickPort(worldX, worldY)
+      return
+    }
+    if (draft.open) {
+      draft.x = Math.trunc(worldX)
+      draft.y = Math.trunc(worldY)
+      return
+    }
+    if (editor.tool === 'add') {
+      editor.addNode(
+        Math.round(worldX / 10) * 10,
+        Math.round(worldY / 10) * 10,
+        editor.curveOptions.force || editor.curveOptions.autoSelect
+          ? editor.selectedId
+          : null,
+      )
+      return
+    }
+    if (editor.tool === 'connect' && nodeId !== null) {
+      editor.connectNode(nodeId)
+      return
+    }
+    if (nodeId !== null) editor.selectedId = nodeId
+  })
+
+/**
+ * 포트 모드와 도형 및 노드 우선순위에 따른 우클릭 메뉴 선택과 화면 배치
+ *
+ * @param nodeId 포인터 아래 노드 식별자
+ * @param worldX 지도 가로 좌표
+ * @param worldY 지도 세로 좌표
+ * @param screenX 화면 가로 위치
+ * @param screenY 화면 세로 위치
+ * @param distance 노드에서 클릭 위치까지의 거리
+ * @param unitsPerPixel 화면 픽셀당 지도 단위
+ */
+const handleMapContextMenu = (
+  nodeId: number | null,
+  worldX: number,
+  worldY: number,
+  screenX: number,
+  screenY: number,
+  distance: number,
+  unitsPerPixel: number,
+) => {
+  closeMenu()
+  const position = {
+    left: Math.max(0, Math.min(screenX + 10, host.value!.clientWidth - 270)),
+    top: Math.max(0, Math.min(screenY + 10, host.value!.clientHeight - 200)),
+  }
+  if (shapeMove.value) {
+    shapeMove.value = undefined
+    return
+  }
+  if (editor.pathPlanOpen) return
+  if (editor.vehiclePreviewMode) {
+    editor.selectedId = nodeId
+    menu.value = {
+      ...position, id: nodeId, x: worldX, y: worldY, distance,
+      connection: null, tolerance: unitsPerPixel * 12, connectDistance: 0,
+    }
+  } else if (editor.portMode) {
+    const group = pickPortGroup(worldX, worldY)
+    const portId = group ? null : pickPort(worldX, worldY)
+    const port = editor.visibleDocument.ports.find((item) => item.id === portId)
+    portMenu.value = {
+      ...position,
+      id: portId,
+      groupId: group?.id ?? null,
+      nodeId: group?.nodeId ?? port?.nodeId ?? nodeId ?? editor.selectedId,
+      x: worldX,
+      y: worldY,
+    }
+  } else {
+    const shape = [...(editor.visibleDocument.shapes ?? [])]
+      .reverse()
+      .find((item) => hitShape(item, worldX, worldY, unitsPerPixel * 5))
+    if (shape && (editor.shapeTool !== null || nodeId === null))
+      shapeMenu.value = { ...position, id: shape.id }
+    else {
+      editor.selectedIds = []
+      menu.value = {
+        ...position,
+        id: nodeId,
+        x: worldX,
+        y: worldY,
+        distance,
+        connection: editor.selectedId,
+        tolerance: unitsPerPixel * 12,
+        connectDistance: Math.max(50, unitsPerPixel * 4),
+      }
+    }
+  }
+  void nextTick(() => {
+    const element = menuElement.value
+    if (!element || !host.value) return
+    const top = Math.max(
+      0,
+      Math.min(position.top, host.value.clientHeight - element.offsetHeight),
+    )
+    element.style.top = `${top}px`
+    element.style.maxHeight = `${host.value.clientHeight - top}px`
+    element.focus({ preventScroll: true })
+  })
+}
+
+/** 활성 도형 도구와 포트 모드에 따라 드래그 영역을 도형 생성 또는 노드 선택으로 처리 */
+const handleMapAreaDrag = (
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  adding: boolean,
+) =>
+  attempt(() => {
+    if (editor.pathPlanOpen || editor.vehiclePreviewMode) return
+    if (editor.shapeTool !== null) editor.addShape(start, end)
+    else if (props.layers.nodes && !editor.portMode) editor.selectArea(start, end, adding)
+  })
+
+/** 포인터 이동에 맞춰 커브 미리보기와 상위 화면의 위치 표시 갱신 */
+const handleMapCursorMove = (worldX: number, worldY: number) => {
+  drawingPoint.x = worldX
+  drawingPoint.y = worldY
+  refreshCurvePreview()
+  emit('cursor', worldX, worldY)
+}
+
 onMounted(() => {
   document.addEventListener('pointerdown', outsideMenu, true)
   window.addEventListener('keydown', escape)
   try {
     scene = createMapScene(host.value!, {
-      click: (id, x, y) =>
-        attempt(() => {
-          closeMenu()
-          const move = shapeMove.value
-          if (move) {
-            const dx = Math.round(x - move.x)
-            const dy = Math.round(y - move.y)
-            if (dx || dy)
-              editor.commit((map) => {
-                const shape = map.shapes?.find((item) => item.id === move.id)
-                if (!shape) throw new Error('이동할 도형이 없습니다.')
-                shape.x1 += dx
-                shape.x2 += dx
-                shape.centerX += dx
-                shape.y1 += dy
-                shape.y2 += dy
-                shape.centerY += dy
-              })
-            shapeMove.value = undefined
-            editor.message = `도형 ${move.id} 이동 완료`
-            return
-          }
-          if (editor.shapeTool !== null) return
-          if (editor.portMode) {
-            editor.selectedPortId = pickPortGroup(x, y)?.portIds[0] ?? pickPort(x, y)
-            return
-          }
-          if (draft.open) {
-            draft.x = Math.trunc(x)
-            draft.y = Math.trunc(y)
-            return
-          }
-          if (editor.tool === 'add') {
-            editor.addNode(
-              Math.round(x / 10) * 10,
-              Math.round(y / 10) * 10,
-              editor.curveOptions.force || editor.curveOptions.autoSelect
-                ? editor.selectedId
-                : null,
-            )
-            return
-          }
-          if (editor.tool === 'connect' && id !== null) {
-            editor.connectNode(id)
-            return
-          }
-          if (id !== null) editor.selectedId = id
-        }),
-      context: (id, x, y, left, top, distance, unitsPerPixel) => {
-        closeMenu()
-        const position = {
-          left: Math.max(0, Math.min(left + 10, host.value!.clientWidth - 270)),
-          top: Math.max(0, Math.min(top + 10, host.value!.clientHeight - 200)),
-        }
-        if (shapeMove.value) {
-          shapeMove.value = undefined
-          return
-        }
-        if (editor.portMode) {
-          const group = pickPortGroup(x, y)
-          const portId = group ? null : pickPort(x, y)
-          const port = editor.visibleDocument.ports.find((item) => item.id === portId)
-          portMenu.value = {
-            ...position,
-            id: portId,
-            groupId: group?.id ?? null,
-            nodeId: group?.nodeId ?? port?.nodeId ?? id ?? editor.selectedId,
-            x,
-            y,
-          }
-        } else {
-          const shape = [...(editor.visibleDocument.shapes ?? [])]
-            .reverse()
-            .find((item) => hitShape(item, x, y, unitsPerPixel * 5))
-          if (shape && (editor.shapeTool !== null || id === null))
-            shapeMenu.value = { ...position, id: shape.id }
-          else {
-            editor.selectedIds = []
-            menu.value = {
-              ...position,
-              id,
-              x,
-              y,
-              distance,
-              connection: editor.selectedId,
-              tolerance: unitsPerPixel * 12,
-              connectDistance: Math.max(50, unitsPerPixel * 4),
-            }
-          }
-        }
-        void nextTick(() => {
-          const element = menuElement.value
-          if (!element || !host.value) return
-          const top = Math.max(
-            0,
-            Math.min(position.top, host.value.clientHeight - element.offsetHeight),
-          )
-          element.style.top = `${top}px`
-          element.style.maxHeight = `${host.value.clientHeight - top}px`
-          element.focus({ preventScroll: true })
-        })
-      },
-      area: (start, end) =>
-        attempt(() => {
-          if (editor.shapeTool !== null) editor.addShape(start, end)
-          else if (props.layers.nodes && !editor.portMode) editor.selectArea(start, end)
-        }),
-      cursor: (x, y) => {
-        drawingPoint.x = x
-        drawingPoint.y = y
-        refreshCurvePreview()
-        emit('cursor', x, y)
-      },
+      click: handleMapClick,
+      context: handleMapContextMenu,
+      area: handleMapAreaDrag,
+      cursor: handleMapCursorMove,
       zoom: (value) => emit('zoom', value),
     })
     scene.setRenderPaused(editor.renderPaused)
     scene.setDocument(editor.visibleDocument, editor.theme)
     scene.setLayers(props.layers)
+    scene.setCrosshair(editor.showCrosshair)
+    scene.setPortDisplayType(editor.portDisplayType)
+    scene.setViewRotation(editor.viewTurns)
     scene.setSelectedPort(editor.selectedPortId)
-    scene.setTool(editor.tool, editor.readOnly)
+    scene.setTool(editor.tool)
     scene.fit()
   } catch (cause) {
     error.value = `Three.js 초기화 실패: ${cause instanceof Error ? cause.message : String(cause)}`
@@ -809,13 +869,25 @@ watch(
 )
 watch(
   () => [editor.tool, editor.readOnly] as const,
-  ([tool, readonly]) => scene?.setTool(tool, readonly),
+  ([tool]) => scene?.setTool(tool),
 )
 watch(
   () => props.layers,
   (layers) => scene?.setLayers(layers),
   { deep: true },
 )
+/** 계획 경로에 속한 노드 좌표를 지도 수정 없이 별도 강조 레이어로 표시 */
+const refreshPathPlan = () => {
+  const points = editor.pathPlanPreview.flatMap((id) => {
+    const node = nodesById.value.get(id)
+    return node ? [node] : []
+  })
+  scene?.setPathPlanPreview(points)
+}
+watch([() => editor.pathPlanPreview, () => editor.visibleDocument], refreshPathPlan)
+watch(() => editor.viewTurns, (turns) => scene?.setViewRotation(turns))
+watch(() => editor.showCrosshair, (visible) => scene?.setCrosshair(visible))
+watch(() => editor.portDisplayType, (type) => scene?.setPortDisplayType(type))
 watch(
   () => editor.renderPaused,
   (paused) => scene?.setRenderPaused(paused),
@@ -1099,108 +1171,111 @@ defineExpose({ fit, focus, zoomBy, capture })
       <strong>
         {{ menu.id === null ? 'You can add a node.' : `Node[${menu.id}] is selected.` }}
       </strong>
-      <v-btn
-        role="menuitem"
-        data-testid="context-add"
-        :disabled="
-          editor.readOnly ||
-          menu.distance < 100 ||
-          !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
-        "
-        @click="menuAction('add')"
-      >
-        [A] Add (Node)
-      </v-btn>
-      <hr />
-      <v-btn
-        role="menuitem"
-        :disabled="
-          menu.id === null || !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
-        "
-        @click="menuAction('edit')"
-      >
-        [E] Edit (Node)
-      </v-btn>
-      <v-btn
-        role="menuitem"
-        :disabled="
-          menu.id === null ||
-          !routes.some(({ from, to }) => from.id === menu?.id || to.id === menu?.id)
-        "
-        @click="menuAction('path')"
-      >
-        [Q] Edit (Path)
-      </v-btn>
-      <v-btn
-        role="menuitem"
-        :disabled="menu.id === null || !hasIncoming(menu.id)"
-        @click="menuAction('pathSetting')"
-      >
-        [S] Setting (Connected Path)
-      </v-btn>
-      <hr />
-      <v-btn
-        role="menuitem"
-        :disabled="
-          editor.readOnly ||
-          menu.id === null ||
-          !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
-        "
-        @click="menuAction('delete')"
-      >
-        [D] Delete
-      </v-btn>
-      <v-btn
-        role="menuitem"
-        :disabled="editor.readOnly || !repeatRoutes(menu.id).length"
-        @click="menuAction('repeat')"
-      >
-        [R] Repeat Insert
-      </v-btn>
-      <v-btn
-        role="menuitem"
-        :disabled="editor.readOnly || !insertTarget"
-        @click="menuAction('insert')"
-      >
-        [I] Insert (1)
-      </v-btn>
-      <details
-        v-if="canFit"
-        data-fit-options
-      >
-        <summary>[F] Fit and Connect</summary>
+      <template v-if="!editor.vehiclePreviewMode">
         <v-btn
           role="menuitem"
-          @click="menuAction('fitCurrent')"
+          data-testid="context-add"
+          :disabled="
+            editor.readOnly ||
+            menu.distance < 100 ||
+            !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
+          "
+          @click="menuAction('add')"
         >
-          Current Node Fit to Target
+          [A] Add (Node)
+        </v-btn>
+        <hr />
+        <v-btn
+          role="menuitem"
+          :disabled="
+            menu.id === null || !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
+          "
+          @click="menuAction('edit')"
+        >
+          [E] Edit (Node)
         </v-btn>
         <v-btn
           role="menuitem"
-          @click="menuAction('fitTarget')"
+          :disabled="
+            menu.id === null ||
+            !routes.some(({ from, to }) => from.id === menu?.id || to.id === menu?.id)
+          "
+          @click="menuAction('path')"
         >
-          Target Node Fit to Current
+          [Q] Edit (Path)
         </v-btn>
-      </details>
-      <hr />
-      <v-btn
-        role="menuitem"
-        :disabled="
-          editor.readOnly ||
-          menu.id === null ||
-          menu.connection === null ||
-          menu.distance >= menu.connectDistance ||
-          !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
-        "
-        @click="menuAction('connect')"
-      >
-        [C] Connect
-      </v-btn>
+        <v-btn
+          role="menuitem"
+          :disabled="menu.id === null || !hasIncoming(menu.id)"
+          @click="menuAction('pathSetting')"
+        >
+          [S] Setting (Connected Path)
+        </v-btn>
+        <hr />
+        <v-btn
+          role="menuitem"
+          :disabled="
+            editor.readOnly ||
+            menu.id === null ||
+            !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
+          "
+          @click="menuAction('delete')"
+        >
+          [D] Delete
+        </v-btn>
+        <v-btn
+          role="menuitem"
+          :disabled="editor.readOnly || !repeatRoutes(menu.id).length"
+          @click="menuAction('repeat')"
+        >
+          [R] Repeat Insert
+        </v-btn>
+        <v-btn
+          role="menuitem"
+          :disabled="editor.readOnly || !insertTarget"
+          @click="menuAction('insert')"
+        >
+          [I] Insert (1)
+        </v-btn>
+        <details
+          v-if="canFit"
+          data-fit-options
+        >
+          <summary>[F] Fit and Connect</summary>
+          <v-btn
+            role="menuitem"
+            @click="menuAction('fitCurrent')"
+          >
+            Current Node Fit to Target
+          </v-btn>
+          <v-btn
+            role="menuitem"
+            @click="menuAction('fitTarget')"
+          >
+            Target Node Fit to Current
+          </v-btn>
+        </details>
+        <hr />
+        <v-btn
+          role="menuitem"
+          :disabled="
+            editor.readOnly ||
+            menu.id === null ||
+            menu.connection === null ||
+            menu.distance >= menu.connectDistance ||
+            !!editor.document.nodes.find((n) => n.id === menu?.id)?.curve
+          "
+          @click="menuAction('connect')"
+        >
+          [C] Connect
+        </v-btn>
+      </template>
       <details
         v-if="
           editor.document.units === 'mm' &&
-          (menu.id !== null || editor.selectedId !== null || vehicleCount)
+          (editor.vehiclePreviewMode || menu.id !== null || editor.selectedId !== null || vehicleCount)
         "
+        :open="editor.vehiclePreviewMode || undefined"
       >
         <summary>차량 배치 미리보기</summary>
         <v-btn
@@ -1419,6 +1494,21 @@ defineExpose({ fit, focus, zoomBy, capture })
 </template>
 
 <style scoped lang="scss">
+// 지도 객체의 선택과 조작을 가로채지 않는 마우스 위치 보조선
+:deep(.map-crosshair) {
+  position: absolute;
+  inset: 18px 0 0 20px;
+  pointer-events: none;
+  color: var(--text-muted);
+  opacity: 0.48;
+}
+
+:deep(.map-crosshair:not([hidden])) {
+  background:
+    linear-gradient(currentColor, currentColor) calc(var(--pointer-x) - 20px) 0 / 1px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) 0 calc(var(--pointer-y) - 18px) / 100% 1px no-repeat;
+}
+
 // 도면 배경과 같은 좌표계의 기준점 및 실제 거리 입력
 .drawing-controls {
   z-index: 6;

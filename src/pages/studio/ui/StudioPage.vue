@@ -314,7 +314,15 @@ const keyboard = (event: KeyboardEvent) => {
   if (mod || event.altKey) return
   if (key === 'f') editor.curveOptions.force = !editor.curveOptions.force
   if (key === 'r') editor.curveOptions.reverse = !editor.curveOptions.reverse
-  if (key === 'e') editor.portMode = !editor.portMode
+  if (key === 'e') {
+    editor.portMode = !editor.portMode
+    editor.vehiclePreviewMode = false
+  }
+  if (key === 'p' && !mod) editor.openPathPlan()
+  if (key === 'escape' && editor.pathPlanOpen) {
+    editor.pathPlanOpen = false
+    return
+  }
   if (key === 'delete') {
     event.preventDefault()
     try {
@@ -442,7 +450,6 @@ onBeforeUnmount(() => {
           @create="files.create()"
           @assistant="assistantOpen = !assistantOpen"
           @facility="openFacility"
-          @fit="canvas?.fit()"
           @focus="canvas?.focus($event)"
           @capture="canvas?.capture()"
           @layer="(key, value) => (layers[key] = value)"

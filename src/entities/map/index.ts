@@ -24,7 +24,7 @@ export type {
   MapShape,
   MapPortGroup,
 } from '@/entities/map/model/map.ts'
-export type { Layers } from '@/entities/map/model/view.ts'
+export type { Layers, PortDisplayType } from '@/entities/map/model/view.ts'
 export {
   pickMgsNode,
   mgsAreaSelection,
@@ -34,6 +34,7 @@ export {
 export type { MapPoint } from '@/entities/map/model/interaction.ts'
 export {
   DEFAULT_LAYERS,
+  PORT_DISPLAY_STYLES,
   nodeLabel,
   legacyColor,
   viewStep,
@@ -58,7 +59,7 @@ export type { CurveOptions } from '@/entities/map/model/curve.ts'
 
 export { PATH_CONTROLS, NODE_FLAGS } from '@/entities/map/model/controls.ts'
 export { remapLegacySource } from '@/entities/map/model/remapLegacy.ts'
-export { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
+export { PORT_SETTINGS, PORT_RESERVATIONS, PORT_TAIL_FLAGS } from '@/entities/map/model/portSettings.ts'
 export {
   emptyAreas,
   validateAreas,
@@ -68,7 +69,15 @@ export {
 export type { AreaData } from '@/entities/map/model/areas.ts'
 export { expandCurveSelection } from '@/entities/map/model/curveSelection.ts'
 export { repairPortGroups } from '@/entities/map/model/repairReferences.ts'
-export { editMapObjects } from '@/entities/map/model/editing.ts'
+export {
+  createMapEdge,
+  createMapNode,
+  createMapPort,
+  createMapShape,
+  editMapObjects,
+  patchMapNode,
+  removeMapNode,
+} from '@/entities/map/model/editing.ts'
 export {
   inspectSelectedNodes,
   editSelectedNodes,

@@ -9,7 +9,6 @@ import {
   parseDocument,
   type DrawingObject,
   type MapDocument,
-  type MapEdge,
   type MapShape,
 } from '@/entities/map/index.ts'
 import {
@@ -36,6 +35,60 @@ export const drawingObjectBounds = (map: MapDocument, object: DrawingObject) => 
     width: object.width * scale,
     height: object.height * scale,
   }
+}
+
+/**
+ * 지도 좌표의 객체 중심과 크기를 회전 이전의 원본 도면 픽셀 범위로 변환
+ * @param drawing 도면 축척과 배치 프레임 및 원본 이미지 높이
+ * @param bounds 지도 좌표의 중심과 크기
+ * @returns 원본 이미지 좌상단 기준의 위치 및 크기
+ */
+export const drawingObjectPixelBox = (
+  drawing: NonNullable<MapDocument['drawing']>,
+  bounds: { x: number; y: number; width: number; height: number },
+) => {
+  const scale = drawing.scaleMmPerPixel ?? drawing.workingScale ?? 1
+  const frame = drawing.frame
+  const angle = (-(frame?.rotation ?? 0) * Math.PI) / 180
+  const dx = bounds.x - (frame?.x ?? 0)
+  const dy = bounds.y - (frame?.y ?? 0)
+  const localX = dx * Math.cos(angle) - dy * Math.sin(angle)
+  const localY = dx * Math.sin(angle) + dy * Math.cos(angle)
+  return {
+    x: (localX - bounds.width / 2) / scale,
+    y: drawing.height - (localY + bounds.height / 2) / scale,
+    width: bounds.width / scale,
+    height: bounds.height / scale,
+  }
+}
+
+/**
+ * 지정 도면 객체의 속성을 갱신하고 수동 잠금을 적용한 뒤 연결 포트와 도형 재구성
+ * 모든 대상과 변환을 검증된 문서에 한 번에 반영하기 위한 원본 보호
+ * @param map 편집할 도면 지도
+ * @param ids 변경할 도면 객체 식별자
+ * @param getPatch 원본 픽셀과 선택 속성에서 변경값을 계산하는 함수
+ * @returns 포트와 도형이 함께 갱신된 지도 문서
+ * @throws 도면이나 지정한 객체가 없거나 최종 문서 검증에 실패한 경우
+ */
+export const patchDrawingObjects = (
+  map: MapDocument,
+  ids: string[],
+  getPatch: (
+    object: Readonly<DrawingObject>,
+    drawing: NonNullable<MapDocument['drawing']>,
+  ) => Partial<DrawingObject>,
+) => {
+  const drawing = map.drawing
+  if (!drawing) throw new Error('도면 맵에서 객체를 적용하세요.')
+  const objects = structuredClone(drawing.objects ?? [])
+  const byId = new Map(objects.map((item) => [item.id, item]))
+  for (const id of ids) {
+    const object = byId.get(id)
+    if (!object) throw new Error(`도면 객체 ${id}를 찾지 못했습니다.`)
+    Object.assign(object, getPatch(object, drawing), { id, locked: true })
+  }
+  return applyDrawingObjects(map, objects)
 }
 
 /** 선분 위에 점을 투영하여 분할 위치와 거리를 구하는 최단점 계산 */

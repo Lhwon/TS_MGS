@@ -12,8 +12,11 @@ import { facilityModelSize, type FacilityAsset } from '@/entities/facility/index
 import { createModelThumbnails } from '@/widgets/facility-studio/lib/modelThumbnails.ts'
 
 const open = defineModel<boolean>({ required: true })
+
 const category = defineModel<'equipment' | 'interior'>('category', { required: true })
+
 const units = defineModel<'m' | 'mm'>('units', { required: true })
+
 const props = defineProps<{
   assets: FacilityAsset[]
   busy: boolean
@@ -21,7 +24,9 @@ const props = defineProps<{
   selected: string | null
   error: string
 }>()
+
 const emit = defineEmits<{ choose: [asset: FacilityAsset]; import: []; importLibrary: []; registerDefaults: [] }>()
+
 const size = ref('')
 const search = ref('')
 const thumbnails = shallowRef(new Map<string, string>())
@@ -34,6 +39,7 @@ const sizes = [
 
 const cards = computed(() => {
   const query = search.value.trim().toLowerCase()
+
   return props.assets
     .filter((asset) => {
       const type =
@@ -48,6 +54,7 @@ const cards = computed(() => {
       const longest = Math.max(x, y, z)
       const tier = longest < 1000 ? 'small' : longest < 3000 ? 'medium' : 'large'
       const previewKey = asset.id + ':' + (asset.glb?.data.length ?? JSON.stringify(asset.parts))
+
       return {
         asset,
         previewKey,
@@ -63,22 +70,28 @@ watch(
   [open, cards],
   ([visible, rows], _, cleanup) => {
     if (!visible) return
+
     const pending = rows.filter(({ previewKey }) => !thumbnails.value.has(previewKey))
     if (!pending.length) return
+
     let cancelled = false
     let renderer: ReturnType<typeof createModelThumbnails>
+
     try {
       renderer = createModelThumbnails()
     } catch {
       return
     }
+
     cleanup(() => {
       cancelled = true
       renderer.dispose()
     })
+
     void (async () => {
       for (const { asset, previewKey } of pending) {
         if (cancelled) break
+
         try {
           const image = await renderer.capture(asset)
           if (!cancelled && image)
@@ -119,6 +132,7 @@ watch(
               text="인테리어"
             />
           </v-btn-toggle>
+
           <v-select
             v-model="size"
             :items="sizes"
@@ -126,6 +140,7 @@ watch(
             hide-details
             density="compact"
           />
+
           <v-text-field
             v-model="search"
             label="모델 이름 검색"
@@ -133,6 +148,7 @@ watch(
             density="compact"
           />
         </div>
+
         <v-alert
           v-if="error"
           class="mb-3"
@@ -140,16 +156,19 @@ watch(
           type="error"
           :text="error"
         />
+
         <v-progress-linear
           v-if="loading"
           indeterminate
         />
+
         <p
           v-else-if="!cards.length"
           class="text-body-2 py-5"
         >
           조건에 맞는 모델이 없습니다.
         </p>
+
         <div
           v-else
           class="catalog-grid"
@@ -169,7 +188,6 @@ watch(
               <img
                 v-if="thumbnails.get(previewKey)"
                 :src="thumbnails.get(previewKey)"
-                alt=""
               />
               <v-icon
                 v-else
@@ -177,6 +195,7 @@ watch(
                 size="32"
               />
             </div>
+
             <div class="d-flex justify-space-between align-center ga-2 px-3 pt-2">
               <strong>{{ asset.name }}</strong>
               <small>{{ label }}</small>
@@ -185,6 +204,7 @@ watch(
           </button>
         </div>
       </v-card-text>
+
       <v-card-actions class="flex-wrap ga-2">
         <v-select
           v-model="units"

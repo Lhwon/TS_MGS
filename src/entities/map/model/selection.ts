@@ -87,11 +87,19 @@ export const selectionDelta = (
     )
   return { dx: Number(args.dx ?? 0) * scale, dy: Number(args.dy ?? 0) * scale }
 }
-/** 선택 그래프의 상대 배치를 보존하며 계산한 이동과 복제 및 삭제를 검증하는 편집 */
+/**
+ * 선택 그래프의 상대 배치를 유지하며 이동과 복제 및 삭제를 원자적으로 검증
+ * @param map 작업 전 기준 지도
+ * @param nodeIds 선택 대상 노드 식별자
+ * @param args 작업 종류와 입력 좌표 또는 이동량
+ * @param sourceMaxUid 기존 원본 헤더의 UID 상한
+ * @returns 검증한 지도와 수행된 작업 및 변경 전 선택 정보
+ */
 export const editSelectedNodes = (
   map: MapDocument,
   nodeIds: number[],
   args: Record<string, unknown>,
+  sourceMaxUid = 0,
 ) => {
   const anchor = inspectSelectedNodes(map, nodeIds).center
   if (args.operation === 'move') nodeIds = expandCurveSelection(map, nodeIds)
@@ -239,6 +247,6 @@ export const editSelectedNodes = (
           })
     } else throw new Error('선택 작업 종류를 확인하세요.')
   }
-  const result = editMapObjects(map, operations, 45000)
+  const result = editMapObjects(map, operations, 45000, sourceMaxUid)
   return { ...result, delta, selection }
 }

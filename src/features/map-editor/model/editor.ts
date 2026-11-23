@@ -21,17 +21,27 @@ import {
   parseAreaFiles,
   expandCurveSelection,
   repairPortGroups,
+  createMapEdge,
+  createMapNode,
+  createMapPort,
+  createMapShape,
+  editMapObjects,
+  editSelectedNodes,
+  patchMapNode,
+  removeMapNode,
 } from '@/entities/map/index.ts'
 import type {
   LegacySource,
   CurveOptions,
   MapDocument,
+  MapLayout,
   MapNode,
   MapPort,
+  PortDisplayType,
   MapEdge,
-  MapShape,
 } from '@/entities/map/index.ts'
-import { renumberMap } from '@/features/map-editor/model/operations.ts'
+import { renumberMap, subdividePaths } from '@/features/map-editor/model/operations.ts'
+import { inspectPortApproach, setPortApproachReverse } from '@/features/map-editor/model/portApproach.ts'
 export type Tool = 'select' | 'add' | 'connect'
 
 /**
@@ -42,6 +52,9 @@ export const useEditor = defineStore('editor', () => {
   const document = shallowRef<MapDocument>(emptyDocument())
   const selectedId = ref<number | null>(null)
   const selectedIds = ref<number[]>([])
+  const selectedNodeIds = computed(() => [
+    ...new Set([...selectedIds.value, ...(selectedId.value === null ? [] : [selectedId.value])]),
+  ])
   const tool = ref<Tool>('select')
   const renderPaused = ref(false)
   const curveOptions = reactive<CurveOptions>({
@@ -99,6 +112,13 @@ export const useEditor = defineStore('editor', () => {
   }
   const readOnly = ref(false)
   const portMode = ref(false)
+  const portDisplayType = ref<PortDisplayType>('')
+  const viewTurns = ref(0)
+  const showCrosshair = ref(true)
+  const vehiclePreviewMode = ref(false)
+  const pathPlanOpen = ref(false)
+  const pathPlanTargets = ref<number[]>([])
+  const pathPlanPreview = ref<number[]>([])
   const selectedPortId = ref<string | null>(null)
   const shapeTool = ref<number | null>(null)
   const nodeEditorOpen = ref(false)
@@ -225,77 +245,198 @@ export const useEditor = defineStore('editor', () => {
   const canUndo = computed(() => past.value.length > 0)
   const canRedo = computed(() => future.value.length > 0)
 
+  /** 원본 JMAPX 헤더에 기록된 마지막 노드 UID 조회 */
+  const getLegacyMaxNodeUid = () => Number(
+    legacySource.value?.content.replace(/^\uFEFF/, '').split(/\r?\n/)[1]?.split('\t')[6] ?? 0,
+  )
+
+  /**
+   * 레거시 파일에서 새 노드의 UID와 새 포트의 대기 노드 참조 보정
+   *
+   * @param editedDocument 편집 콜백이 변경한 검증 전 사본
+   */
+  const assignLegacyNodeUids = (editedDocument: MapDocument) => {
+    if (!legacySource.value) return
+    const lastLegacyUid = getLegacyMaxNodeUid() || 0
+    const existingNodeIds = new Set(document.value.nodes.map((node) => node.id))
+    const existingPortIds = new Set(document.value.ports.map((port) => port.id))
+    const replacementUids = new Map<number, number>()
+    let maximumUid = Math.max(lastLegacyUid, 0, ...editedDocument.nodes.map((node) => node.uid ?? node.id))
+    for (const node of editedDocument.nodes) {
+      const previousUid = node.uid
+      const needsNewUid = previousUid === undefined || previousUid <= lastLegacyUid
+      if (existingNodeIds.has(node.id) || !needsNewUid) continue
+      node.uid = ++maximumUid
+      if (previousUid !== undefined) replacementUids.set(previousUid, node.uid)
+    }
+    for (const port of editedDocument.ports) {
+      if (existingPortIds.has(port.id) || !port.settings) continue
+      for (let index = 0; index < 10; index++) {
+        const setting = `standby_node_uid${index}`
+        const replacementUid = replacementUids.get(Number(port.settings[setting]))
+        if (replacementUid !== undefined) port.settings[setting] = replacementUid
+      }
+    }
+  }
+
+  /** 현재 문서와 저장 기준을 실행 취소 이력에 기록하고 다시 실행 이력 초기화 */
+  const recordUndoSnapshot = () => {
+    captureContext()
+    past.value = [...past.value.slice(-49), document.value]
+    future.value = []
+  }
+
   /**
    * 변경 작업을 복제 문서에 적용한 뒤 검증을 통과한 결과만 반영하는 편집 명령
    * 이전 문서를 제한된 실행 취소 이력에 보관하고 다시 실행 이력을 초기화하는 상태 갱신
    *
-   * @param change 검증 전 복제 문서에 적용할 변경 함수
+   * @param changeDocument 검증 전 복제 문서에 적용할 변경 함수
+   * @param normalizeIds 전용 도구에서 연속 번호로 정리할지 지정하는 옵션
    */
-  const commit = (change: (map: MapDocument) => void) => {
+  const applyDocumentChange = (changeDocument: (map: MapDocument) => void, normalizeIds = false) => {
     if (readOnly.value) {
       message.value = '기존 MGS 지도는 읽기 전용 미리보기입니다.'
       return
     }
-    const next = structuredClone(document.value)
-    change(next)
-    if (legacySource.value) {
-      const header = legacySource.value.content
-          .replace(/^\uFEFF/, '')
-          .split(/\r?\n/)[1]
-          ?.split('\t'),
-        baseUid = Number(header?.[6]) || 0,
-        existing = new Set(document.value.nodes.map((node) => node.id)),
-        oldPorts = new Set(document.value.ports.map((port) => port.id)),
-        uids = new Map<number, number>()
-      let maximum = Math.max(baseUid, 0, ...next.nodes.map((node) => node.uid ?? node.id))
-      for (const node of next.nodes)
-        if (!existing.has(node.id) && (node.uid === undefined || node.uid <= baseUid)) {
-          const previous = node.uid
-          node.uid = ++maximum
-          if (previous !== undefined) uids.set(previous, node.uid)
-        }
-      for (const port of next.ports)
-        if (!oldPorts.has(port.id) && port.settings)
-          for (let index = 0; index < 10; index++) {
-            const key = `standby_node_uid${index}`,
-              uid = Number(port.settings[key])
-            if (uids.has(uid)) port.settings[key] = uids.get(uid)!
-          }
-    }
-    let validated = parseDocument(JSON.stringify(next))
-    let nextSource = legacySource.value
+    const editedDocument = structuredClone(document.value)
+    changeDocument(editedDocument)
+    assignLegacyNodeUids(editedDocument)
+    let validatedDocument = parseDocument(JSON.stringify(editedDocument))
+    let updatedLegacySource = legacySource.value
     let references: { before: number; after: number }[] | undefined
-    if (
+    const legacySnapshot =
       !generatedDraft.value &&
-      validated.units === 'mm' &&
-      (legacySource.value || sourceName.value.endsWith('.jmapx'))
-    ) {
-      const sorted = validated.nodes.map((node) => node.id).sort((a, b) => a - b)
-      if (sorted.some((id, index) => id !== index + 1)) {
-        const reordered = renumberMap(validated)
-        validated = reordered.map
+      validatedDocument.units === 'mm' &&
+      (legacySource.value !== null || sourceName.value.endsWith('.jmapx'))
+    if (legacySnapshot || normalizeIds) {
+      const sortedNodeIds = validatedDocument.nodes.map((node) => node.id).sort((a, b) => a - b)
+      if (sortedNodeIds.some((id, index) => id !== index + 1)) {
+        const reordered = renumberMap(validatedDocument)
+        validatedDocument = reordered.map
         references = reordered.references
-        if (nextSource) nextSource = remapLegacySource(nextSource, reordered.references)
+        if (updatedLegacySource)
+          updatedLegacySource = remapLegacySource(updatedLegacySource, reordered.references)
       }
-      validated = serializeLegacySnapshot(validated, nextSource, {
+    }
+    if (legacySnapshot)
+      validatedDocument = serializeLegacySnapshot(validatedDocument, updatedLegacySource, {
         autoReverseOrthogonal: drawingOptions.autoReverseOrthogonal,
       }).map
-    }
-    // 전체 지도 스냅샷을 제한된 개수로 보관하며 대형 지도 메모리 부담이 확인되면 변경 명령 단위 이력으로 전환할 수 있는 현재 저장 방식
-    captureContext()
-    past.value = [...past.value.slice(-49), document.value]
-    future.value = []
-    document.value = validated
-    legacySource.value = nextSource
+    recordUndoSnapshot()
+    document.value = validatedDocument
+    legacySource.value = updatedLegacySource
     if (references) {
-      const refs = new Map(references.map((item) => [item.before, item.after]))
-      selectedIds.value = selectedIds.value.flatMap((id) => (refs.has(id) ? [refs.get(id)!] : []))
-      if (selectedId.value !== null) selectedId.value = refs.get(selectedId.value) ?? null
+      const replacementIds = new Map(references.map(({ before, after }) => [before, after]))
+      selectedIds.value = selectedIds.value.flatMap((id) => {
+        const replacementId = replacementIds.get(id)
+        return replacementId === undefined ? [] : [replacementId]
+      })
+      if (selectedId.value !== null) selectedId.value = replacementIds.get(selectedId.value) ?? null
     }
     selectedIds.value = selectedIds.value.filter((id) =>
-      validated.nodes.some((node) => node.id === id),
+      validatedDocument.nodes.some((node) => node.id === id),
     )
   }
+  /** 노드 번호의 빈 구간을 연결 경로와 포트 참조 및 실행 취소 이력과 함께 정리 */
+  const renumberNodeIds = () => applyDocumentChange(() => {}, true)
+
+  /**
+   * 사전 계산한 지도 변경을 현재 문서와 동일한 검증 및 실행 취소 이력에 반영
+   * @param updatedMap 기존 지도에서 계산한 변경 결과
+   */
+  const applyComputedMap = (updatedMap: MapDocument) =>
+    applyDocumentChange((map) => Object.assign(map, updatedMap))
+
+  /**
+   * 구조화된 지도 객체 명령 전체의 검증과 단일 이력 반영
+   * @param operations 순서대로 실행할 객체 편집 요청
+   * @param maximum 작업별 허용 명령 수
+   * @returns 성공한 명령의 대상과 식별자 목록
+   */
+  const applyMapEdits = (operations: unknown, maximum?: number) => {
+    const { map, results } = editMapObjects(document.value, operations, maximum, getLegacyMaxNodeUid() || 0)
+    applyComputedMap(map)
+    return results
+  }
+
+  /**
+   * 선택 노드의 연결 구조를 보존하는 일괄 복제 및 연쇄 삭제와 이력 반영
+   * @param ids 사용자가 지정한 노드 식별자
+   * @param operation 복제 또는 삭제와 배치 위치 입력
+   * @returns 수행된 객체 명령과 변경 전 선택 및 적용 이동량
+   */
+  const applyNodeSelectionEdit = (ids: number[], operation: Record<string, unknown>) => {
+    const { map, ...result } = editSelectedNodes(document.value, ids, operation, getLegacyMaxNodeUid() || 0)
+    applyComputedMap(map)
+    return result
+  }
+
+  /**
+   * 지정한 물리 간격으로 직선을 분할하고 결과를 한 편집 단위로 반영
+   * @param spacing 밀리미터 단위의 노드 간격
+   * @param ids 구간을 제한할 노드 식별자 또는 전체 범위를 나타내는 생략값
+   * @returns 분할된 지도와 추가 노드 및 경로 통계
+   */
+  const applyPathSpacing = (spacing: number, ids?: number[]) => {
+    const result = subdividePaths(document.value, spacing, ids)
+    applyComputedMap(result.map)
+    return result
+  }
+
+  /**
+   * 포트에 도달하는 해당 방향의 후진 제어만 변경하고 실제 반영 결과 확인
+   * @param portId 진입 기준 포트 식별자
+   * @param edgeId 변경할 진입 경로 식별자
+   * @param reverse 후진 적용 여부
+   * @returns 변경 여부와 변경 전후의 진입 경로 정보
+   */
+  const applyPortApproachReverse = (portId: string, edgeId: string, reverse: boolean) => {
+    const before = inspectPortApproach(document.value, portId).approaches.find(
+      (row) => row.edgeId === edgeId,
+    )
+    if (!before) throw new Error('선택한 경로는 이 포트로 진입할 수 없습니다.')
+    if (before.reverse === reverse) return { changed: false, before, after: before }
+    applyDocumentChange((map) => {
+      setPortApproachReverse(map, portId, edgeId, reverse)
+    })
+    const after = inspectPortApproach(document.value, portId).approaches.find(
+      (row) => row.edgeId === edgeId,
+    )
+    if (after?.reverse !== reverse) throw new Error('포트 진입 변경 결과를 확인할 수 없습니다.')
+    return { changed: true, before, after }
+  }
+
+  /**
+   * 기존 지도 객체를 유지하며 배경 도면을 교체하거나 제거
+   * @param layout 적용할 배경 도면 또는 삭제를 나타내는 생략값
+   */
+  const setLayout = (layout?: MapLayout) =>
+    applyDocumentChange((map) => {
+      if (layout) map.layout = layout
+      else delete map.layout
+    })
+
+  /**
+   * 배경 도면의 표시 설정을 현재 지도 편집 이력에 반영
+   * @param visible 적용할 표시 설정
+   */
+  const setLayoutVisible = (visible: boolean) =>
+    applyDocumentChange((map) => {
+      if (map.layout) map.layout.visible = visible
+    })
+
+  /** 포트와 도형 편집을 종료하고 지도에서 출발 및 도착 노드를 선택하는 경로 시험 시작 */
+  const openPathPlan = () => {
+    if (pathPlanOpen.value) return
+    clearSelection()
+    portMode.value = false
+    shapeTool.value = null
+    vehiclePreviewMode.value = false
+    pathPlanTargets.value = []
+    pathPlanPreview.value = []
+    pathPlanOpen.value = true
+  }
+
   /**
    * 문서 교체와 함께 저장 기준 및 선택과 이력을 초기화하는 편집 상태 교체
    *
@@ -319,6 +460,10 @@ export const useEditor = defineStore('editor', () => {
     objectEditor.value = null
     nodeEditorOpen.value = false
     portMode.value = false
+    vehiclePreviewMode.value = false
+    pathPlanOpen.value = false
+    pathPlanTargets.value = []
+    pathPlanPreview.value = []
     selectedPortId.value = null
     shapeTool.value = null
     past.value = []
@@ -333,9 +478,7 @@ export const useEditor = defineStore('editor', () => {
    */
   const importGeneratedMap = (input: MapDocument) => {
     const next = parseDocument(JSON.stringify(input))
-    captureContext()
-    past.value = [...past.value.slice(-49), document.value]
-    future.value = []
+    recordUndoSnapshot()
     document.value = next
     bayFilter.value = []
     renderPaused.value = false
@@ -353,6 +496,10 @@ export const useEditor = defineStore('editor', () => {
     objectEditor.value = null
     nodeEditorOpen.value = false
     portMode.value = false
+    vehiclePreviewMode.value = false
+    pathPlanOpen.value = false
+    pathPlanTargets.value = []
+    pathPlanPreview.value = []
     shapeTool.value = null
     tool.value = 'select'
     captureContext()
@@ -413,9 +560,7 @@ export const useEditor = defineStore('editor', () => {
     const width = Math.abs(x2 - x1),
       height = Math.abs(y2 - y1)
     if (!width && !height) return
-    const shape: MapShape = {
-      id: Math.max(0, ...(document.value.shapes ?? []).map((item) => item.id)) + 1,
-      description: '',
+    const shape = createMapShape(document.value, {
       text: type === 6 ? 'Text' : '',
       type,
       x1,
@@ -427,16 +572,11 @@ export const useEditor = defineStore('editor', () => {
       radius: Math.round(width / 2),
       width,
       height: type === 6 ? 12 : height,
-      strokeColor: 0,
-      strokeStyle: 0,
       strokeWidth: 1,
       fillColor: 16777215,
-      fontColor: 0,
-      fontAlign: 0,
-      fontDirection: 0,
       fillStyle: 9,
-    }
-    commit((map) => {
+    })
+    applyDocumentChange((map) => {
       map.shapes ??= []
       map.shapes.push(shape)
     })
@@ -449,37 +589,10 @@ export const useEditor = defineStore('editor', () => {
    * @param patch 식별자를 유지하면서 교체할 대상 속성
    */
   const updateNode = (id: number, patch: Partial<Pick<MapNode, 'x' | 'y' | 'name'>>) => {
-    commit((map) => {
-      if (map.nodes.some((node) => node.id === id)) applyNodePatch(map, id, patch)
+    applyDocumentChange((map) => {
+      const node = map.nodes.find((item) => item.id === id)
+      if (node) patchMapNode(map, node, patch)
     })
-  }
-  /**
-   * 연결 포트와 그룹의 상대 위치를 유지하는 복제 문서의 노드 속성 갱신
-   * @param map 편집 중인 복제 지도 문서
-   * @param id 대상 노드 식별자
-   * @param patch 변경할 좌표와 이름
-   */
-  const applyNodePatch = (
-    map: MapDocument,
-    id: number,
-    patch: Partial<Pick<MapNode, 'x' | 'y' | 'name'>>,
-  ) => {
-    const node = map.nodes.find((item) => item.id === id)
-    if (!node) throw new Error(`노드를 찾을 수 없습니다: ${id}`)
-    const oldX = node.x
-    const oldY = node.y
-    Object.assign(node, patch)
-    for (const port of map.ports.filter((item) => item.nodeId === id)) {
-      port.x += node.x - oldX
-      port.y += node.y - oldY
-    }
-    for (const group of map.portGroups ?? []) {
-      if (group.nodeId !== id) continue
-      group.x += node.x - oldX
-      group.y += node.y - oldY
-      group.nodeX = node.x
-      group.nodeY = node.y
-    }
   }
   /**
    * 여러 노드를 연결 포트와 함께 이동하는 단일 실행 취소 단위의 편집
@@ -489,11 +602,11 @@ export const useEditor = defineStore('editor', () => {
    */
   const moveNodes = (ids: number[], dx: number, dy: number) => {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new Error('이동량이 올바르지 않습니다.')
-    commit((map) => {
+    applyDocumentChange((map) => {
       for (const id of expandCurveSelection(map, ids)) {
         const node = map.nodes.find((item) => item.id === id)
         if (!node) throw new Error(`노드를 찾을 수 없습니다: ${id}`)
-        applyNodePatch(map, id, { x: node.x + dx, y: node.y + dy })
+        patchMapNode(map, node, { x: node.x + dx, y: node.y + dy })
       }
     })
   }
@@ -533,7 +646,7 @@ export const useEditor = defineStore('editor', () => {
         (item.from === to.id && item.to === from.id && ![2, 3].includes(item.drivingType ?? 1)),
     )
     let selection: number | null = null
-    commit((map) => {
+    applyDocumentChange((map) => {
       let id = Math.max(0, ...map.nodes.map((node) => node.id))
       let uid = Math.max(0, ...map.nodes.map((node) => node.uid ?? node.id))
       let realId = Math.max(
@@ -627,20 +740,15 @@ export const useEditor = defineStore('editor', () => {
       )
     )
       throw new Error('이동할 좌표에 기존 노드가 있습니다.')
-    commit((map) => {
+    applyDocumentChange((map) => {
       for (const id of expandCurveSelection(map, [moving.id])) {
         const node = map.nodes.find((item) => item.id === id)!
-        applyNodePatch(map, id, { x: node.x + dx, y: node.y + dy })
+        patchMapNode(map, node, { x: node.x + dx, y: node.y + dy })
       }
       const endpoint = map.nodes.find((node) => node.id === target)!
       const curve = calculateCurve(map, current, endpoint, curveOptions)
       if (curve) {
-        const maxUid = Number(
-          legacySource.value?.content
-            .replace(/^\uFEFF/, '')
-            .split(/\r?\n/)[1]
-            ?.split('\t')[6] ?? 0,
-        )
+        const maxUid = getLegacyMaxNodeUid()
         appendCurve(map, current, curve, curveOptions.direction, maxUid, target)
       } else {
         map.edges.push({
@@ -660,17 +768,16 @@ export const useEditor = defineStore('editor', () => {
    * @param nodeId 연결할 노드 식별자
    * @param x 포트 중심 가로 좌표
    * @param y 포트 중심 세로 좌표
+   * @param fromInspector 속성 창의 포트 선택과 입력 좌표 보존 여부
    * @returns 새 포트 식별자
    */
-  const addPort = (nodeId: number, x: number, y: number) => {
+  const addPort = (nodeId: number, x: number, y: number, fromInspector = false) => {
     let suffix = document.value.ports.length + 1
     while (document.value.ports.some((port) => port.id === `P${suffix}`)) suffix++
-    const port: MapPort = {
-      id: `P${suffix}`,
+    const port = createMapPort(`P${suffix}`, {
       nodeId,
-      name: '',
-      x: Math.round(x),
-      y: Math.round(y),
+      x: fromInspector ? x : Math.round(x),
+      y: fromInspector ? y : Math.round(y),
       width: 1000,
       height: 1000,
       floor: 1,
@@ -681,9 +788,9 @@ export const useEditor = defineStore('editor', () => {
       nameDistance: 100,
       namePosition: 0,
       nameDirection: 0,
-    }
-    commit((map) => map.ports.push(port))
-    selectedPortId.value = port.id
+    })
+    applyDocumentChange((map) => map.ports.push(port))
+    if (!fromInspector) selectedPortId.value = port.id
     return port.id
   }
   /**
@@ -691,7 +798,7 @@ export const useEditor = defineStore('editor', () => {
    * @param id 삭제할 포트 식별자
    */
   const removePort = (id: string) => {
-    commit((map) => {
+    applyDocumentChange((map) => {
       map.ports = map.ports.filter((port) => port.id !== id)
       for (const group of map.portGroups ?? [])
         group.portIds = group.portIds.filter((portId) => portId !== id)
@@ -704,7 +811,7 @@ export const useEditor = defineStore('editor', () => {
    * @param action 맨 앞과 맨 뒤 또는 한 단계 이동 명령
    */
   const orderPort = (id: string, action: 'front' | 'back' | 'forward' | 'backward') => {
-    commit((map) => {
+    applyDocumentChange((map) => {
       const index = map.ports.findIndex((port) => port.id === id)
       if (index < 0) return
       const [port] = map.ports.splice(index, 1)
@@ -723,7 +830,7 @@ export const useEditor = defineStore('editor', () => {
    * @param patch 교체할 포트 속성
    */
   const updatePort = (id: string, patch: Partial<Omit<MapPort, 'id'>>) => {
-    commit((map) => {
+    applyDocumentChange((map) => {
       const port = map.ports.find((item) => item.id === id)
       if (!port) throw new Error('편집할 포트가 없습니다.')
       Object.assign(port, patch)
@@ -738,12 +845,30 @@ export const useEditor = defineStore('editor', () => {
     id: string,
     patch: Partial<Pick<MapEdge, 'direction' | 'speed' | 'distance'>>,
   ) => {
-    commit((map) => {
+    applyDocumentChange((map) => {
       const edge = map.edges.find((item) => item.id === id)
       if (!edge) throw new Error('편집할 경로가 없습니다.')
       Object.assign(edge, patch)
     })
   }
+  /**
+   * 대상 경로의 통행 방향을 변경하고 모든 노드의 양방향 상태를 연관 경로에서 재계산
+   * @param edgeIds 영역 또는 노드 선택에서 확정된 대상 경로
+   * @param direction 단방향 또는 양방향 설정
+   */
+  const setPathDirections = (edgeIds: ReadonlySet<string>, direction: number) =>
+    applyDocumentChange((map) => {
+      for (const edge of map.edges)
+        if (edgeIds.has(edge.id)) edge.direction = direction
+      const twoWayNodeIds = new Set<number>()
+      for (const edge of map.edges)
+        if (edge.direction === 1) {
+          twoWayNodeIds.add(edge.from)
+          twoWayNodeIds.add(edge.to)
+        }
+      for (const node of map.nodes) node.direction = twoWayNodeIds.has(node.id) ? 1 : 0
+    })
+
   /**
    * 사용하지 않는 식별자로 노드를 추가하고 선택적인 연결을 생성하는 지도 확장
    *
@@ -764,13 +889,8 @@ export const useEditor = defineStore('editor', () => {
     const curve = calculateCurve(document.value, connection, { x, y }, curveOptions)
     if (curve && connection !== null) {
       let endpoint = connection
-      const sourceMaxUid = Number(
-        legacySource.value?.content
-          .replace(/^\uFEFF/, '')
-          .split(/\r?\n/)[1]
-          ?.split('\t')[6] ?? 0,
-      )
-      commit((map) => {
+      const sourceMaxUid = getLegacyMaxNodeUid()
+      applyDocumentChange((map) => {
         endpoint = appendCurve(map, connection, curve, curveOptions.direction, sourceMaxUid)
       })
       selectedId.value = endpoint
@@ -778,31 +898,14 @@ export const useEditor = defineStore('editor', () => {
       return
     }
     if (document.value.nodes.length >= MAX_NODES) throw new Error('최대 노드 수는 15,000개입니다.')
-    const id = Math.max(0, ...document.value.nodes.map((node) => node.id)) + 1
-    commit((map) => {
-      const sourceMax = Number(
-        legacySource.value?.content
-          .replace(/^\uFEFF/, '')
-          .split(/\r?\n/)[1]
-          ?.split('\t')[6] ?? 0,
-      )
-      const uid = Math.max(sourceMax, 0, ...map.nodes.map((node) => node.uid ?? node.id)) + 1
-      const realId =
-        Math.max(
-          0,
-          ...map.nodes
-            .filter((node) => !node.virtual && !node.curve)
-            .map((node) => node.realId ?? node.id),
-        ) + 1
-      map.nodes.push({ id, x, y, name: `N${id}`, uid, realId, direction: 0 })
+    const node = createMapNode(
+      document.value, { x, y, direction: 0 }, undefined, getLegacyMaxNodeUid(),
+    )
+    const { id } = node
+    applyDocumentChange((map) => {
+      map.nodes.push(node)
       if (connection !== null)
-        map.edges.push({
-          id: `E${id}-${connection}`,
-          from: id,
-          to: connection,
-          direction: 0,
-          drivingType: 1,
-        })
+        map.edges.push(createMapEdge(`E${id}-${connection}`, { from: id, to: connection, direction: 0 }))
     })
     if (!readOnly.value && drawingOptions.autoPrevious) selectedId.value = id
   }
@@ -821,21 +924,16 @@ export const useEditor = defineStore('editor', () => {
     const endpoint = document.value.nodes.find((node) => node.id === from)
     const curve = endpoint ? calculateCurve(document.value, to, endpoint, curveOptions) : null
     if (curve) {
-      const sourceMaxUid = Number(
-        legacySource.value?.content
-          .replace(/^\uFEFF/, '')
-          .split(/\r?\n/)[1]
-          ?.split('\t')[6] ?? 0,
-      )
-      commit((map) => {
+      const sourceMaxUid = getLegacyMaxNodeUid()
+      applyDocumentChange((map) => {
         appendCurve(map, to, curve, curveOptions.direction, sourceMaxUid, from)
       })
       selectedId.value = from
       message.value = `커브 연결 완료 · N${to} → N${from}`
       return
     }
-    commit((map) =>
-      map.edges.push({ id: `E${from}-${to}`, from, to, direction: 0, drivingType: 1 }),
+    applyDocumentChange((map) =>
+      map.edges.push(createMapEdge(`E${from}-${to}`, { from, to, direction: 0 })),
     )
     selectedId.value = null
   }
@@ -854,7 +952,11 @@ export const useEditor = defineStore('editor', () => {
     }
     if (from !== null && from !== id) {
       if (!document.value.edges.some((edge) => edge.from === from && edge.to === id)) {
-        commit((map) => map.edges.push({ id: `E${from}-${id}`, from, to: id }))
+        applyDocumentChange((map) => {
+          map.edges.push(createMapEdge(`E${from}-${id}`, {
+            from, to: id, direction: undefined, drivingType: undefined,
+          }))
+        })
         message.value = `경로 연결: N${from} → N${id}`
       }
     }
@@ -866,10 +968,11 @@ export const useEditor = defineStore('editor', () => {
   const removeSelected = () => {
     if (selectedId.value === null || readOnly.value) return
     const id = selectedId.value
-    commit((map) => {
-      if (map.nodes.find((node) => node.id === id)?.removable === false)
-        throw new Error(`N${id}의 Removable 설정이 해제되어 있습니다.`)
-      if (drawingOptions.autoConnectDelete) {
+    applyDocumentChange((map) => {
+      const targetNode = map.nodes.find((node) => node.id === id)
+      if (!targetNode) return
+      removeMapNode(map, targetNode, () => {
+        if (!drawingOptions.autoConnectDelete) return
         const incident = map.edges.filter((edge) => edge.from === id || edge.to === id),
           neighbors = [
             ...new Set(
@@ -907,10 +1010,7 @@ export const useEditor = defineStore('editor', () => {
               })
           }
         }
-      }
-      map.nodes = map.nodes.filter((node) => node.id !== id)
-      map.edges = map.edges.filter((edge) => edge.from !== id && edge.to !== id)
-      map.ports = map.ports.filter((port) => port.nodeId !== id)
+      })
       repairPortGroups(map)
     })
     selectedId.value = null
@@ -921,6 +1021,7 @@ export const useEditor = defineStore('editor', () => {
    *
    * @param start 영역 선택 또는 눈금의 시작 위치
    * @param end 영역 선택 또는 눈금의 종료 위치
+   * @param adding 화면에서 오른쪽으로 드래그한 선택 추가 여부
    */
   const selectArea = (
     start: {
@@ -931,9 +1032,10 @@ export const useEditor = defineStore('editor', () => {
       x: number
       y: number
     },
+    adding = start.x < end.x,
   ) => {
-    selectedIds.value = mgsAreaSelection(visibleDocument.value.nodes, selectedIds.value, start, end)
-    if (start.x < end.x && selectedIds.value.length) selectedId.value = null
+    selectedIds.value = mgsAreaSelection(visibleDocument.value.nodes, selectedIds.value, start, end, adding)
+    if (adding && selectedIds.value.length) selectedId.value = null
     message.value = `선택 노드: ${selectedIds.value.length}개`
   }
   /**
@@ -991,9 +1093,25 @@ export const useEditor = defineStore('editor', () => {
     importGeneratedMap,
     curveOptions,
     curveSettingsOpen,
-    commit,
+    commit: applyDocumentChange,
+    applyComputedMap,
+    renumberNodeIds,
+    applyMapEdits,
+    applyNodeSelectionEdit,
+    applyPathSpacing,
+    applyPortApproachReverse,
+    setLayout,
+    setLayoutVisible,
     shapeTool,
     portMode,
+    portDisplayType,
+    viewTurns,
+    showCrosshair,
+    vehiclePreviewMode,
+    pathPlanOpen,
+    openPathPlan,
+    pathPlanTargets,
+    pathPlanPreview,
     selectedPortId,
     addPort,
     removePort,
@@ -1016,6 +1134,7 @@ export const useEditor = defineStore('editor', () => {
     fitAndConnect,
     selectedId,
     selectedIds,
+    selectedNodeIds,
     selectedNode,
     tool,
     sourceName,
@@ -1024,6 +1143,7 @@ export const useEditor = defineStore('editor', () => {
     legacySource,
     updatePort,
     updateEdge,
+    setPathDirections,
     theme,
     colorMode,
     toggleColorMode,

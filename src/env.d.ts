@@ -43,6 +43,12 @@ interface Window {
     restoreMapProject?(): Promise<DesktopMapProject | null>
     selectSaveProject?(): Promise<string | null>
     showProjectFolder(token: string): Promise<void>
+    readProjectBayFilter?(token: string): Promise<number[]>
+    saveProjectBayFilter?(token: string, list: number[]): Promise<void>
+    readProjectBlockData?(token: string, name: string, type: 'fmd' | 'blk'): Promise<{
+      name: string
+      content: string
+    } | null>
     saveMap(
       content: string,
       name: string,

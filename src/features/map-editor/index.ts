@@ -42,3 +42,4 @@ export {
   readAesVehicle,
   DEFAULT_AES_VEHICLE,
 } from '@/features/map-editor/model/aes.ts'
+export { readBlockReview, type BlockReviewType } from '@/features/map-editor/model/blockReview.ts'

@@ -7,15 +7,21 @@
  */
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { mapObjectColor } from '@/entities/map/index.ts'
 import { useEditor } from '@/features/map-editor/index.ts'
+import { downloadJson } from '@/shared/lib/files/index.ts'
 const emit = defineEmits<{ focus: [id: number] }>()
 const editor = useEditor()
 const miniatureSvg = ref<SVGSVGElement>()
 const findBy = ref<'id' | 'realId' | 'uid'>('realId')
 const findId = ref(1)
 const portId = ref('')
+const bay = ref<number>()
+const selectedBay = ref<number>()
+const pendingBays = ref<number[]>([])
+const savingBays = ref(false)
+const viewTransform = computed(() => `rotate(${editor.viewTurns * 90} 130 135)`)
 const bounds = computed(() => {
   const nodes = editor.document.nodes
   const minX = nodes.length ? Math.min(...nodes.map((node) => node.x)) : 0
@@ -36,6 +42,54 @@ const miniature = computed(() =>
     })
     .join(''),
 )
+
+watch(
+  () => editor.projectToken,
+  async (token) => {
+    bay.value = selectedBay.value = undefined
+    pendingBays.value = []
+    if (!token || !window.desktop?.readProjectBayFilter) return
+    try {
+      const list = await window.desktop.readProjectBayFilter(token)
+      if (editor.projectToken === token) pendingBays.value = list
+    } catch (cause) {
+      if (editor.projectToken === token)
+        editor.message = cause instanceof Error ? cause.message : String(cause)
+    }
+  },
+  { immediate: true },
+)
+
+/** 선택한 Bay 번호를 중복 없이 적용 후보 목록에 추가 */
+const addBay = () => {
+  if (bay.value === undefined || pendingBays.value.includes(bay.value)) return
+  pendingBays.value = [...pendingBays.value, bay.value].sort((a, b) => a - b)
+}
+
+/** 선택한 Bay 번호를 적용 후보 목록에서 제외 */
+const removeBay = () => {
+  pendingBays.value = pendingBays.value.filter((id) => id !== selectedBay.value)
+  selectedBay.value = undefined
+}
+
+/** 프로젝트의 Bay 설정 키를 갱신하거나 웹에 호환되는 설정 파일을 내보내기 */
+const saveBays = async () => {
+  savingBays.value = true
+  try {
+    if (editor.projectToken && window.desktop?.saveProjectBayFilter) {
+      await window.desktop.saveProjectBayFilter(editor.projectToken, [...pendingBays.value])
+      editor.message = 'SYSTEM.INI Bay 목록 저장 완료'
+    } else {
+      const list = pendingBays.value.map((id) => `${id};`).join('')
+      downloadJson(`[Bay]\r\nbay_to_use=${list}\r\n`, 'bay-filter.ini')
+      editor.message = 'Bay Filter 설정 파일 내보내기 완료'
+    }
+  } catch (cause) {
+    editor.message = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    savingBays.value = false
+  }
+}
 
 /**
  * 검색한 객체의 노드를 선택하고 지도 중심으로 이동하는 검색 결과 적용
@@ -66,10 +120,10 @@ const findPort = () => focus(editor.document.ports.find((port) => port.id === po
  * @param event 미니맵 클릭 좌표
  */
 const overview = (event: MouseEvent) => {
-  const svg = event.currentTarget as SVGElement
-  const rect = svg.getBoundingClientRect()
-  const x = ((event.clientX - rect.left) * 260) / rect.width
-  const y = ((event.clientY - rect.top) * 270) / rect.height
+  const svg = event.currentTarget as SVGSVGElement
+  const transform = svg.querySelector('g')?.getScreenCTM()
+  if (!transform) return
+  const { x, y } = new DOMPoint(event.clientX, event.clientY).matrixTransform(transform.inverse())
   const b = bounds.value
   const nearest = editor.document.nodes.reduce<{ id: number; distance: number } | undefined>(
     (best, node) => {
@@ -131,28 +185,30 @@ defineExpose({ capture })
         aria-label="전체 지도 미니맵"
         @click="overview"
       >
-        <path
-          :d="miniature"
-          fill="none"
-          :stroke="'#' + editor.theme.bothWays.toString(16).padStart(6, '0')"
-          stroke-width="1"
-        />
-        <rect
-          v-for="port in editor.document.ports"
-          :key="port.id"
-          :x="10 + (port.x - bounds.minX) * bounds.scale - 2"
-          :y="250 - (port.y - bounds.minY) * bounds.scale - 2"
-          width="4"
-          height="4"
-          fill="none"
-          :stroke="
-            '#' +
-            mapObjectColor(port.strokeColor ?? 0, editor.theme)
-              .toString(16)
-              .padStart(6, '0')
-          "
-          stroke-width="0.6"
-        />
+        <g :transform="viewTransform">
+          <path
+            :d="miniature"
+            fill="none"
+            :stroke="'#' + editor.theme.bothWays.toString(16).padStart(6, '0')"
+            stroke-width="1"
+          />
+          <rect
+            v-for="port in editor.document.ports"
+            :key="port.id"
+            :x="10 + (port.x - bounds.minX) * bounds.scale - 2"
+            :y="250 - (port.y - bounds.minY) * bounds.scale - 2"
+            width="4"
+            height="4"
+            fill="none"
+            :stroke="
+              '#' +
+              mapObjectColor(port.strokeColor ?? 0, editor.theme)
+                .toString(16)
+                .padStart(6, '0')
+            "
+            stroke-width="0.6"
+          />
+        </g>
       </svg>
     </div>
     <div class="pa-2 flex-shrink-0">
@@ -230,12 +286,24 @@ defineExpose({ capture })
           </v-btn>
         </div>
       </form>
-      <div class="mt-4 text-caption">
-        Node : {{ editor.document.nodes.length.toLocaleString() }} &nbsp; Path :
-        {{ editor.document.edges.length.toLocaleString() }}
-        <br />
-        Port : {{ editor.document.ports.length.toLocaleString() }} &nbsp; Shape :
-        {{ editor.document.shapes?.length ?? 0 }}
+      <div class="bay-panel mt-4">
+        <h3>Bay Filter</h3>
+        <div class="bay-controls">
+          <select v-model="selectedBay" size="3" aria-label="선택한 Bay 목록" class="find-input bay-list" @dblclick="removeBay">
+            <option v-for="id in pendingBays" :key="id" :value="id">{{ id }}</option>
+          </select>
+          <div class="bay-buttons">
+            <select v-model="bay" aria-label="추가할 Bay" class="find-input">
+              <option :value="undefined" disabled>Bay</option>
+              <option v-for="id in editor.availableBays.filter((value) => value > 0)" :key="id" :value="id">{{ id }}</option>
+            </select>
+            <v-btn size="x-small" :disabled="bay === undefined" @click="addBay">Add</v-btn>
+            <v-btn size="x-small" :disabled="selectedBay === undefined" @click="removeBay">Remove</v-btn>
+            <v-btn size="x-small" :disabled="!pendingBays.length" @click="editor.bayFilter = [...pendingBays]">Apply</v-btn>
+            <v-btn size="x-small" :disabled="!editor.bayFilter.length" @click="editor.bayFilter = []">Reset</v-btn>
+            <v-btn size="x-small" class="bay-save" :loading="savingBays" @click="saveBays">Save to File</v-btn>
+          </div>
+        </div>
       </div>
     </div>
   </aside>
@@ -296,5 +364,41 @@ defineExpose({ capture })
   border-radius: 7px;
   color: inherit;
   background: var(--input-bg);
+}
+
+.bay-panel {
+  border-top: 1px solid var(--mgs-border);
+  padding-top: 8px;
+}
+
+.bay-panel h3 {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.bay-controls {
+  display: grid;
+  grid-template-columns: minmax(36px, 1fr) minmax(0, 2.5fr);
+  gap: 5px;
+}
+
+.bay-list {
+  height: 100%;
+}
+
+.bay-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.bay-buttons :deep(.v-btn) {
+  min-width: 0;
+  padding-inline: 2px;
+  font-size: 10px;
+}
+
+.bay-save {
+  grid-column: 1 / -1;
 }
 </style>

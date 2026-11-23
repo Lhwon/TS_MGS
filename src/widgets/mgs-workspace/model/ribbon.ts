@@ -4,7 +4,21 @@
  * 작성자: 이희원
  * 작성일자: 2026-10-23
  */
-export const MGS_RIBBON = [
+interface RibbonCommand {
+  id: string
+  label: string
+  toggle: boolean
+  width: number
+}
+
+interface RibbonGroup {
+  name: string
+  buttons: readonly RibbonCommand[]
+  columns?: number
+  selector?: 'portType'
+}
+
+export const MGS_RIBBON: readonly { name: string; groups: readonly RibbonGroup[] }[] = [
   {
     name: 'File',
     groups: [
@@ -65,6 +79,7 @@ export const MGS_RIBBON = [
             toggle: false,
             width: 80,
           },
+          { id: 'TS_save_as', label: 'Save As', toggle: false, width: 80 },
         ],
       },
     ],
@@ -74,6 +89,7 @@ export const MGS_RIBBON = [
     groups: [
       {
         name: 'Node',
+        columns: 3,
         buttons: [
           {
             id: 'TBT_show_real_id',
@@ -115,6 +131,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'Node Setting',
+        columns: 2,
         buttons: [
           {
             id: 'TBT_show_no_send_goal',
@@ -144,6 +161,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'Direction / Distance',
+        columns: 2,
         buttons: [
           {
             id: 'TBT_show_direction',
@@ -173,6 +191,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'Curve',
+        columns: 1,
         buttons: [
           {
             id: 'TBT_show_curve_type',
@@ -190,6 +209,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'Path Basic Setting',
+        columns: 5,
         buttons: [
           {
             id: 'TBT_show_vhl_speed',
@@ -247,8 +267,10 @@ export const MGS_RIBBON = [
           },
         ],
       },
+      { name: 'Port Type', selector: 'portType', buttons: [] },
       {
         name: 'Port Name',
+        columns: 2,
         buttons: [
           {
             id: 'TBT_show_port_name',
@@ -272,6 +294,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'Port Setting',
+        columns: 2,
         buttons: [
           {
             id: 'TBT_show_lu_shift',
@@ -301,6 +324,7 @@ export const MGS_RIBBON = [
       },
       {
         name: 'ETC.',
+        columns: 2,
         buttons: [
           {
             id: 'TBT_show_port_idx',
@@ -617,45 +641,45 @@ export const MGS_RIBBON = [
       },
     ],
   },
-  // {
-  //   name: 'Setting',
-  //   groups: [
-  //     {
-  //       name: '',
-  //       buttons: [
-  //         {
-  //           id: 'BT_select_theme',
-  //           label: 'Theme\nSetting',
-  //           toggle: false,
-  //           width: 80,
-  //         },
-  //       ],
-  //     },
-  //     {
-  //       name: 'Prepared Theme',
-  //       buttons: [
-  //         {
-  //           id: 'BT_set_theme_Office2010Blue',
-  //           label: 'Blue',
-  //           toggle: false,
-  //           width: 80,
-  //         },
-  //         {
-  //           id: 'BT_set_theme_Office2010Black',
-  //           label: 'Dark',
-  //           toggle: false,
-  //           width: 80,
-  //         },
-  //         {
-  //           id: 'BT_set_theme_Office2010Silver',
-  //           label: 'Silver',
-  //           toggle: false,
-  //           width: 80,
-  //         },
-  //       ],
-  //     },
-  //   ],
-  // },
+  {
+    name: 'Setting',
+    groups: [
+      {
+        name: '',
+        buttons: [
+          {
+            id: 'BT_select_theme',
+            label: 'Theme\nSetting',
+            toggle: false,
+            width: 80,
+          },
+        ],
+      },
+      {
+        name: 'Prepared Theme',
+        buttons: [
+          {
+            id: 'BT_set_theme_Office2010Blue',
+            label: 'Blue',
+            toggle: false,
+            width: 80,
+          },
+          {
+            id: 'BT_set_theme_Office2010Black',
+            label: 'Dark',
+            toggle: false,
+            width: 80,
+          },
+          {
+            id: 'BT_set_theme_Office2010Silver',
+            label: 'Silver',
+            toggle: false,
+            width: 80,
+          },
+        ],
+      },
+    ],
+  },
   {
     name: 'GRID',
     groups: [

@@ -8,18 +8,15 @@
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { VAutocomplete } from 'vuetify/components'
 import { useEditor } from '@/features/map-editor/model/editor.ts'
-import { subdividePaths, shortestMapPath } from '@/features/map-editor/model/operations.ts'
-import { editSelectedNodes, NODE_FLAGS, PATH_CONTROLS } from '@/entities/map/index.ts'
+import { shortestMapPath } from '@/features/map-editor/model/operations.ts'
+import { NODE_FLAGS, PATH_CONTROLS } from '@/entities/map/index.ts'
 import { createGrid } from '@/features/map-editor/model/grid.ts'
 import { makeAroundData } from '@/features/map-editor/model/around.ts'
 import { downloadJson } from '@/shared/lib/files/index.ts'
 import { assignRealIds } from '@/features/map-editor/model/realIds.ts'
 import { findNearbyNodes } from '@/features/map-editor/model/nearby.ts'
 import { auditPortReferences } from '@/features/map-editor/model/portAudit.ts'
-import {
-  inspectPortApproach,
-  setPortApproachReverse,
-} from '@/features/map-editor/model/portApproach.ts'
+import { inspectPortApproach } from '@/features/map-editor/model/portApproach.ts'
 import {
   MAP_CONTROL_ACTIONS,
   applyAutomaticControls,
@@ -39,9 +36,7 @@ const editor = useEditor(),
   scope = ref('selection'),
   error = ref(''),
   result = ref('')
-const selected = computed(() => [
-  ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-])
+const selected = computed(() => editor.selectedNodeIds)
 const ids = computed(() =>
   scope.value === 'all' ? editor.document.nodes.map((node) => node.id) : selected.value,
 )
@@ -99,10 +94,10 @@ watch(approachRoute, (row) => {
 const applyApproach = () =>
   run(() => {
     if (!approachRoute.value) throw new Error('포트와 진입 경로를 선택하세요.')
-    if (approachRoute.value.reverse === approachReverse.value) return '현재 설정과 같습니다.'
-    editor.commit((map) => {
-      setPortApproachReverse(map, approachPort.value, approachEdge.value, approachReverse.value)
-    })
+    const { changed } = editor.applyPortApproachReverse(
+      approachPort.value, approachEdge.value, approachReverse.value,
+    )
+    if (!changed) return '현재 설정과 같습니다.'
     return `${approachPort.value} 진입 · ${approachReverse.value ? '후진' : '기본 차량 방향'} 적용`
   })
 /** 원본 Control Map Data의 선택 명령을 전체 지도에 하나의 이력으로 반영하는 자동 설정 */
@@ -225,12 +220,10 @@ const move = () =>
 const subdivide = () =>
   run(() => {
     if (scope.value === 'selection' && !ids.value.length) throw new Error('노드를 선택하세요.')
-    const output = subdividePaths(
-      editor.document,
+    const output = editor.applyPathSpacing(
       Number(spacing.value),
       scope.value === 'all' ? undefined : ids.value,
     )
-    editor.commit((map) => Object.assign(map, output.map))
     return `노드 ${output.added}개 추가 · 직선 ${output.changed}개 분할 · 곡선 원형 유지`
   })
 /** 선택 노드 사이의 경로에 방향별 운행 제어값을 일괄 적용하는 경로 편집 */
@@ -310,12 +303,11 @@ const editSelection = (operation: 'duplicate' | 'delete') =>
       !window.confirm(`${ids.value.length}개 노드와 종속 경로·포트를 삭제하시겠습니까?`)
     )
       return '삭제 취소'
-    const output = editSelectedNodes(editor.document, ids.value, {
+    editor.applyNodeSelectionEdit(ids.value, {
       operation,
       dx: Number(dx.value),
       dy: Number(dy.value),
     })
-    editor.commit((map) => Object.assign(map, output.map))
     return operation === 'delete' ? '선택 노드 삭제 완료' : '선택 연결 구조 복제 완료'
   })
 /** 경로 방향을 반영하는 출발과 도착 사이 거리 계산 */

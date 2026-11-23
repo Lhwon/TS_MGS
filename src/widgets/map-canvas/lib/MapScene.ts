@@ -7,7 +7,7 @@
 import { createMapLabels, paintMapLabel } from '@/entities/map/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
 import * as THREE from 'three'
-import type { Layers, MapDocument } from '@/entities/map/index.ts'
+import type { Layers, MapDocument, PortDisplayType } from '@/entities/map/index.ts'
 import {
   createMapTopology,
   MIN_MAP_LABEL_PIXELS,
@@ -18,6 +18,7 @@ import {
   mgsTheme,
   pickMgsNode,
   viewStep,
+  PORT_DISPLAY_STYLES,
 } from '@/entities/map/index.ts'
 interface Callbacks {
   click(id: number | null, x: number, y: number): void
@@ -39,6 +40,7 @@ interface Callbacks {
       x: number
       y: number
     },
+    adding: boolean,
   ): void
   cursor(x: number, y: number): void
   zoom(value: number): void
@@ -63,6 +65,10 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let nodeBorders: THREE.InstancedMesh | null = null
   let nodeDisplayScale = 1
   let portMesh: THREE.Mesh | null = null
+  let basePortColors: Float32Array | undefined
+  let portDisplayType: PortDisplayType = ''
+  let viewTurns = 0
+  let showCrosshair = true
   let selectedPortId: string | null = null
   const portOutline = new THREE.LineLoop(
     new THREE.BufferGeometry().setAttribute(
@@ -150,6 +156,31 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     curvePreview.computeLineDistances()
     requestRender()
   }
+  const pathPlanPreview = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0xffa600, depthTest: false, depthWrite: false }),
+  )
+  pathPlanPreview.renderOrder = 21
+  pathPlanPreview.visible = false
+
+  /**
+   * 지도에 저장하지 않는 경로 시험 결과를 화면의 계획 경로에 표시
+   * @param points 표시할 순서대로 연결된 지도 좌표
+   */
+  const setPathPlanPreview = (points: { x: number; y: number }[]) => {
+    const origin = points[0]
+    pathPlanPreview.visible = points.length > 1
+    pathPlanPreview.geometry.dispose()
+    pathPlanPreview.geometry = new THREE.BufferGeometry()
+    if (origin) {
+      pathPlanPreview.position.set(origin.x, origin.y, 0)
+      pathPlanPreview.geometry.setFromPoints(
+        points.map(({ x, y }) => new THREE.Vector3(x - origin.x, y - origin.y, 0)),
+      )
+    }
+    requestRender()
+  }
+
   const drawingPlane = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false, toneMapped: false }),
@@ -298,6 +329,40 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     requestRender()
   }
   /**
+   * 원본 포트 종류의 색상으로 해당 개별 포트와 포트 그룹을 강조
+   * @param type 선택한 포트 유형 또는 강조를 해제할 빈 문자열
+   */
+  const setPortDisplayType = (type: PortDisplayType) => {
+    portDisplayType = type
+    if (!portMesh || !mapDocument || !basePortColors) return
+    const colors = portMesh.geometry.getAttribute('color')
+    const positions = portMesh.geometry.getAttribute('position')
+    colors.array.set(basePortColors)
+    if (type) {
+      const style = PORT_DISPLAY_STYLES[type]
+      const matching = new Set(
+        mapDocument.ports.filter((port) => Number(port.settings?.[style.field]) === 1).map((port) => port.id),
+      )
+      for (const group of mapDocument.portGroups ?? []) {
+        if (group.portIds[0] && group.portIds.some((id) => matching.has(id)))
+          matching.add(group.portIds[0])
+      }
+      const outline = new THREE.Color(0xff0000)
+      const fill = new THREE.Color(style.fill)
+      const faces = portMesh.userData.portFaces as string[]
+      faces.forEach((id, index) => {
+        if (!matching.has(id)) return
+        const vertex = index * 3
+        const color = positions.getZ(vertex) === 94 ? outline : fill
+        for (let point = vertex; point < vertex + 3; point++)
+          colors.setXYZ(point, color.r, color.g, color.b)
+      })
+    }
+    colors.needsUpdate = true
+    requestRender()
+  }
+
+  /**
    * 현재 문서의 도형을 구성하고 선택 및 표시 상태를 재적용하는 렌더링 문서 교체
    *
    * @param map 기준 노드와 경로 및 포트를 포함하는 지도 문서
@@ -321,6 +386,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     nodeDisplayScale = 1
     updateNodeDisplaySize()
     portMesh = topology.portMesh
+    basePortColors = new Float32Array(portMesh.geometry.getAttribute('color').array)
+    if (portDisplayType) setPortDisplayType(portDisplayType)
     setLayers(visibleLayers)
     setSelected(selectedId)
     setSelectedPort(selectedPortId)
@@ -358,12 +425,11 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     requestRender()
   }
   /**
-   * 현재 도구에 맞춰 커서와 이동 및 회전 핸들의 활성 상태를 바꾸는 조작 모드 전환
+   * 도구 변경 시 이전 드래그를 취소하고 현재 도구에 맞춘 커서 갱신
    *
-   * @param tool 현재 활성화할 선택 또는 배치 및 이동 도구
-   * @param readOnly 현재 지도에서 편집 도구의 사용을 제한하는 상태
+   * @param tool 현재 활성화할 선택 또는 노드 추가나 연결 도구
    */
-  const setTool = (tool: 'select' | 'add' | 'connect', readOnly: boolean) => {
+  const setTool = (tool: 'select' | 'add' | 'connect') => {
     if (tool !== toolMode) cancelDrag()
     toolMode = tool
     renderer.domElement.style.cursor = spacePan.active()
@@ -413,19 +479,29 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    *
    * @param alternate 원본의 여백 없는 맞춤 규칙의 적용 여부
    */
+  /**
+   * 저장 좌표와 화면 중심을 유지하며 카메라를 사분 회전
+   * @param turns 시계 방향으로 적용할 직각 회전 횟수
+   */
+  const setViewRotation = (turns: number) => {
+    viewTurns = turns
+    camera.rotation.set(0, 0, turns * Math.PI / 2)
+    requestRender()
+  }
+
   const fit = (alternate = false) => {
     if (!mapDocument) return
     const view = mgsFit(
       mapDocument,
-      viewportWidth,
-      viewportHeight,
+      viewTurns % 2 ? viewportHeight : viewportWidth,
+      viewTurns % 2 ? viewportWidth : viewportHeight,
       alternate ? 0 : 150,
       alternate ? -180 : 0,
     )
     camera.up.set(0, 1, 0)
     camera.far = 20000
     camera.position.set(view.x, view.y, 10000)
-    camera.lookAt(view.x, view.y, 0)
+    setViewRotation(viewTurns)
     setScale(view.scale)
     requestRender()
   }
@@ -587,7 +663,13 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     const p = getPointerPosition(event),
       world = screenToWorld(p.x, p.y)
     events.cursor(world.x, world.y)
+    if (showCrosshair && !drag) {
+      crosshair.style.setProperty('--pointer-x', `${p.x}px`)
+      crosshair.style.setProperty('--pointer-y', `${p.y}px`)
+      crosshair.hidden = false
+    }
     if (!drag || drag.pointerId !== event.pointerId) return
+    crosshair.hidden = true
     drag.moved ||= Math.hypot(p.x - drag.startX, p.y - drag.startY) >= (drag.pan ? 1 : 4)
     if (!drag.moved) return
     if (drag.pan) {
@@ -630,7 +712,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       previousDrag.moved ||
       Math.hypot(p.x - previousDrag.startX, p.y - previousDrag.startY) >= 4
     ) {
-      if (toolMode === 'select') events.area(previousDrag.anchor, world)
+      if (toolMode === 'select') events.area(previousDrag.anchor, world, p.x > previousDrag.startX)
       return
     }
     const target = pickMgsNode(
@@ -779,9 +861,11 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       for (let value = Math.ceil(min / step) * step; value <= max; value += step)
         draw(((value - start) / (end - start)) * pixels, value)
     }
+    const horizontalAxis = viewTurns % 2 ? 'y' : 'x'
+    const verticalAxis = viewTurns % 2 ? 'x' : 'y'
     ticks(
-      screenToWorld(0, 0).x,
-      screenToWorld(viewportWidth, 0).x,
+      screenToWorld(0, 0)[horizontalAxis],
+      screenToWorld(viewportWidth, 0)[horizontalAxis],
       viewportWidth,
       (pixel, value) => {
         if (pixel < 40) return
@@ -794,8 +878,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       },
     )
     ticks(
-      screenToWorld(0, 0).y,
-      screenToWorld(0, viewportHeight).y,
+      screenToWorld(0, 0)[verticalAxis],
+      screenToWorld(0, viewportHeight)[verticalAxis],
       viewportHeight,
       (pixel, value) => {
         if (pixel < 35) return
@@ -843,6 +927,8 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     drawingPlane.material.dispose()
     curvePreview.geometry.dispose()
     curvePreview.material.dispose()
+    pathPlanPreview.geometry.dispose()
+    pathPlanPreview.material.dispose()
     clearVehiclePreviews()
     vehicleOutline.dispose()
     spacePan.dispose()
@@ -853,6 +939,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     canvas.removeEventListener('pointerdown', pointerDown)
     canvas.removeEventListener('dblclick', doubleClick)
     canvas.removeEventListener('pointermove', pointerMove)
+    canvas.removeEventListener('pointerleave', hideCrosshair)
     canvas.removeEventListener('pointerup', pointerUp)
     canvas.removeEventListener('pointercancel', pointerCancel)
     canvas.removeEventListener('lostpointercapture', pointerCancel)
@@ -869,6 +956,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     renderer.dispose()
     canvas.remove()
     labelCanvas.remove()
+    crosshair.remove()
     selectionBox.remove()
   }
   const spacePan = createSpacePan((pressed) => {
@@ -885,7 +973,16 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   labelCanvas.className = 'map-labels'
   selectionBox.className = 'mgs-selection-box'
   selectionBox.hidden = true
-  host.append(renderer.domElement, labelCanvas, selectionBox)
+  const crosshair = document.createElement('div')
+  crosshair.className = 'map-crosshair'
+  crosshair.hidden = true
+  const hideCrosshair = () => { crosshair.hidden = true }
+  /** 조작 중이거나 캔버스를 벗어나면 숨기는 마우스 십자선 표시 설정 */
+  const setCrosshair = (visible: boolean) => {
+    showCrosshair = visible
+    if (!visible) hideCrosshair()
+  }
+  host.append(renderer.domElement, labelCanvas, crosshair, selectionBox)
   camera.position.set(0, 0, 10000)
   camera.lookAt(0, 0, 0)
   const positions: number[] = []
@@ -912,6 +1009,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     highlightMesh,
     portOutline,
     curvePreview,
+    pathPlanPreview,
     drawingPlane,
     vehiclePreviews,
   )
@@ -919,6 +1017,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   canvas.addEventListener('pointerdown', pointerDown)
   canvas.addEventListener('dblclick', doubleClick)
   canvas.addEventListener('pointermove', pointerMove)
+  canvas.addEventListener('pointerleave', hideCrosshair)
   canvas.addEventListener('pointerup', pointerUp)
   canvas.addEventListener('pointercancel', pointerCancel)
   canvas.addEventListener('lostpointercapture', pointerCancel)
@@ -954,6 +1053,10 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       if (!paused) requestRender()
     },
     setCurvePreview,
+    setPathPlanPreview,
+    setCrosshair,
+    setPortDisplayType,
+    setViewRotation,
     setDrawingVisible,
     setDocument: setDocument,
     setTheme: setTheme,

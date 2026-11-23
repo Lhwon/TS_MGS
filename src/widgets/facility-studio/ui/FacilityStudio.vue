@@ -54,11 +54,18 @@ const host = ref<HTMLElement>()
 const selectedModel = computed(() =>
   studio.document.assets.find((asset) => asset.id === studio.selected?.assetId),
 )
+
+// 모델 카탈로그
 const catalogAssets = computed(() => {
   const entries = new Map([...interiorCatalog, ...(defaultCatalog.value ?? [])].map((asset) => [asset.id, asset]))
-  for (const asset of studio.document.assets) entries.set(asset.id, asset)
+
+  for (const asset of studio.document.assets) {
+    entries.set(asset.id, asset)
+  }
+
   return [...entries.values()]
 })
+
 const doorEditor = ref<HTMLElement>()
 const focusedOpening = ref('')
 const selectedWall = computed(() => wallBody(selectedModel.value))
@@ -407,39 +414,53 @@ const undoFloorPoint = () => {
   if (draft) floorDraft.value = { ...draft, points: draft.points.slice(0, -1) }
 }
 
-/** 바닥의 두 지점 사이를 연결하는 벽이나 선택 모델 하나를 배치 */
-const placeOnFloor = (x: number, y: number) => {
+/** 사각형의 맞은편 모서리를 확정하거나 다각형 꼭짓점을 추가 */
+const addFloorBoundaryPoint = (draft: NonNullable<typeof floorDraft.value>, point: FloorPoint) => {
+  const firstPoint = draft.points[0]
+  if (draft.shape === 'rectangle' && firstPoint) {
+    const { x, y } = point
+    applyFloorBoundary([
+      firstPoint, { x, y: firstPoint.y }, point, { x: firstPoint.x, y },
+    ], draft.replaceId)
+    return
+  }
+  if (draft.points.length >= MAX_FLOOR_POINTS) throw new Error('최대 꼭짓점 수에 도달했습니다.')
+  floorDraft.value = { ...draft, points: [...draft.points, point] }
+}
+
+/** 시작점과 끝점에서 벽 배치의 중심과 방향 및 가로 배율 계산 */
+const placeWallBetweenPoints = (start: FloorPoint, end: FloorPoint, model: FacilityAsset) => {
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const length = Math.hypot(dx, dy)
+  if (length < 10) throw new Error('시작점과 다른 위치에서 벽을 끝내세요.')
+  studio.place((start.x + end.x) / 2, (start.y + end.y) / 2, undefined, {
+    rotation: (Math.atan2(dy, dx) * 180) / Math.PI,
+    scale: { x: length / facilityModelSize(model).x, y: 1, z: 1 },
+  })
+}
+
+/** 활성 도구에 따라 바닥 클릭을 경계 입력이나 벽 및 모델 배치로 전달 */
+const handleFloorClick = (worldX: number, worldY: number) => {
   attempt(() => {
     const draft = floorDraft.value
+    const point = { x: worldX, y: worldY }
     if (tool.value === 'floor' && draft) {
-      const first = draft.points[0]
-      if (draft.shape === 'rectangle' && first) {
-        applyFloorBoundary([first, { x, y: first.y }, { x, y }, { x: first.x, y }], draft.replaceId)
-      } else {
-        if (draft.points.length >= MAX_FLOOR_POINTS) throw new Error('최대 꼭짓점 수에 도달했습니다.')
-        floorDraft.value = { ...draft, points: [...draft.points, { x, y }] }
-      }
+      addFloorBoundaryPoint(draft, point)
       return
     }
     if (tool.value === 'wall') {
-      if (!wallStart.value) {
-        wallStart.value = { x, y }
+      const start = wallStart.value
+      if (!start) {
+        wallStart.value = point
         return
       }
-      const start = wallStart.value
       const model = studio.asset
       if (!model) return
-      const dx = x - start.x
-      const dy = y - start.y
-      const length = Math.hypot(dx, dy)
-      if (length < 10) throw new Error('시작점과 다른 위치에서 벽을 끝내세요.')
-      studio.place((start.x + x) / 2, (start.y + y) / 2, undefined, {
-        rotation: (Math.atan2(dy, dx) * 180) / Math.PI,
-        scale: { x: length / facilityModelSize(model).x, y: 1, z: 1 },
-      })
+      placeWallBetweenPoints(start, point, model)
       wallStart.value = undefined
     } else {
-      studio.place(x, y)
+      studio.place(worldX, worldY)
     }
     tool.value = 'select'
   })
@@ -483,28 +504,6 @@ const placeAtPort = (id: string) => {
 }
 
 /**
- * 편집된 절대 위치를 연결 포트 기준 오프셋으로 환산하여 저장하는 배치 속성 갱신
- *
- * @param id 조회하거나 편집할 대상의 고유 식별자
- * @param patch 식별자를 유지하면서 교체할 대상 속성
- */
-const updatePose = (id: string, patch: Parameters<typeof studio.updateInstance>[1]) => {
-  const old = studio.document.instances.find((i) => i.id === id)
-  if (!old) return
-  const portId = 'portId' in patch ? patch.portId : old.portId
-  const port = map.document.ports.find((p) => p.id === portId)
-  if (portId && !port) throw new Error('연결 포트를 찾을 수 없습니다.')
-  const position = patch.position ?? resolveFacilityInstance(old, map.document.ports).position
-  studio.updateInstance(id, {
-    ...patch,
-    position,
-    portOffset: port
-      ? { x: position.x - port.x, y: position.y - port.y, z: position.z }
-      : undefined,
-  })
-}
-
-/**
  * 노드와 포트 참조를 확인하고 속성 입력값을 배치 문서에 반영하는 설비 속성 적용
  */
 const applyPose = () => {
@@ -514,15 +513,19 @@ const applyPose = () => {
       throw new Error('기준 맵에 연결 Node ID가 없습니다.')
     if (pose.portId && !map.document.ports.some((p) => p.id === pose.portId))
       throw new Error('기준 맵에 연결 Port ID가 없습니다.')
-    updatePose(studio.selectedId!, {
-      name: pose.name,
-      position: { x: Number(pose.x), y: Number(pose.y), z: Number(pose.z) },
-      rotation: Number(pose.rotation),
-      carrierRotation: pose.carrierRotation === '' ? undefined : Number(pose.carrierRotation),
-      scale: scaleFromSize(),
-      portId: pose.portId || undefined,
-      nodeId: pose.nodeId === '' ? undefined : Number(pose.nodeId),
-    })
+    studio.applyPlacementPose(
+      studio.selectedId!,
+      {
+        name: pose.name,
+        position: { x: Number(pose.x), y: Number(pose.y), z: Number(pose.z) },
+        rotation: Number(pose.rotation),
+        carrierRotation: pose.carrierRotation === '' ? undefined : Number(pose.carrierRotation),
+        scale: scaleFromSize(),
+        portId: pose.portId || undefined,
+        nodeId: pose.nodeId === '' ? undefined : Number(pose.nodeId),
+      },
+      map.document.ports,
+    )
   })
 }
 
@@ -557,19 +560,25 @@ const bind = () => {
 const importGlb = async (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
+
   if (!file || studio.busy) return
+
   const cache = new GlbModelCache()
+
   studio.busy = true
+
   try {
-    if (!file.name.toLowerCase().endsWith('.glb') || file.size > MAX_GLB_BYTES)
-      throw new Error('단일 GLB 파일은 12MB 이하여야 합니다.')
+    if (!file.name.toLowerCase().endsWith('.glb') || file.size > MAX_GLB_BYTES) throw new Error('단일 GLB 파일은 12MB 이하여야 합니다.')
+
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
       reader.onerror = () => reject(new Error('GLB 파일을 읽을 수 없습니다.'))
       reader.readAsDataURL(file)
     })
+
     const size = await cache.measure(data, glbUnits.value)
+
     studio.setAsset(
       {
         id: crypto.randomUUID(),
@@ -581,6 +590,7 @@ const importGlb = async (event: Event) => {
       },
       reference.value,
     )
+
     error.value = ''
     studio.message = 'GLB 모델을 가져왔습니다. 바닥이나 포트에 배치하고 크기를 조절하세요.'
   } catch (cause) {
@@ -642,13 +652,13 @@ onMounted(() => {
         error.value = message
       },
       select: selectInstances,
-      place: placeOnFloor,
+      place: handleFloorClick,
       finishFloor,
       placeAtPort,
       attachOpening,
       measurePoint: addMeasurePoint,
       move: (id, position, rotation, scale) =>
-        attempt(() => updatePose(id, { position, rotation, scale })),
+        attempt(() => studio.applyPlacementPose(id, { position, rotation, scale }, map.document.ports)),
     })
     scene.setMap(map.document, map.theme, props.layers ?? DEFAULT_LAYERS)
     scene.setDocument(studio.document)
@@ -1182,7 +1192,7 @@ onBeforeUnmount(() => scene?.dispose())
             <v-btn
               type="button"
               data-testid="instance-duplicate"
-              @click="studio.duplicate"
+              @click="studio.duplicate()"
             >
               복제
             </v-btn>

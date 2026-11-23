@@ -47,6 +47,7 @@ export const pickMgsNode = (
  * @param selected 영역 조작 이전에 선택된 노드 식별자 목록
  * @param start 영역 선택 또는 눈금의 시작 위치
  * @param end 영역 선택 또는 눈금의 종료 위치
+ * @param adding 화면 진행 방향으로 판정한 선택 추가 여부
  * @returns 추가 또는 해제 결과를 반영한 선택 식별자 목록
  */
 export const mgsAreaSelection = (
@@ -54,8 +55,8 @@ export const mgsAreaSelection = (
   selected: number[],
   start: MapPoint,
   end: MapPoint,
+  adding = start.x < end.x,
 ) => {
-  const adding = start.x < end.x
   /**
    * 노드 좌표가 드래그 영역의 열린 경계 내부에 포함되는지 확인하는 위치 판정
    *

@@ -18,6 +18,7 @@ const root = path.resolve(import.meta.dirname, '..')
 const temp = await mkdtemp(path.join(tmpdir(), 'ts-mgs-ipc-'))
 const server = await createServer({
   root,
+  cacheDir: path.join(temp, 'vite-cache'),
   server: { host: '127.0.0.1', port: 0, watch: null, hmr: false },
 })
 let app

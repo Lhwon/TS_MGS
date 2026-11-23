@@ -311,6 +311,8 @@ try {
   assert.equal(partScale.z, 1)
   await page.getByTestId('selection-focus').click()
   const sizeHandle = page.getByTestId('direct-z')
+  // 선택 보기 이후 카메라 이동이 반영된 크기 조절 핸들 위치 확인
+  await sizeHandle.hover()
   const heightControl = await sizeHandle.boundingBox()
   const dragX = heightControl.x + heightControl.width / 2
   const dragY = heightControl.y + heightControl.height / 2

@@ -9,7 +9,7 @@ const { readFile, writeFile, rename, unlink, mkdir } = require('node:fs/promises
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { randomUUID } = require('node:crypto')
-const { readMapFile, openMapFolder } = require('./map-files.cjs')
+const { readMapFile, openMapFolder, readProjectBayFilter, saveProjectBayFilter, readProjectBlockData } = require('./map-files.cjs')
 const { saveMapVersion, backupMapVersion } = require('./save-map.cjs')
 const { saveSceneFiles, readSceneProject } = require('./scene-files.cjs')
 const { aiStatus, aiPropose, cancelAi, aiAnalyzeDrawing } = require('./ai-service.cjs')
@@ -128,6 +128,22 @@ ipcMain.handle('map:select-save-project', async (event) => {
   const token = randomUUID()
   mapLocations.set(token, directory)
   return token
+})
+ipcMain.handle('map:read-bay-filter', async (event, token) => {
+  trusted(event)
+  const directory = typeof token === 'string' ? mapLocations.get(token) : undefined
+  return directory ? readProjectBayFilter(directory) : []
+})
+ipcMain.handle('map:save-bay-filter', async (event, token, list) => {
+  trusted(event)
+  const directory = typeof token === 'string' ? mapLocations.get(token) : undefined
+  if (!directory) throw new Error('먼저 프로젝트를 선택하세요.')
+  await saveProjectBayFilter(directory, list)
+})
+ipcMain.handle('map:read-block-data', async (event, token, name, type) => {
+  trusted(event)
+  const directory = typeof token === 'string' ? mapLocations.get(token) : undefined
+  return directory ? readProjectBlockData(directory, name, type) : null
 })
 ipcMain.handle('map:show-folder', async (event, token) => {
   trusted(event)

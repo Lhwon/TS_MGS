@@ -5,7 +5,7 @@
  * 작성일자: 2026-11-18
  */
 import { validateAreas, type AreaData } from '@/entities/map/model/areas.ts'
-import { PORT_SETTINGS, PORT_RESERVATIONS } from '@/entities/map/model/portSettings.ts'
+import { PORT_SETTINGS, PORT_RESERVATIONS, PORT_TAIL_FLAGS } from '@/entities/map/model/portSettings.ts'
 import { PATH_CONTROLS } from '@/entities/map/model/controls.ts'
 export interface DrawingVision {
   routeColor: string
@@ -464,6 +464,12 @@ export const parseDocument = (content: string): MapDocument => {
             result.settings[field.key] = value
           }
         }
+      for (const field of PORT_TAIL_FLAGS) {
+        if (values[field.key] === undefined) continue
+        const value = numeric(values[field.key], field.label)
+        if (value !== 0 && value !== 1) throw new Error(`${field.label}: 영 또는 일이 필요합니다.`)
+        result.settings[field.key] = value
+      }
     }
     return result
   })

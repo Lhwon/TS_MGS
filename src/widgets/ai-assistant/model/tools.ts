@@ -6,19 +6,15 @@
  */
 import type { Ref } from 'vue'
 import {
-  subdividePaths,
   shortestMapPath,
   useEditor,
   inspectPortApproach,
   auditPortReferences,
-  setPortApproachReverse,
 } from '@/features/map-editor/index.ts'
 import { useFacilityEditor } from '@/features/facility-editor/index.ts'
 import {
   analyzeDrawing,
-  editMapObjects,
   inspectSelectedNodes,
-  editSelectedNodes,
   selectionDelta,
   searchMgsTraining,
   type AssistantToolCall,
@@ -27,7 +23,7 @@ import {
   mapGeometryKey,
   designRack,
   type FacilityAsset,
-  type FacilityInstance,
+  resolveFacilityInstance,
 } from '@/entities/facility/index.ts'
 import {
   createLayout,
@@ -39,16 +35,11 @@ import {
   type DrawingFinding,
 } from '@/features/drawing-import/index.ts'
 import { executeDrawingTool } from '@/widgets/ai-assistant/model/drawingTools.ts'
-import type { MapDocument } from '@/entities/map/index.ts'
+import { expandCurveSelection, type MapDocument } from '@/entities/map/index.ts'
 const inspectedApproaches = new WeakMap<
   AbortController,
   { map: MapDocument; portIds: Set<string> }
 >()
-/** 편집 작업 전체에 적용할 실제 화면 선택 범위 */
-const selectedNodeIds = (editor: ReturnType<typeof useEditor>) => [
-  ...new Set([...editor.selectedIds, ...(editor.selectedId === null ? [] : [editor.selectedId])]),
-]
-
 interface Options {
   context: () => ReturnType<typeof agentContext>
   drawing: () => Promise<DrawingAttachment>
@@ -64,7 +55,7 @@ export const agentContext = (attachment?: DrawingAttachment) => {
   const editor = useEditor(),
     facility = useFacilityEditor(),
     map = editor.document
-  const nodeIds = selectedNodeIds(editor)
+  const nodeIds = editor.selectedNodeIds
   return {
     map: {
       name: editor.sourceName,
@@ -172,10 +163,10 @@ export const executeAgentTool = async (
   const name = call.function.name,
     args = call.function.arguments
   /** 동기 변경 구간만 외부 편집과 구분하는 이력 적용 */
-  const mutate = (change: () => void) => {
+  const mutate = <T>(change: () => T): T => {
     options.internal(true)
     try {
-      change()
+      return change()
     } finally {
       options.internal(false)
     }
@@ -240,27 +231,15 @@ export const executeAgentTool = async (
       throw new Error(
         '먼저 현재 지도에서 port_approach inspect로 이 포트의 진입 경로를 조회하세요.',
       )
-    const before = state.approaches.find((row) => row.edgeId === args.edgeId)
-    if (!before) throw new Error('선택한 경로는 이 포트로 진입할 수 없습니다.')
-    if (before.reverse === args.reverse) return { changed: false, portId, before, after: before }
     const { edgeId, reverse } = args
-    mutate(() =>
-      editor.commit((document) => {
-        setPortApproachReverse(document, portId, edgeId, reverse)
-      }),
-    )
-    const after = inspectPortApproach(editor.document, portId).approaches.find(
-      (row) => row.edgeId === edgeId,
-    )
-    if (after?.reverse !== reverse) throw new Error('포트 진입 변경 결과를 확인할 수 없습니다.')
-    return { changed: true, portId, before, after, undoAvailable: editor.canUndo }
+    const result = mutate(() => editor.applyPortApproachReverse(portId, edgeId, reverse))
+    return { ...result, portId, ...(result.changed ? { undoAvailable: editor.canUndo } : {}) }
   }
   if (name === 'subdivide_paths') {
     if (editor.readOnly) throw new Error('읽기 전용 지도입니다.')
-    const selected = args.scope === 'selection' ? selectedNodeIds(editor) : undefined
+    const selected = args.scope === 'selection' ? editor.selectedNodeIds : undefined
     if (selected && !selected.length) throw new Error('선택한 노드가 없습니다.')
-    const output = subdividePaths(map, Number(args.spacingMm), selected)
-    mutate(() => editor.commit((document) => Object.assign(document, output.map)))
+    const output = mutate(() => editor.applyPathSpacing(Number(args.spacingMm), selected))
     return {
       added: output.added,
       changed: output.changed,
@@ -287,8 +266,27 @@ export const executeAgentTool = async (
     const target = String(args.target ?? targets[0])
     if (!targets.includes(target)) throw new Error('선택한 대상 종류를 확인하세요.')
     if (target === 'nodes') {
-      const result = editSelectedNodes(map, selectedNodeIds(editor), args)
-      mutate(() => editor.commit((document) => Object.assign(document, result.map)))
+      const nodeIds = editor.selectedNodeIds
+      if (args.operation === 'move') {
+        const anchor = inspectSelectedNodes(map, nodeIds).center
+        const movedIds = expandCurveSelection(map, nodeIds)
+        const before = inspectSelectedNodes(map, movedIds)
+        if (!anchor || before.count !== movedIds.length)
+          throw new Error('선택 노드를 다시 확인하세요.')
+        const delta = selectionDelta(map, anchor, args)
+        mutate(() => editor.moveNodes(nodeIds, delta.dx, delta.dy))
+        const moved = new Set(movedIds)
+        const changed = map.nodes
+          .filter(({ id }) => moved.has(id))
+          .map(({ id }) => ({ entity: 'node', id: String(id), operation: 'update' }))
+        return {
+          changed,
+          delta,
+          before,
+          after: options.context().selection,
+        }
+      }
+      const result = mutate(() => editor.applyNodeSelectionEdit(nodeIds, args))
       return {
         changed: result.results,
         delta: result.delta,
@@ -296,71 +294,60 @@ export const executeAgentTool = async (
         after: options.context().selection,
       }
     }
-    const object = target === 'port' ? context.port! : context.instance!
-    const center = 'position' in object ? object.position : object
-    const delta = args.operation === 'delete' ? undefined : selectionDelta(map, center, args)
     if (!['move', 'duplicate', 'delete'].includes(String(args.operation)))
       throw new Error('선택 작업 종류를 확인하세요.')
+    const instance = context.instance
+    const facilityPosition =
+      target === 'instance' && args.operation !== 'delete'
+        ? resolveFacilityInstance(instance!, map.ports).position
+        : undefined
+    const center = args.operation === 'delete' ? undefined : facilityPosition ?? context.port!
+    const delta = center && selectionDelta(map, center, args)
     if (args.operation === 'duplicate' && !delta!.dx && !delta!.dy)
       throw new Error('복제 위치가 필요합니다.')
     if (target === 'port') {
       const port = context.port!
-      const result = editMapObjects(map, [
-        {
-          entity: 'port',
-          operation:
-            args.operation === 'move'
-              ? 'update'
-              : args.operation === 'duplicate'
-                ? 'create'
-                : 'delete',
-          ...(args.operation === 'duplicate' ? {} : { id: port.id }),
-          ...(delta
-            ? {
-                value: {
-                  name: port.name,
-                  nodeId: port.nodeId,
-                  width: port.width,
-                  height: port.height,
-                  x: port.x + delta.dx,
-                  y: port.y + delta.dy,
-                },
-              }
-            : {}),
-        },
-      ])
-      mutate(() => editor.commit((document) => Object.assign(document, result.map)))
-      return { changed: result.results, delta }
+      if (args.operation === 'duplicate') {
+        const changed = mutate(() =>
+          editor.applyMapEdits([
+            {
+              entity: 'port',
+              operation: 'create',
+              value: {
+                name: port.name,
+                nodeId: port.nodeId,
+                width: port.width,
+                height: port.height,
+                x: port.x + delta!.dx,
+                y: port.y + delta!.dy,
+              },
+            },
+          ]),
+        )
+        return { changed, delta }
+      }
+      const operation = args.operation === 'delete' ? 'delete' : 'update'
+      mutate(() => {
+        if (operation === 'delete') editor.removePort(port.id)
+        else editor.updatePort(port.id, { x: port.x + delta!.dx, y: port.y + delta!.dy })
+      })
+      return { changed: [{ entity: 'port', id: port.id, operation }], delta }
     }
-    const instance = context.instance!
-    mutate(() =>
-      facility.commit((document) => {
-        if (args.operation === 'delete') {
-          document.instances = document.instances.filter((item) => item.id !== instance.id)
-          return
-        }
-        const copy = JSON.parse(JSON.stringify(instance)) as FacilityInstance
-        copy.position.x += delta!.dx
-        copy.position.y += delta!.dy
-        if (args.operation === 'duplicate') {
-          copy.id = crypto.randomUUID()
-          delete copy.portId
-          delete copy.portOffset
-          document.instances.push(copy)
-        } else {
-          if (copy.portId) {
-            copy.portOffset ??= { x: 0, y: 0, z: 0 }
-            copy.portOffset.x += delta!.dx
-            copy.portOffset.y += delta!.dy
-          }
-          Object.assign(
-            document.instances.find((item) => item.id === instance.id)!,
-            copy,
-          )
-        }
-      }),
-    )
-    return { operation: args.operation, id: instance.id, delta }
+    const id = instance!.id
+    mutate(() => {
+      if (!delta) {
+        facility.remove()
+        return
+      }
+      const position = {
+        ...facilityPosition!,
+        x: facilityPosition!.x + delta.dx,
+        y: facilityPosition!.y + delta.dy,
+      }
+      if (args.operation === 'duplicate') facility.duplicate(position)
+      else facility.applyPlacementPose(id, { position }, map.ports)
+    })
+    return { operation: args.operation, id, delta }
   }
   if (name === 'focus_map') {
     const node = map.nodes.find((node) => node.id === args.nodeId)
@@ -404,20 +391,12 @@ export const executeAgentTool = async (
     throw new Error('읽기 전용 지도는 변경할 수 없습니다.')
   if (name === 'layout_drawing') {
     if (args.mode === 'remove') {
-      mutate(() =>
-        editor.commit((document) => {
-          delete document.layout
-        }),
-      )
+      mutate(() => editor.setLayout())
       return { removed: true, mapObjectsChanged: false }
     }
     if (args.mode === 'hide' || args.mode === 'show') {
       if (!map.layout) throw new Error('적용된 배경 도면이 없습니다.')
-      mutate(() =>
-        editor.commit((document) => {
-          document.layout!.visible = args.mode === 'show'
-        }),
-      )
+      mutate(() => editor.setLayoutVisible(args.mode === 'show'))
       return { visible: args.mode === 'show' }
     }
     if (!['apply', 'update'].includes(String(args.mode)))
@@ -431,11 +410,7 @@ export const executeAgentTool = async (
     const layout = createLayout(map, drawing, settings)
     if (request.signal.aborted || map !== editor.document)
       throw new Error('지도 변경으로 배경 적용을 중단했습니다.')
-    mutate(() =>
-      editor.commit((document) => {
-        document.layout = layout
-      }),
-    )
+    mutate(() => editor.setLayout(layout))
     options.generated()
     return {
       applied: true,
@@ -451,9 +426,7 @@ export const executeAgentTool = async (
     }
   }
   if (name === 'edit_map') {
-    const result = editMapObjects(map, args.operations)
-    mutate(() => editor.commit((document) => Object.assign(document, result.map)))
-    return { changed: result.results }
+    return { changed: mutate(() => editor.applyMapEdits(args.operations)) }
   }
   if (name === 'history') {
     if (!['undo', 'redo'].includes(String(args.direction)))
@@ -486,40 +459,24 @@ export const executeAgentTool = async (
       )
     const asset = scene.assets.find((asset) => asset.id === args.assetId)
     if (!asset) throw new Error('모델을 찾지 못했습니다.')
-    const portIds = Array.isArray(args.portIds) ? (args.portIds as string[]) : [],
-      placements: FacilityInstance[] = []
+    const portIds = Array.isArray(args.portIds) ? (args.portIds as string[]) : []
     if (portIds.length > 200) throw new Error('한 번에 포트 200개까지 배치할 수 있습니다.')
-    for (const id of portIds) {
-      const port = map.ports.find((port) => port.id === id)
+    const transform = { rotation: Number(args.rotation ?? 0) }
+    const targets = portIds.map((id) => {
+      const port = map.ports.find((item) => item.id === id)
       if (!port) throw new Error(`포트 ${id}를 찾지 못했습니다.`)
       if (scene.instances.some((instance) => instance.portId === id))
         throw new Error(`포트 ${id}에 설비가 있습니다.`)
-      placements.push({
-        id: crypto.randomUUID(),
-        assetId: asset.id,
-        name: asset.name,
-        position: { x: port.x, y: port.y, z: 0 },
-        rotation: Number(args.rotation ?? 0),
-        portId: id,
-        portOffset: { x: 0, y: 0, z: 0 },
-      })
-    }
-    if (!portIds.length) {
-      if (!Number.isFinite(args.x) || !Number.isFinite(args.y))
-        throw new Error('배치할 포트나 위치가 필요합니다.')
-      placements.push({
-        id: crypto.randomUUID(),
-        assetId: asset.id,
-        name: asset.name,
-        position: { x: Number(args.x), y: Number(args.y), z: 0 },
-        rotation: Number(args.rotation ?? 0),
-      })
-    }
-    mutate(() =>
-      facility.addPlacements(asset, placements, {
-        name: editor.sourceName,
-        geometryKey: mapGeometryKey(map.nodes),
-      }),
+      return { x: port.x, y: port.y, portId: id, transform }
+    })
+    if (!targets.length && (!Number.isFinite(args.x) || !Number.isFinite(args.y)))
+      throw new Error('배치할 포트나 위치가 필요합니다.')
+    const placements = mutate(() =>
+      facility.placeInstances(
+        asset,
+        targets.length ? targets : [{ x: Number(args.x), y: Number(args.y), transform }],
+        { name: editor.sourceName, geometryKey: mapGeometryKey(map.nodes) },
+      ),
     )
     return {
       placed: placements.map((instance) => ({
@@ -544,15 +501,13 @@ export const executeAgentTool = async (
 
       const calibrated = calibrateDrawingMap(map, [a.id, b.id], distance)
 
-      mutate(() => editor.commit((document) => Object.assign(document, calibrated)))
+      mutate(() => editor.applyComputedMap(calibrated))
     } else if (map.layout) {
       const drawing = await options.drawing(), layout = createLayout(map, drawing, { widthMm: width })
 
-      mutate(() =>
-        editor.commit((document) => {
-          document.layout = layout
-        })
-      )
+      if (request.signal.aborted || editor.document !== map)
+        throw new Error('지도 변경으로 배경 적용을 중단했습니다.')
+      mutate(() => editor.setLayout(layout))
     } else throw new Error('비율을 맞출 도면이 없습니다.')
     options.generated()
     
@@ -582,15 +537,9 @@ const editEquipment = (args: Record<string, unknown>, mutate: (change: () => voi
     facility = useFacilityEditor(),
     current = facility.document.assets.find((asset) => asset.id === args.assetId)
   if (args.operation === 'delete') {
-    if (!current) throw new Error('모델을 찾지 못했습니다.')
-    if (facility.document.instances.some((instance) => instance.assetId === current.id))
-      throw new Error('배치된 모델은 배치를 먼저 정리해야 합니다.')
-    mutate(() =>
-      facility.commit((document) => {
-        document.assets = document.assets.filter((asset) => asset.id !== current.id)
-      }),
-    )
-    return { deleted: current.id }
+    const id = typeof args.assetId === 'string' ? args.assetId : ''
+    mutate(() => facility.removeAsset(id))
+    return { deleted: id }
   }
   if (
     !['create', 'update'].includes(String(args.operation)) ||

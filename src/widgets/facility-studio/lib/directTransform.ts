@@ -139,6 +139,8 @@ export const createDirectTransform = (
     button.addEventListener('lostpointercapture', cancel)
     button.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
+        if (!gesture) return
+        event.stopPropagation()
         cancel()
         return
       }

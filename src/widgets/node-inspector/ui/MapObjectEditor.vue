@@ -10,7 +10,9 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useEditor } from '@/features/map-editor/index.ts'
 import {
+  createMapShape,
   PORT_SETTINGS,
+  PORT_TAIL_FLAGS,
   PORT_RESERVATIONS,
   PATH_CONTROLS,
   type MapEdge,
@@ -59,7 +61,9 @@ const fields = computed(() => {
       namePosition: '이름 위치 상 하 우 좌',
       nameDirection: '이름 방향',
       bays: 'Bay 목록 쉼표 구분',
-      ...Object.fromEntries(PORT_SETTINGS.map((field) => [`settings.${field.key}`, field.label])),
+      ...Object.fromEntries(
+        [...PORT_SETTINGS, ...PORT_TAIL_FLAGS].map((field) => [`settings.${field.key}`, field.label]),
+      ),
       ...Object.fromEntries(
         PORT_RESERVATIONS.map((field) => [`reservations.${field.key}`, `${field.label} 쉼표 구분`]),
       ),
@@ -210,15 +214,7 @@ const apply = () => {
         throw new Error('빈 수치 입력을 확인하세요.')
       changes[key] = stringFields.has(key) ? draft[key] : Number(draft[key])
     }
-    editor.commit((map) => {
-      const target = map[category.value]?.find((item) => String(item.id) === selected.value)
-      if (!target) throw new Error('편집할 객체가 없습니다.')
-      if (
-        category.value === 'edges' &&
-        changes.direction !== undefined &&
-        ![0, 1].includes(Number(changes.direction))
-      )
-        throw new Error('방향은 0 또는 1입니다.')
+    const applyFields = (target: MapPort | MapEdge | MapPortGroup | MapShape) => {
       for (const [key, value] of Object.entries(changes)) {
         if (key.startsWith('controls.')) {
           const edge = target as MapEdge,
@@ -253,20 +249,38 @@ const apply = () => {
           port.settings[key.split('.')[1]] = value
         } else Object.assign(target, { [key]: value })
       }
-      if (category.value === 'portGroups') {
-        const group = target as MapPortGroup,
-          node = map.nodes.find((item) => item.id === group.nodeId)
-        if (!node) throw new Error('포트 그룹의 기준 노드를 확인하세요.')
-        if (changes.offsetX !== undefined && changes.x === undefined)
-          group.x = node.x + Number(changes.offsetX)
-        if (changes.offsetY !== undefined && changes.y === undefined)
-          group.y = node.y + Number(changes.offsetY)
-        group.nodeX = node.x
-        group.nodeY = node.y
-        group.offsetX = group.x - node.x
-        group.offsetY = group.y - node.y
-      }
-    })
+    }
+    if (category.value === 'ports') {
+      const port = structuredClone(current.value.value as MapPort)
+      applyFields(port)
+      const { id, ...patch } = port
+      editor.updatePort(id, patch)
+    } else {
+      editor.commit((map) => {
+        const target = map[category.value]?.find((item) => String(item.id) === selected.value)
+        if (!target) throw new Error('편집할 객체가 없습니다.')
+        if (
+          category.value === 'edges' &&
+          changes.direction !== undefined &&
+          ![0, 1].includes(Number(changes.direction))
+        )
+          throw new Error('방향은 0 또는 1입니다.')
+        applyFields(target)
+        if (category.value === 'portGroups') {
+          const group = target as MapPortGroup,
+            node = map.nodes.find((item) => item.id === group.nodeId)
+          if (!node) throw new Error('포트 그룹의 기준 노드를 확인하세요.')
+          if (changes.offsetX !== undefined && changes.x === undefined)
+            group.x = node.x + Number(changes.offsetX)
+          if (changes.offsetY !== undefined && changes.y === undefined)
+            group.y = node.y + Number(changes.offsetY)
+          group.nodeX = node.x
+          group.nodeY = node.y
+          group.offsetX = group.x - node.x
+          group.offsetY = group.y - node.y
+        }
+      })
+    }
     editor.message = '지도 객체 속성을 적용했습니다.'
     error.value = ''
   } catch (cause) {
@@ -285,27 +299,7 @@ const add = () => {
         : (editor.selectedNode ?? editor.document.nodes[0])
     if (!node) throw new Error('먼저 기준 노드를 추가하세요.')
     if (category.value === 'ports') {
-      let suffix = editor.document.ports.length + 1
-      while (editor.document.ports.some((port) => port.id === `P${suffix}`)) suffix++
-      const port: MapPort = {
-        id: `P${suffix}`,
-        nodeId: node.id,
-        name: '',
-        x: node.x,
-        y: node.y + 1000,
-        width: 1000,
-        height: 1000,
-        floor: 1,
-        strokeColor: 16711935,
-        fillColor: 16777215,
-        fontColor: 0,
-        fontSize: 40,
-        nameDistance: 100,
-        namePosition: 0,
-        nameDirection: 0,
-      }
-      editor.commit((map) => map.ports.push(port))
-      selected.value = port.id
+      selected.value = editor.addPort(node.id, node.x, node.y + 1000, true)
     } else if (category.value === 'portGroups') {
       let suffix = 1
       while (editor.document.portGroups?.some((group) => group.id === String(suffix))) suffix++
@@ -333,10 +327,7 @@ const add = () => {
       })
       selected.value = group.id
     } else if (category.value === 'shapes') {
-      const shape: MapShape = {
-        id: Math.max(0, ...(editor.document.shapes ?? []).map((item) => item.id)) + 1,
-        description: '',
-        text: '',
+      const shape = createMapShape(editor.document, {
         type: 1,
         x1: node.x,
         y1: node.y,
@@ -348,14 +339,10 @@ const add = () => {
         width: 2000,
         height: 1000,
         strokeColor: 8421504,
-        strokeStyle: 0,
         strokeWidth: 1,
         fillColor: 16777215,
-        fontColor: 0,
-        fontAlign: 0,
-        fontDirection: 0,
         fillStyle: 9,
-      }
+      })
       editor.commit((map) => {
         map.shapes ??= []
         map.shapes.push(shape)

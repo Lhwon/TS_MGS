@@ -119,12 +119,19 @@ export const subdividePaths = (input: MapDocument, spacing: number, nodeIds?: nu
   }
 }
 /** 선택 경로의 유향 최단 거리와 실제 노드 순서를 계산하는 경로 탐색 */
-export const shortestMapPath = (map: MapDocument, start: number, end: number) => {
+export const shortestMapPath = (
+  map: MapDocument,
+  start: number,
+  end: number,
+  vehicleBays: number[] = [],
+) => {
   const nodes = new Map(map.nodes.map((node) => [node.id, node]))
   if (!nodes.has(start) || !nodes.has(end)) throw new Error('출발과 도착 노드를 확인하세요.')
   const adjacency = new Map<number, { to: number; distance: number }[]>()
   for (const node of map.nodes) adjacency.set(node.id, [])
+  const assignedBays = new Set(vehicleBays)
   for (const edge of map.edges) {
+    if (assignedBays.size && edge.bays?.length && !edge.bays.some((id) => assignedBays.has(id))) continue
     const a = nodes.get(edge.from)!,
       b = nodes.get(edge.to)!,
       distance =

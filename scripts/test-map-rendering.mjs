@@ -21,7 +21,8 @@ const output = await fs.mkdtemp(path.join(os.tmpdir(), 'ts-mgs-render-'))
 const server = await createServer({
   root,
   cacheDir: path.join(root, 'node_modules', '.vite-map-rendering'),
-  server: { host: '127.0.0.1', port: 0 },
+  server: { host: '127.0.0.1', port: 0, hmr: false, watch: null },
+  optimizeDeps: { include: ['three/addons/environments/RoomEnvironment.js'] },
   plugins: [
     {
       name: 'map-rendering-verification',
@@ -329,7 +330,7 @@ try {
     const before = JSON.stringify(source)
     const topology = createMapTopology(source)
     const arrows = topology.group.getObjectByName('arrows').geometry.getAttribute('position')
-    const directional = createMapTopology({
+    const bidirectional = {
       ...source,
       nodes: [source.nodes[0], { ...source.nodes[1], curve: false }],
       edges: [
@@ -341,8 +342,28 @@ try {
           controls: { forward: { vehicleDegree: 0 }, backward: { vehicleDegree: 0, reverse: 1 } },
         },
       ],
-    })
-    const pair = directional.group.getObjectByName('arrows').geometry.getAttribute('position')
+    }
+    const directional = createMapTopology(bidirectional)
+    const planar = createMapTopology(bidirectional, undefined, true)
+    const hasCenteredDiamond = (topology, expectedRatio) => {
+      const geometry = topology.group.getObjectByName('arrows').geometry
+      const corners = geometry.getAttribute('position')
+      const halfLength = corners.getX(0)
+      const halfWidth = corners.getY(1)
+      return (
+        corners.count === 4 &&
+        [...geometry.index.array].join(',') === '0,1,2,0,2,3' &&
+        halfLength > 0 &&
+        halfWidth > 0 &&
+        Math.abs(halfLength / halfWidth - expectedRatio) < 0.00001 &&
+        corners.getY(0) === 0 &&
+        corners.getX(1) === 0 &&
+        corners.getX(2) === -halfLength &&
+        corners.getY(2) === 0 &&
+        corners.getX(3) === 0 &&
+        corners.getY(3) === -halfWidth
+      )
+    }
     const headings = directional.group.getObjectByName('vehicle-headings')
     const heading = headings.geometry.getAttribute('position')
     const result = {
@@ -353,7 +374,8 @@ try {
       markerLength: arrows.getX(0) - arrows.getX(1),
       markerHalfWidth: Math.abs(arrows.getY(1)),
       centered: arrows.getX(0) < 1000 && arrows.getX(1) > 0,
-      opposing: pair.count === 6 && pair.getX(0) > pair.getX(1) && pair.getX(3) < pair.getX(4),
+      diamond3D: hasCenteredDiamond(directional, 2.5),
+      diamond2D: hasCenteredDiamond(planar, 3),
       vehicle:
         !headings.visible &&
         heading.count === 6 &&
@@ -363,7 +385,7 @@ try {
         .getAttribute('position')
         .array.some((z, index) => index % 3 === 2 && z === 95),
     }
-    for (const { group } of [topology, directional])
+    for (const { group } of [topology, directional, planar])
       group.traverse((object) => {
         object.geometry?.dispose()
         if (object.material)
@@ -382,7 +404,7 @@ try {
   assert.ok(Math.abs(precision.markerLength - 200) < 0.001)
   assert.ok(Math.abs(precision.markerHalfWidth - 2 / 0.03) < 0.00001)
   assert.ok(precision.centered && precision.portFill)
-  assert.ok(precision.opposing && precision.vehicle)
+  assert.ok(precision.diamond3D && precision.diamond2D && precision.vehicle)
   const topology = await page.evaluate(() => {
     const view = window.__mapView
     const nodes = view.scene.getObjectByName('nodes')

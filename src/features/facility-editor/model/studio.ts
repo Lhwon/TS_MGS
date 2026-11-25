@@ -11,6 +11,7 @@ import {
   emptyFacilityDocument,
   exportFacilityFiles,
   facilityModelSize,
+  facilityCeilingAssetId,
   fillLegacyStainlessPipe,
   type FacilityPort,
   parseEquipmentLibrary,
@@ -25,6 +26,8 @@ import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
  * 설비 모델과 개별 배치 및 독립 저장 이력을 제공하는 설비 편집 저장소 생성
  * @returns 설비 모델과 배치 및 파일 명령을 제공하는 상태 저장소
  */
+type PlacementOptions = Partial<Pick<FacilityInstance, 'rotation' | 'scale' | 'attachedTo' | 'cutawayRole'>> & { z?: number }
+
 export const useFacilityEditor = defineStore('facility-editor', () => {
   const document = shallowRef(emptyFacilityDocument())
   const saved = shallowRef(document.value)
@@ -105,20 +108,25 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
       x: number
       y: number
       portId?: string
-      transform?: Pick<FacilityInstance, 'rotation' | 'scale'>
+      transform?: PlacementOptions
     }>,
     mapRef?: FacilityDocument['mapRef'],
   ) => {
     const existingCount = document.value.instances.filter((item) => item.assetId === model.id).length
-    const placements: FacilityInstance[] = targets.map(({ x, y, portId, transform }, index) => ({
-      id: crypto.randomUUID(),
-      assetId: model.id,
-      name: mapRef ? model.name : `${model.name} ${existingCount + index + 1}`,
-      position: { x, y, z: 0 },
-      rotation: 0,
-      ...transform,
-      ...(portId ? { portId, portOffset: { x: 0, y: 0, z: 0 } } : {}),
-    }))
+    const ceiling = model.id === facilityCeilingAssetId
+    const placements: FacilityInstance[] = targets.map(({ x, y, portId, transform }, index) => {
+      const { z = ceiling ? 4000 : 0, ...options } = transform ?? {}
+      return {
+        id: crypto.randomUUID(),
+        assetId: model.id,
+        name: mapRef ? model.name : `${model.name} ${existingCount + index + 1}`,
+        position: { x, y, z },
+        rotation: 0,
+        ...(ceiling ? { cutawayRole: 'ceiling' as const } : {}),
+        ...options,
+        ...(portId ? { portId, portOffset: { x: 0, y: 0, z } } : {}),
+      }
+    })
     if (mapRef) addPlacements(model, placements, mapRef)
     else commitPlacements([...document.value.instances, ...placements])
     return placements
@@ -131,16 +139,26 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param y 지도 또는 모델 기준 세로 좌표
    * @param portId 설비 배치의 기준이 되는 원본 포트 식별자
    * @param transform 바닥 배치에서 시작 좌표와 끝 좌표로 계산한 회전과 크기
+   * @param catalogModel 카탈로그에서 직접 배치할 모델과 미등록 모델의 기준 맵
    */
   const place = (
     x: number,
     y: number,
     portId?: string,
-    transform?: Pick<FacilityInstance, 'rotation' | 'scale'>,
+    transform?: PlacementOptions,
+    catalogModel?: { asset: FacilityAsset; mapRef: FacilityDocument['mapRef'] },
   ) => {
-    if (!asset.value) return
+    const model = catalogModel?.asset ?? asset.value
+    if (!model) return
 
-    const [placement] = placeInstances(asset.value, [{ x, y, portId, transform }])
+    const needsRegistration =
+      catalogModel && !document.value.assets.some((item) => item.id === model.id)
+    const [placement] = placeInstances(
+      model,
+      [{ x, y, portId, transform }],
+      needsRegistration ? catalogModel.mapRef : undefined,
+    )
+    selectedAssetId.value = model.id
     selectedId.value = placement.id
   }
 
@@ -155,6 +173,13 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
 
     commitPlacements(document.value.instances.map((instance) =>
       instance.id === id ? { ...instance, ...patch, id } : instance,
+    ))
+  }
+
+  const attachInstances = (ids: string[], attachedTo: string | undefined) => {
+    const selected = new Set(ids)
+    commitPlacements(document.value.instances.map((instance) =>
+      selected.has(instance.id) ? { ...instance, attachedTo } : instance,
     ))
   }
 
@@ -291,19 +316,24 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   }
 
   /**
-   * 사용 중인 모델을 보호하면서 라이브러리에서 미배치 모델을 제거
-   * @param id 제거할 모델 식별자
-   * @throws 모델이 없거나 하나 이상의 시설 배치가 모델을 참조하는 경우
+   * 선택한 모델의 존재 여부와 배치 참조를 검증한 뒤 한 번의 편집 이력으로 제거
+   * @param ids 제거할 라이브러리 모델 식별자 목록
+   * @throws 모델을 찾을 수 없거나 시설 배치에서 참조 중인 경우
    */
-  const removeAsset = (id: string) => {
-    if (!document.value.assets.some((asset) => asset.id === id))
+  const removeAssets = (ids: string[]) => {
+    const removing = new Set(ids)
+    if (!removing.size) return
+    const remaining = document.value.assets.filter((asset) => !removing.has(asset.id))
+    if (document.value.assets.length - remaining.length !== removing.size)
       throw new Error('모델을 찾지 못했습니다.')
-    if (document.value.instances.some((instance) => instance.assetId === id))
+    if (document.value.instances.some((instance) => removing.has(instance.assetId)))
       throw new Error('배치된 모델은 배치를 먼저 정리해야 합니다.')
-    commit((doc) => {
-      doc.assets = doc.assets.filter((asset) => asset.id !== id)
-    })
+    publish({ ...document.value, assets: remaining })
+    if (selectedAssetId.value && removing.has(selectedAssetId.value)) selectedAssetId.value = null
   }
+
+  /** 단일 모델 삭제 명령을 일괄 삭제와 동일한 검증 및 이력으로 처리 */
+  const removeAsset = (id: string) => removeAssets([id])
 
   /**
    * 기존 배치 문서를 현재 기준 지도의 식별 정보에 연결하는 맵 참조 갱신
@@ -605,8 +635,10 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     place,
     placeInstances,
     updateInstance,
+    attachInstances,
     applyPlacementPose,
     removeAsset,
+    removeAssets,
     moveSelectionXY,
     remove,
     duplicate,

@@ -471,6 +471,7 @@ onBeforeUnmount(() => {
           v-else
           :layers="layers"
           @draft-dirty="modelDraftDirty = $event"
+          @layer="(key, value) => (layers[key] = value)"
         />
         <footer
           v-if="mode === 'facility'"

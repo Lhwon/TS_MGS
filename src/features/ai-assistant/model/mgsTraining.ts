@@ -45,8 +45,11 @@ export const searchMgsTraining = (query: string) => {
       .toLowerCase()
       .normalize('NFKC')
       .replace(/[^\p{L}\p{N}]/gu, '')
+
   const input = normalize(query)
+
   if (!input || query.length > 500) throw new Error('교육 자료에서 찾을 주제를 입력하세요.')
+    
   return training
     .map(({ terms, ...entry }) => ({
       entry,

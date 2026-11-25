@@ -65,6 +65,40 @@ const roundtrip = contract.importFacilityFiles(
 )
 assert.deepEqual(roundtrip.instances, document.instances)
 assert.equal(roundtrip.assets[0].glb.data, library.assets[0].glb.data)
+const ceiling = load('src/entities/facility/interiorModels.ts').createInteriorModel('ceiling')
+const wall = load('src/entities/facility/interiorModels.ts').createInteriorModel('wall')
+const section = {
+  ...document,
+  assets: [library.assets[0], ceiling, wall],
+  instances: [
+    { ...document.instances[0], attachedTo: 'roof' },
+    { ...document.instances[0], id: 'roof', assetId: ceiling.id, cutawayRole: 'ceiling' },
+    { ...document.instances[0], id: 'legacy-wall', assetId: wall.id },
+    { ...document.instances[0], id: 'wall-sign', attachedTo: 'legacy-wall' },
+  ],
+}
+const sectionFiles = contract.exportFacilityFiles(section)
+const sectionRoundtrip = contract.importFacilityFiles(
+  JSON.stringify(sectionFiles.layout),
+  JSON.stringify(sectionFiles.library),
+)
+assert.deepEqual(sectionRoundtrip.instances, section.instances)
+assert.equal(contract.facilityCutawayRole(sectionRoundtrip.instances[2], wall), 'wall')
+const withoutRoof = contract.validateFacilityPlacements(
+  sectionRoundtrip,
+  sectionRoundtrip.instances.filter(({ id }) => id !== 'roof'),
+)
+assert.equal(withoutRoof.instances[0].attachedTo, undefined)
+assert.equal(withoutRoof.instances[2].attachedTo, 'legacy-wall')
+const lightingAsset = { ...library.assets[0], catalogCategory: 'lighting', light: { kind: 'line', temperature: 5300 } }
+const lightingDocument = { ...document, assets: [lightingAsset] }
+const lightingFiles = contract.exportFacilityFiles(lightingDocument)
+const lightingRoundtrip = contract.importFacilityFiles(JSON.stringify(lightingFiles.layout), JSON.stringify(lightingFiles.library))
+assert.deepEqual(contract.facilityLight(lightingRoundtrip.assets[0]), lightingAsset.light)
+assert.throws(() => contract.exportFacilityFiles({
+  ...lightingDocument,
+  assets: [{ ...lightingAsset, light: { kind: 'line', temperature: 12001 } }],
+}))
 const movedPlacements = contract.validateFacilityPlacements(roundtrip, [
   { ...roundtrip.instances[0], position: { x: 123, y: 456, z: 789 } },
 ])
@@ -72,6 +106,24 @@ assert.equal(movedPlacements.assets, roundtrip.assets)
 assert.deepEqual(movedPlacements.instances[0].position, { x: 123, y: 456, z: 789 })
 assert.throws(() => contract.validateFacilityPlacements(roundtrip, [
   { ...roundtrip.instances[0], scale: { x: 0, y: 1, z: 1 } },
+]))
+const tinyGlb = {
+  ...library.assets[0],
+  glb: { ...library.assets[0].glb, size: { x: 2.5, y: 2500, z: 2.14400005341 } },
+}
+const tinyGlbDocument = contract.parseFacilityDocument(JSON.stringify({ ...document, assets: [tinyGlb] }))
+const resizedGlb = contract.validateFacilityPlacements(tinyGlbDocument, [
+  { ...tinyGlbDocument.instances[0], scale: { x: 1, y: 1 / 2500, z: 2500 / tinyGlb.glb.size.z } },
+])
+const resizedFiles = contract.exportFacilityFiles(resizedGlb)
+const resizedRoundtrip = contract.importFacilityFiles(
+  JSON.stringify(resizedFiles.layout),
+  JSON.stringify(resizedFiles.library),
+)
+assert.equal(resizedRoundtrip.instances[0].scale.z * tinyGlb.glb.size.z, 2500)
+assert.equal(resizedRoundtrip.instances[0].scale.y * tinyGlb.glb.size.y, 1)
+assert.throws(() => contract.validateFacilityPlacements(tinyGlbDocument, [
+  { ...resizedGlb.instances[0], scale: { ...resizedGlb.instances[0].scale, z: 100001 / tinyGlb.glb.size.z } },
 ]))
 const { createInteriorModel, fillLegacyStainlessPipe } = load('src/entities/facility/interiorModels.ts')
 const interior = contract.emptyFacilityDocument()

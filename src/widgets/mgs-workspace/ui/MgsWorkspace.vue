@@ -35,6 +35,7 @@ const props = defineProps<{
   cursor: { x: number; y: number }
   zoom: number
 }>()
+
 const emit = defineEmits<{
   open: []
   save: []
@@ -49,12 +50,14 @@ const emit = defineEmits<{
   layer: [key: keyof Layers, value: boolean]
   capture: []
 }>()
+
 const editor = useEditor()
 const tab = ref('File')
 const summary = ref<InstanceType<typeof MgsSummary>>()
 const layoutOpen = ref(false)
 const blockReview = ref<'fmd' | 'blk' | null>(null)
 const portDisplayTypes = ['', ...Object.keys(PORT_DISPLAY_STYLES)]
+
 /** 지도 객체를 유지하며 선택한 배경만 적용하는 수동 명령 */
 const applyLayout = (layout: MapLayout) => {
   try {
@@ -64,10 +67,13 @@ const applyLayout = (layout: MapLayout) => {
     editor.message = String(cause)
   }
 }
+
 /** 배경 도면의 표시 상태 전환 */
 const toggleLayout = () =>
   editor.setLayoutVisible(!editor.document.layout?.visible)
+
 const curveForm = reactive({ radius: 1000, angle: 90, divide: 15, direction: 0 })
+
 watch(
   () => editor.curveSettingsOpen,
   (open) => {
@@ -77,23 +83,28 @@ watch(
     }
   },
 )
+
 /** 반경과 회전각 및 분할각을 검증한 설정 폼의 커브 옵션 적용 */
 const applyCurveSettings = () => {
   Object.assign(editor.curveOptions, curveForm)
   editor.curveSettingsOpen = false
 }
+
 const hiddenMenu = ref(false)
+
 const nodeEditor = computed({
   get: () => editor.nodeEditorOpen,
   set: (value: boolean) => {
     editor.nodeEditorOpen = value
   },
 })
+
 const report = ref('')
 const reportTitle = ref('')
 const messages = ref<string[]>([])
 const activeTab = computed(() => MGS_RIBBON.find((item) => item.name === tab.value)!)
 const selected = computed(() => editor.selectedNodeIds)
+
 watch(
   () => editor.message,
   (message) => {
@@ -104,6 +115,7 @@ watch(
   },
   { immediate: true },
 )
+
 const viewCommands: Record<string, keyof Layers> = {
   TBT_show_vhl_dir: 'vehicleHeadings',
   TBT_show_port_idx: 'portIndices',
@@ -142,6 +154,7 @@ const viewCommands: Record<string, keyof Layers> = {
   TBT_show_lu_direction: 'portDirection',
   TBT_show_lu_height: 'portHeight',
 }
+
 const drawingChecks = computed<Record<string, boolean>>(() => ({
   TBT_auto_reverse_orthogonal: editor.drawingOptions.autoReverseOrthogonal,
   TBT_stop_rendering: editor.renderPaused,
@@ -156,12 +169,14 @@ const drawingChecks = computed<Record<string, boolean>>(() => ({
   BT_check_overlab: editor.drawingOptions.checkOverlap,
   TBT_check_auto_conn: editor.drawingOptions.autoConnectDelete,
 }))
+
 const fileTestIds: Record<string, string> = {
   BT_open_file: 'open-map',
   BT_save_file: 'save-map',
   BT_init_project: 'new-map',
   TS_save_as: 'save-map-as',
 }
+
 const icons: Record<string, string> = {
   BT_open_file: 'folder',
   BT_save_file: 'save',
@@ -222,7 +237,9 @@ const idGaps = computed(() => {
 /** 확인 후 누락 노드 번호를 참조와 함께 순서대로 정리 */
 const fillNodeGaps = () => {
   if (!idGaps.value.length || editor.readOnly) return
+
   if (!window.confirm('노드 ID의 빈 구간을 정리하고 경로와 포트 연결을 함께 갱신할까요?')) return
+
   try {
     editor.renumberNodeIds()
     editor.message = '노드 ID 빈 구간 정리 완료'
@@ -238,11 +255,15 @@ const fillNodeGaps = () => {
  */
 const verify = (title = 'Map Report') => {
   reportTitle.value = title
+
   try {
     parseDocument(JSON.stringify(editor.document))
+
     const map = editor.document
+
     if (title === 'Check Illegal Node') {
       const gaps = idGaps.value.map(({ start, end }) => start === end ? String(start) : `${start}–${end}`)
+
       report.value = gaps.length
         ? 'Blank Node ID\n' + gaps.join(', ')
         : 'Blank Node ID · None'
@@ -250,12 +271,14 @@ const verify = (title = 'Map Report') => {
     }
 
     const positions = new Set<string>()
+
     const duplicatePositions = map.nodes.filter(({ x, y }) => {
       const key = `${x},${y}`
       const repeated = positions.has(key)
       positions.add(key)
       return repeated
     })
+
     const linked = new Set(map.edges.flatMap((edge) => [edge.from, edge.to]))
     const isolated = map.nodes.filter((node) => !linked.has(node.id))
     const noRealId = map.nodes.filter((node) => !node.virtual && !node.curve && (node.realId ?? -1) < 0)
@@ -268,14 +291,17 @@ const verify = (title = 'Map Report') => {
       if ((edge.direction ?? 1) === 1) pathDirections.add(reverse)
       return repeated
     })
+
     const nodeDetails = [
       `Duplicate Position : ${duplicatePositions.map((node) => node.id).join(', ') || 'None'}`,
       `Unconnected Node : ${isolated.map((node) => node.id).join(', ') || 'None'}`,
       `Missing Real ID : ${noRealId.map((node) => node.id).join(', ') || 'None'}`,
     ]
+
     const pathDetails = [
       `Duplicate Direction : ${repeatedPaths.map((edge) => `N${edge.from} → N${edge.to}`).join(', ') || 'None'}`,
     ]
+
     report.value = [
       `Map : ${editor.sourceName}`,
       `Version : ${map.legacy?.version ?? 25}`,
@@ -291,6 +317,7 @@ const verify = (title = 'Map Report') => {
     report.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
+
 /** 방향별 경로 제어값을 원본 도구와 같은 전체 범위에 적용하는 초기화 */
 const clearControl = (key: string, toggle = false) => {
   editor.commit((map) => {
@@ -305,6 +332,7 @@ const clearControl = (key: string, toggle = false) => {
   })
   editor.message = '경로 제어값 적용'
 }
+
 const shapeCommandPrefix = 'TBT_shape_'
 const shapeTypes: Record<string, number> = {
   line: 5,

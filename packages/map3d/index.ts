@@ -1,9 +1,11 @@
 import { decodeEmbeddedGlb, embeddedGlbPartCount } from './glbData'
 import { normalizeCargoDocument } from './cargo'
 import { parseFloorAreas, type FloorArea } from './floorAreas'
+import { legacyFacilityLight, minLightTemperature, maxLightTemperature, type FacilityLight } from './facilityLights'
 import { parseWallDoors, wallOpeningPartBudget, type WallDoor } from './wallDoors'
 export * from './wallDoors'
 export * from './floorAreas'
+export * from './facilityLights'
 export { normalizeCargoDocument, standardCargoAsset } from './cargo'
 export { decodeEmbeddedGlb, MAX_GLB_BYTES } from './glbData'
 export * from './surfaceMaterials'
@@ -40,7 +42,8 @@ export interface FacilityAsset {
   name: string
   kind: 'rack' | 'shelf' | 'equipment' | 'conveyor'
   parts: FacilityPart[]
-  catalogCategory?: 'equipment' | 'interior'
+  catalogCategory?: 'equipment' | 'interior' | 'lighting'
+  light?: FacilityLight
   glb?: { data: string; size: Point3; sourceName: string }
   design?: {
     width: number
@@ -52,6 +55,9 @@ export interface FacilityAsset {
     color: string
   }
 }
+export type FacilityCutawayRole = 'wall' | 'ceiling' | 'independent'
+export const facilityCeilingAssetId = 'interior-ceiling'
+
 export interface FacilityInstance {
   id: string
   assetId: string
@@ -59,6 +65,8 @@ export interface FacilityInstance {
   position: Point3
   rotation: number
   scale?: Point3
+  cutawayRole?: FacilityCutawayRole
+  attachedTo?: string
   wallOpacity?: number
   wallDoors?: WallDoor[]
   carrierRotation?: number
@@ -67,6 +75,17 @@ export interface FacilityInstance {
   portOffset?: Point3
   nodeId?: number
 }
+
+export const facilityLight = (asset: FacilityAsset) =>
+  asset.glb ? asset.light ?? legacyFacilityLight(asset.glb.sourceName) : undefined
+export const facilityCutawayRole = (instance: FacilityInstance, asset?: FacilityAsset) => {
+  if (instance.cutawayRole === 'independent') return undefined
+  if (instance.cutawayRole) return instance.cutawayRole
+  if (asset?.id === facilityCeilingAssetId) return 'ceiling'
+  if (asset?.parts.some((part) => part.wall)) return 'wall'
+  return undefined
+}
+
 export interface FacilityDocument {
   format: 'bem-map3d'
   version: 1
@@ -82,6 +101,30 @@ export interface FacilityDocument {
 }
 export const MAX_SCENE_BYTES = 32 * 1024 * 1024
 export const MAX_PART_INSTANCES = 100000
+const minModelSizeMm = 1
+const maxModelSizeMm = 100000
+const minPlacementScale = 0.001
+const maxPlacementScale = 1000
+const defaultScaleLimits = {
+  minimum: { x: minPlacementScale, y: minPlacementScale, z: minPlacementScale },
+  maximum: { x: maxPlacementScale, y: maxPlacementScale, z: maxPlacementScale },
+}
+
+/**
+ * 기존 배치 배율을 보존하면서 GLB는 기준 치수와 관계없이 제작 가능한 실측 크기까지 허용
+ * @param glbSize 밀리미터로 기록된 GLB의 가로와 세로 및 높이
+ * @returns 배치 입력과 파일 검증에서 공통으로 사용하는 축별 배율 범위
+ */
+export const facilityScaleLimits = (glbSize?: Point3) => {
+  if (!glbSize) return defaultScaleLimits
+
+  const min = (size: number) => Math.min(minPlacementScale, minModelSizeMm / size)
+  const max = (size: number) => Math.max(maxPlacementScale, maxModelSizeMm / size)
+  return {
+    minimum: { x: min(glbSize.x), y: min(glbSize.y), z: min(glbSize.z) },
+    maximum: { x: max(glbSize.x), y: max(glbSize.y), z: max(glbSize.z) },
+  }
+}
 /**
  * 단위와 좌표계를 고정한 빈 설비 설계 문서를 만드는 초기 데이터 생성
  * @returns 모델과 배치가 비어 있는 기본 설계 문서
@@ -230,9 +273,9 @@ const validateFacilityDocument = (
   const point = (v: unknown, size = false): Point3 => {
     const p = record(v)
     return {
-      x: num(p.x, size ? 1 : -1e9, size ? 100000 : 1e9),
-      y: num(p.y, size ? 1 : -1e9, size ? 100000 : 1e9),
-      z: num(p.z, size ? 1 : -1e9, size ? 100000 : 1e9),
+      x: num(p.x, size ? minModelSizeMm : -1e9, size ? maxModelSizeMm : 1e9),
+      y: num(p.y, size ? minModelSizeMm : -1e9, size ? maxModelSizeMm : 1e9),
+      z: num(p.z, size ? minModelSizeMm : -1e9, size ? maxModelSizeMm : 1e9),
     }
   }
   /**
@@ -310,7 +353,7 @@ const validateFacilityDocument = (
       throw new Error('부품 모델과 GLB 모델을 함께 지정할 수 없습니다.')
     unique(parts.map((p) => p.id))
     const asset: FacilityAsset = { id: identifier(a.id), name: str(a.name), kind: a.kind, parts }
-    if (a.catalogCategory === 'equipment' || a.catalogCategory === 'interior')
+    if (a.catalogCategory === 'equipment' || a.catalogCategory === 'interior' || a.catalogCategory === 'lighting')
       asset.catalogCategory = a.catalogCategory
     if (a.glb !== undefined) {
       const glb = record(a.glb)
@@ -319,6 +362,15 @@ const validateFacilityDocument = (
       if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
       glbCosts.set(asset, cost)
       asset.glb = { data: glb.data, size: point(glb.size, true), sourceName: str(glb.sourceName) }
+    }
+    if (a.light !== undefined || a.catalogCategory === 'lighting') {
+      const light = record(a.light)
+      if (!asset.glb || (light.kind !== 'spot' && light.kind !== 'line'))
+        throw new Error('GLB 조명 모델과 조명 종류를 확인하세요.')
+      asset.light = {
+        kind: light.kind,
+        temperature: integer(light.temperature, minLightTemperature, maxLightTemperature),
+      }
     }
     if (a.design !== undefined) {
       const d = record(a.design)
@@ -345,16 +397,18 @@ const validateFacilityDocument = (
       position: point(i.position),
       rotation: num(i.rotation),
     }
+    const asset = assets.get(instance.assetId)
+    if (!asset) throw new Error('배치된 시설의 모델이 없습니다.')
     if (i.scale !== undefined) {
       const scale = record(i.scale)
+      const { minimum, maximum } = facilityScaleLimits(asset.glb?.size)
       instance.scale = {
-        x: num(scale.x, 0.001, 1000),
-        y: num(scale.y, 0.001, 1000),
-        z: num(scale.z, 0.001, 1000),
+        x: num(scale.x, minimum.x, maximum.x),
+        y: num(scale.y, minimum.y, maximum.y),
+        z: num(scale.z, minimum.z, maximum.z),
       }
     }
-    if (!assets.has(instance.assetId)) throw new Error('배치된 시설의 모델이 없습니다.')
-    const doors = parseWallDoors(i.wallDoors, instance, assets.get(instance.assetId)!)
+    const doors = parseWallDoors(i.wallDoors, instance, asset)
     if (doors?.length) instance.wallDoors = doors
     if (i.wallOpacity !== undefined) instance.wallOpacity = num(i.wallOpacity, 0, 1)
     if (i.portId !== undefined) instance.portId = str(i.portId)
@@ -364,9 +418,24 @@ const validateFacilityDocument = (
       instance.portOffset = point(i.portOffset)
     }
     if (i.nodeId !== undefined) instance.nodeId = integer(i.nodeId, 0, 1e9)
+    if (i.cutawayRole !== undefined) {
+      if (i.cutawayRole !== 'wall' && i.cutawayRole !== 'ceiling' && i.cutawayRole !== 'independent')
+        throw new Error('구조물 분류를 확인하세요.')
+      instance.cutawayRole = i.cutawayRole
+    }
+    if (i.attachedTo !== undefined) instance.attachedTo = identifier(i.attachedTo)
     return instance
   })
   unique(result.instances.map((i) => i.id))
+  if (result.instances.some((instance) => instance.attachedTo)) {
+    const structures = new Set(result.instances
+      .filter((instance) => facilityCutawayRole(instance, assets.get(instance.assetId)))
+      .map((instance) => instance.id))
+    for (const instance of result.instances) {
+      if (instance.attachedTo && (structures.has(instance.id) || !structures.has(instance.attachedTo)))
+        delete instance.attachedTo
+    }
+  }
   if (
     result.instances.reduce(
       (sum, instance) => {

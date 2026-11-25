@@ -9,6 +9,7 @@ import type { FacilityAsset, FacilityPart } from '@bem/map3d'
 export const interiorModels = {
   wall: '벽',
   glass: '유리 칸막이',
+  ceiling: '천장',
   'stainless-pipe': '스테인리스 사각 파이프',
 } as const
 
@@ -49,6 +50,8 @@ export const createInteriorModel = (type: InteriorModel): FacilityAsset => {
 
   if (type === 'wall') {
     box('벽체', 0, 0, { x: width, y: 150, z: height }, wallColor, { wall: true })
+  } else if (type === 'ceiling') {
+    box('천장 패널', 0, 0, { x: width, y: width, z: 100 }, '#d3cbc0')
   } else if (type === 'doorway') {
     const openingWidth = 1040
     const openingHeight = 2160

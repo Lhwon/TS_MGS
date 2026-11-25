@@ -7,6 +7,7 @@
 export const floorMaterials = {
   concrete: { label: '콘크리트', color: '#9b9a94', repeatMm: 1000 },
   epoxy: { label: '에폭시', color: '#67867d', repeatMm: 1000 },
+  'showroom-epoxy': { label: '쇼룸 에폭시', color: '#c9c9c9', repeatMm: 4800 },
   tile: { label: '타일', color: '#c7c3b8', repeatMm: 600 },
   wood: { label: '목재', color: '#a77751', repeatMm: 1200 },
 } as const

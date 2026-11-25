@@ -3,6 +3,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import type { FacilityAsset, Point3 } from './index'
 import { decodeEmbeddedGlb } from './glbData'
+export { createFacilityLights, prepareFacilityEmitter, facilityEmitterMaterial, type FacilityEmitter } from './glbLights'
+export { selectFacilityLights } from './facilityLightBudget'
 
 /** 캐시 소유 모델의 공유 형상과 재질 및 텍스처 해제 */
 const disposeSource = (source: THREE.Object3D) => {
@@ -84,6 +86,17 @@ const parseSource = async (data: string) => {
   return root
 }
 
+/** 로드한 모델의 원본 치수를 지정한 단위에 맞는 밀리미터 값으로 환산 */
+export const glbModelSize = (model: THREE.Group, units: 'm' | 'mm' = 'm'): Point3 => {
+  const size = model.userData.nativeSize as Point3
+  const factor = units === 'm' ? 1000 : 1
+  return {
+    x: Math.max(1, size.x * factor),
+    y: Math.max(1, size.y * factor),
+    z: Math.max(1, size.z * factor),
+  }
+}
+
 /** 같은 GLB의 형상과 재질을 재사용하는 모델 캐시 */
 export class GlbModelCache {
   private sources = new Map<string, Promise<THREE.Group>>()
@@ -114,16 +127,8 @@ export class GlbModelCache {
   }
 
   /** 원본 단위 선택에 따른 기본 모델 치수 조회 */
-  measure = async (data: string, units: 'm' | 'mm' = 'm'): Promise<Point3> => {
-    const model = await this.load(data)
-    const size = model.userData.nativeSize as Point3
-    const factor = units === 'm' ? 1000 : 1
-    return {
-      x: Math.max(1, size.x * factor),
-      y: Math.max(1, size.y * factor),
-      z: Math.max(1, size.z * factor),
-    }
-  }
+  measure = async (data: string, units: 'm' | 'mm' = 'm'): Promise<Point3> =>
+    glbModelSize(await this.load(data), units)
 
   /** 비동기 로딩을 포함한 모든 소유 자원 해제 */
   dispose = () => {

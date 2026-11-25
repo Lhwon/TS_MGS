@@ -8,13 +8,22 @@
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { mdiCubeOutline, mdiFolderOpenOutline, mdiRestore } from '@mdi/js'
 import { useFacilityEditor } from '@/features/facility-editor/index.ts'
 import { useEditor } from '@/features/map-editor/index.ts'
+import { DrawingLayout } from '@/features/drawing-import/index.ts'
 import {
   mapGeometryKey,
   resolveFacilityInstance,
   MAX_GLB_BYTES,
+  facilityModelBounds,
   facilityModelSize,
+  facilityCutawayRole,
+  facilityScaleLimits,
+  facilityLight,
+  legacyFacilityLight,
+  minLightTemperature,
+  maxLightTemperature,
   createInteriorModel,
   floorMaterials,
   interiorModels,
@@ -23,16 +32,21 @@ import {
   wallBody,
   wallDoorLimits,
 } from '@/entities/facility/index.ts'
-import type { FacilityAsset, FloorArea, FloorMaterial, FloorPoint, Point3, WallDoor } from '@/entities/facility/index.ts'
+import type { FacilityAsset, FacilityCutawayRole, FacilityInstance, FacilityLight, FloorArea, FloorMaterial, FloorPoint, Point3, WallDoor } from '@/entities/facility/index.ts'
 import { createFacilityScene } from '@/widgets/facility-studio/lib/FacilityScene.ts'
-import { DEFAULT_LAYERS, type Layers } from '@/entities/map/index.ts'
-import { GlbModelCache } from '@bem/map3d/glb'
+import { defaultTransformSnap, snapToStep, transformSnapSteps, type TransformSnapStep } from '@/widgets/facility-studio/lib/transformSnap.ts'
+import { DEFAULT_LAYERS, type Layers, type MapLayout } from '@/entities/map/index.ts'
+import { GlbModelCache, glbModelSize } from '@bem/map3d/glb'
+import { createGlbImportPreview } from '@/widgets/facility-studio/lib/glbImportPreview.ts'
 import ModelDesigner from '@/widgets/facility-studio/ui/ModelDesigner.vue'
 import FloorAreaEditor from '@/widgets/facility-studio/ui/FloorAreaEditor.vue'
 import ModelCatalog from '@/widgets/facility-studio/ui/ModelCatalog.vue'
+import GlbLightFields from '@/widgets/facility-studio/ui/GlbLightFields.vue'
 import WallDoorEditor from '@/widgets/facility-studio/ui/WallDoorEditor.vue'
+import WallElevation from '@/widgets/facility-studio/ui/WallElevation.vue'
+import CeilingPlan from '@/widgets/facility-studio/ui/CeilingPlan.vue'
 
-const emit = defineEmits<{ draftDirty: [value: boolean] }>()
+const emit = defineEmits<{ draftDirty: [value: boolean]; layer: [key: 'grid', visible: boolean] }>()
 
 const props = defineProps<{
   layers?: Layers
@@ -40,7 +54,40 @@ const props = defineProps<{
 
 const placementPort = ref('')
 const glbInput = ref<HTMLInputElement>()
+const glbImportOpen = ref(false)
+const glbFile = shallowRef<File>()
+const glbDraft = shallowRef<{
+  file: File
+  data: string
+  model: Awaited<ReturnType<GlbModelCache['load']>>
+}>()
+const glbPreviewHost = ref<HTMLElement>()
+const glbPreviewLoading = ref(false)
+const glbPreviewError = ref('')
+let glbPreview: ReturnType<typeof createGlbImportPreview> | undefined
+const glbName = ref('')
 const glbUnits = ref<'m' | 'mm'>('m')
+const glbCategory = ref<NonNullable<FacilityAsset['catalogCategory']>>('equipment')
+const lightEditId = ref('')
+const lightKind = ref<FacilityLight['kind']>('spot')
+const lightTemperature = ref('4000')
+const lightSettings = computed<FacilityLight>(() => ({
+  kind: lightKind.value, temperature: Number(lightTemperature.value),
+}))
+const lightError = computed(() => {
+  const { temperature } = lightSettings.value
+  return Number.isInteger(temperature) && temperature >= minLightTemperature && temperature <= maxLightTemperature
+    ? '' : `색온도는 ${minLightTemperature}~${maxLightTemperature} K의 정수로 입력하세요.`
+})
+const glbImportError = ref('')
+const glbDimensions = computed(() => glbDraft.value && glbModelSize(glbDraft.value.model, glbUnits.value))
+const glbDimensionLabel = computed(() => glbDimensions.value &&
+  [glbDimensions.value.x, glbDimensions.value.y, glbDimensions.value.z]
+    .map((value) => value.toLocaleString('ko-KR', { maximumFractionDigits: 3 })).join(' × '),
+)
+const catalogDragType = 'application/x-ts-mgs-catalog-model'
+const draggingModelId = ref('')
+const catalogDropTarget = ref(false)
 const catalogOpen = ref(false)
 const catalogCategory = ref<NonNullable<FacilityAsset['catalogCategory']>>('equipment')
 const catalogLoading = ref(false)
@@ -50,20 +97,65 @@ const studio = useFacilityEditor(),
   map = useEditor()
 
 const host = ref<HTMLElement>()
+const workspace = ref<'equipment' | 'building'>('equipment')
+const buildingView = ref<'structure' | 'wall' | 'ceiling'>('structure')
+const wallHostId = ref('')
+const ceilingHostId = ref('')
+const ceilingStart = shallowRef<FloorPoint>()
+const ceilingHeight = ref(4000)
+const mountAsset = shallowRef<FacilityAsset>()
 
 const selectedModel = computed(() =>
   studio.document.assets.find((asset) => asset.id === studio.selected?.assetId),
 )
 
-// 모델 카탈로그
+const cutawayRoles = [
+  { title: '자동', value: 'auto' },
+  { title: '벽', value: 'wall' },
+  { title: '천장', value: 'ceiling' },
+  { title: '일반 객체', value: 'independent' },
+]
+const attachmentTargets = computed(() => {
+  const options = [{ title: '부착 안 함', value: '' }]
+  for (const { instance, role } of structures.value) {
+    if (instance.id === studio.selectedId) continue
+    const { x, y } = resolveFacilityInstance(instance, map.document.ports).position
+    options.push({
+      value: instance.id,
+      title: `${role === 'wall' ? '벽' : '천장'} · ${instance.name} (${Math.round(x)}, ${Math.round(y)} mm)`,
+    })
+  }
+  return options
+})
+
+const builtInModels = computed(() =>
+  new Map([...interiorCatalog, ...(defaultCatalog.value ?? [])].map((asset) => [asset.id, asset])),
+)
 const catalogAssets = computed(() => {
-  const entries = new Map([...interiorCatalog, ...(defaultCatalog.value ?? [])].map((asset) => [asset.id, asset]))
+  const entries = new Map(builtInModels.value)
 
   for (const asset of studio.document.assets) {
     entries.set(asset.id, asset)
   }
 
   return [...entries.values()]
+})
+const registeredCatalogIds = computed(() => new Set(
+  studio.document.assets.filter((asset) => !builtInModels.value.has(asset.id)).map((asset) => asset.id),
+))
+const placedCatalogIds = computed(() => new Set(studio.document.instances.map((instance) => instance.assetId)))
+const editingLight = computed(() => studio.document.assets.find((asset) => asset.id === lightEditId.value))
+
+/** 대소문자와 유니코드 표기 차이를 정규화한 모델명 중복 비교 */
+const normalizeModelName = (name: string) => name.trim().normalize('NFC').toLowerCase()
+
+const glbNameError = computed(() => {
+  const name = glbName.value.trim()
+  if (!name) return '모델 이름을 입력하세요.'
+  if (name.length > 300) return '모델 이름은 300자까지 입력할 수 있습니다.'
+  if (catalogAssets.value.some((asset) => normalizeModelName(asset.name) === normalizeModelName(name)))
+    return '같은 이름의 모델이 이미 있습니다.'
+  return ''
 })
 
 const doorEditor = ref<HTMLElement>()
@@ -75,23 +167,27 @@ const wallPart = computed(() => selectedModel.value?.parts.find((part) => part.w
 const wallTransparency = computed(() =>
   Math.round(100 * (1 - (studio.selected?.wallOpacity ?? wallPart.value?.opacity ?? 1))),
 )
-const wallStart = shallowRef<{ x: number; y: number }>()
+const wallStart = shallowRef<FloorPoint>()
+const wallPreset = createInteriorModel('wall')
+const ceilingPreset = createInteriorModel('ceiling')
+const wallSize = reactive({ thickness: 150, height: 2600 })
+const layoutOpen = ref(false)
 const floorPlanVisible = ref<boolean>()
 const showFloorPlan = computed(() => floorPlanVisible.value ?? !!map.document.layout?.visible)
+const showGrid = computed(() => props.layers?.grid ?? DEFAULT_LAYERS.grid)
+const snapStep = ref<TransformSnapStep>(defaultTransformSnap)
 const sizeFields = [
   { axis: 'x', label: '가로' },
   { axis: 'y', label: '세로' },
   { axis: 'z', label: '높이' },
 ] as const
 type SizeAxis = (typeof sizeFields)[number]['axis']
-const minScale = 0.001
-const maxScale = 1000
 /** 표시 정밀도를 정리하면서 작은 치수의 유효 숫자를 유지 */
 const displaySize = (size: number) => Number(size.toPrecision(12))
 
-const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'port' | 'door' | 'window' | 'measure'>('select')
+const tool = ref<'select' | 'place' | 'wall' | 'floor' | 'ceiling' | 'port' | 'door' | 'window' | 'measure'>('select')
 const sceneTool = computed(() => {
-  if (tool.value === 'wall' || tool.value === 'floor') return 'place'
+  if (tool.value === 'floor' || tool.value === 'ceiling') return 'place'
   if (tool.value === 'door' || tool.value === 'window') return 'attach'
   return tool.value
 })
@@ -137,6 +233,8 @@ const selectInstances = (ids: string[], operation: 'replace' | 'add' | 'toggle' 
   }
   studio.selectedIds = [...next]
   tool.value = 'select'
+  if (workspace.value === 'building' && buildingView.value === 'structure' && selectedWall.value && selectedStructureRole.value === 'wall')
+    switchBuildingView('wall')
 }
 
 const error = ref('')
@@ -156,6 +254,8 @@ const designerOpen = ref(false)
 const editingAsset = shallowRef<FacilityAsset | null>(null)
 const pose = reactive({
   name: '',
+  cutawayRole: 'auto' as FacilityCutawayRole | 'auto',
+  attachedTo: '',
   x: 0,
   y: 0,
   z: 0,
@@ -165,12 +265,25 @@ const pose = reactive({
   portId: '',
   nodeId: '',
 })
+const posedCutawayRole = computed(() => pose.cutawayRole === 'auto' ? undefined : pose.cutawayRole)
+const selectedStructure = computed(() =>
+  studio.selected && facilityCutawayRole(
+    { ...studio.selected, cutawayRole: posedCutawayRole.value },
+    selectedModel.value,
+  ),
+)
+const setCutawayRole = (role: string) => {
+  if (role === 'auto' || role === 'wall' || role === 'ceiling' || role === 'independent')
+    pose.cutawayRole = role
+}
 
 let scene: ReturnType<typeof createFacilityScene> | undefined
 
 /** 지도 편집 위치를 보존한 채 현장 눈높이 미리보기로 전환 */
 const toggleSitePreview = () => {
   if (!scene) return
+  if (tool.value === 'wall' || tool.value === 'ceiling') tool.value = 'select'
+  layoutOpen.value = false
   sitePreview.value = !sitePreview.value
   scene.setSitePreview(sitePreview.value)
 }
@@ -192,15 +305,27 @@ const attempt = (action: () => void) => {
   }
 }
 
+/** 기존 2D 맵의 객체를 유지하면서 3D에서 추적할 도면 배경 적용 */
+const applyDrawingLayout = (layout: MapLayout) => {
+  if (attempt(() => map.setLayout(layout))) {
+    floorPlanVisible.value = true
+    void nextTick(() => scene?.fit(true))
+  }
+}
+
 /** 현재 벽의 상대 위치에 문이나 창을 부착하고 기존 개구부의 치수를 변경 */
 const applyWallDoors = (wallDoors: WallDoor[], focus: string) => {
-  if (!studio.selected || !selectedWall.value) return
-  if (attempt(() => studio.updateInstance(studio.selected!.id, { wallDoors })))
-    focusedOpening.value = focus
+  const id = wallFrame.value?.instance.id
+  if (!id || buildingLocked.value) return
+  if (attempt(() => studio.updateInstance(id, { wallDoors }))) focusWallOpening(focus)
 }
 
 /** 실측 스케일을 사용하는 지도에서 부착이나 측정을 시작 */
 const startSiteTool = (mode: 'door' | 'window' | 'measure') => {
+  if (mode !== 'measure' && buildingView.value === 'wall') {
+    addOpeningToWall(mode)
+    return
+  }
   attempt(() => {
     if (map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
     if (mode === 'measure') measurement.value = []
@@ -209,7 +334,7 @@ const startSiteTool = (mode: 'door' | 'window' | 'measure') => {
 }
 
 /** 벽에서 찍은 점을 로컬 치수로 환산하고 일치하는 높이에 개구부를 부착 */
-const attachOpening = (id: string | undefined, point: Point3) => {
+const attachOpening = (id: string | undefined, point: Point3, free: boolean) => {
   const window = tool.value === 'window'
   const instance = studio.document.instances.find((item) => item.id === id)
   const body = wallBody(studio.document.assets.find((asset) => asset.id === instance?.assetId))
@@ -229,17 +354,20 @@ const attachOpening = (id: string | undefined, point: Point3) => {
     const openingWidth = Math.min(width, window ? 1200 : 1040)
     const openingHeight = Math.min(height, window ? 1000 : 2160)
     const limit = (width - openingWidth) / 2
+    const offset = free ? clickedX : snapToStep(clickedX, snapStep.value)
+    const sill = clickedHeight - openingHeight / 2
     const opening: WallDoor = {
       id: crypto.randomUUID(),
-      offset: Math.max(-limit, Math.min(limit, Math.round(clickedX))),
+      offset: Math.max(-limit, Math.min(limit, offset)),
       width: openingWidth,
       height: openingHeight,
       ...(window
-        ? { kind: 'window', sill: Math.max(0, Math.min(height - openingHeight, Math.round(clickedHeight - openingHeight / 2))) }
+        ? { kind: 'window', sill: Math.max(0, Math.min(height - openingHeight, free ? sill : snapToStep(sill, snapStep.value))) }
         : {}),
     }
     studio.updateInstance(instance.id, { wallDoors: [...(instance.wallDoors ?? []), opening] })
     studio.selectedId = instance.id
+    if (workspace.value === 'building') switchBuildingView('wall')
     focusedOpening.value = opening.id
     studio.message = window ? '창문을 붙였습니다.' : '문을 붙였습니다.'
   })
@@ -277,6 +405,8 @@ watch(
       attempt(() =>
         Object.assign(pose, {
           name: instance.name,
+          cutawayRole: instance.cutawayRole ?? 'auto',
+          attachedTo: instance.attachedTo ?? '',
           ...resolveFacilityInstance(instance, map.document.ports).position,
           rotation: instance.rotation,
           carrierRotation: instance.carrierRotation ?? '',
@@ -298,6 +428,7 @@ const scaleFromSize = () => {
   const size = baseSize.value
   if (!size || sizeFields.some(({ axis }) => size[axis] <= 0))
     throw new Error('모델의 기준 치수를 확인하세요.')
+  const { minimum, maximum } = facilityScaleLimits(selectedModel.value?.glb?.size)
   const scale = { x: 1, y: 1, z: 1 }
   for (const { axis, label } of sizeFields) {
     const value = Number(pose.size[axis])
@@ -306,11 +437,13 @@ const scaleFromSize = () => {
     const doorMinimum = minimumDoorSize(axis)
     if (doorMinimum > 0 && ratio * size[axis] < doorMinimum - 0.000001)
       throw new Error(`부착한 문과 창문을 유지하려면 벽 ${label} 치수를 ${doorMinimum} mm 이상으로 설정하세요.`)
-    if (!Number.isFinite(ratio) || ratio < minScale * (1 - 1e-10) || ratio > maxScale * (1 + 1e-10))
+    const min = minimum[axis]
+    const max = maximum[axis]
+    if (!Number.isFinite(ratio) || ratio < min * (1 - 1e-10) || ratio > max * (1 + 1e-10))
       throw new Error(
-        `${label}는 ${displaySize(size[axis] * minScale)}~${displaySize(size[axis] * maxScale)} mm로 입력하세요.`,
+        `${label}는 ${displaySize(size[axis] * min)}~${displaySize(size[axis] * max)} mm로 입력하세요.`,
       )
-    scale[axis] = Math.max(minScale, Math.min(maxScale, ratio))
+    scale[axis] = Math.max(min, Math.min(max, ratio))
   }
   return scale
 }
@@ -428,16 +561,44 @@ const addFloorBoundaryPoint = (draft: NonNullable<typeof floorDraft.value>, poin
   floorDraft.value = { ...draft, points: [...draft.points, point] }
 }
 
-/** 시작점과 끝점에서 벽 배치의 중심과 방향 및 가로 배율 계산 */
-const placeWallBetweenPoints = (start: FloorPoint, end: FloorPoint, model: FacilityAsset) => {
+/** 기준 도면을 위에서 보며 벽의 중심선을 입력하는 전용 도구 시작 */
+const startWall = () => {
+  attempt(() => {
+    if (map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
+    if (mismatch.value) throw new Error('먼저 3D 설계를 현재 2D 맵에 연결하세요.')
+    catalogOpen.value = false
+    studio.selectedId = null
+    floorId.value = ''
+    wallStart.value = undefined
+    if (map.document.layout) floorPlanVisible.value = true
+    tool.value = 'wall'
+    void nextTick(() => scene?.fit(true))
+  })
+}
+
+/**
+ * 두 끝점과 실측 치수로 편집 가능한 벽체 배치
+ * 벽체 등록과 배치를 하나의 편집 이력으로 기록하고 개구부와 투명도 편집 지원
+ *
+ * @param start 벽 중심선의 시작점
+ * @param end 벽 중심선의 끝점
+ */
+const placeWallBetweenPoints = (start: FloorPoint, end: FloorPoint) => {
+  if (mismatch.value) throw new Error('먼저 3D 설계를 현재 2D 맵에 연결하세요.')
+  const model = studio.document.assets.find((asset) => asset.id === wallPreset.id) ?? wallPreset
+  const body = wallBody(model)
+  if (!body) throw new Error('기본 벽체의 형상이 변경되었습니다. 벽체 부품을 확인하세요.')
+  const { thickness, height } = wallSize
+  if (!Number.isFinite(thickness) || thickness <= 0 || !Number.isFinite(height) || height <= 0)
+    throw new Error('벽 두께와 높이를 0보다 큰 값으로 입력하세요.')
   const dx = end.x - start.x
   const dy = end.y - start.y
   const length = Math.hypot(dx, dy)
   if (length < 10) throw new Error('시작점과 다른 위치에서 벽을 끝내세요.')
   studio.place((start.x + end.x) / 2, (start.y + end.y) / 2, undefined, {
     rotation: (Math.atan2(dy, dx) * 180) / Math.PI,
-    scale: { x: length / facilityModelSize(model).x, y: 1, z: 1 },
-  })
+    scale: { x: length / body.size.x, y: thickness / body.size.y, z: height / body.size.z },
+  }, { asset: model, mapRef: reference.value })
 }
 
 /** 활성 도구에 따라 바닥 클릭을 경계 입력이나 벽 및 모델 배치로 전달 */
@@ -449,19 +610,23 @@ const handleFloorClick = (worldX: number, worldY: number) => {
       addFloorBoundaryPoint(draft, point)
       return
     }
+    if (tool.value === 'ceiling') {
+      if (ceilingStart.value) placeCeilingBetweenPoints(ceilingStart.value, point)
+      else ceilingStart.value = point
+      return
+    }
     if (tool.value === 'wall') {
       const start = wallStart.value
       if (!start) {
         wallStart.value = point
         return
       }
-      const model = studio.asset
-      if (!model) return
-      placeWallBetweenPoints(start, point, model)
+      placeWallBetweenPoints(start, point)
       wallStart.value = undefined
-    } else {
-      studio.place(worldX, worldY)
+      studio.message = '벽을 생성했습니다.'
+      return
     }
+    studio.place(worldX, worldY)
     tool.value = 'select'
   })
 }
@@ -477,12 +642,15 @@ const setWallTransparency = (event: Event) => {
 /**
  * 기준 지도 노드의 중심 좌표에 선택 모델을 추가하고 시점을 맞추는 중앙 배치
  */
-const placeCenter = () => {
+const placeCenter = (event: MouseEvent) => {
   attempt(() => {
     const nodes = map.document.nodes
     const x = nodes.length ? nodes.reduce((sum, n) => sum + n.x, 0) / nodes.length : 0
     const y = nodes.length ? nodes.reduce((sum, n) => sum + n.y, 0) / nodes.length : 0
-    studio.place(Math.round(x / 10) * 10, Math.round(y / 10) * 10)
+    studio.place(
+      event.altKey ? x : snapToStep(x, snapStep.value),
+      event.altKey ? y : snapToStep(y, snapStep.value),
+    )
     tool.value = 'select'
     requestAnimationFrame(() => scene?.fit())
   })
@@ -517,6 +685,8 @@ const applyPose = () => {
       studio.selectedId!,
       {
         name: pose.name,
+        cutawayRole: posedCutawayRole.value,
+        attachedTo: selectedStructure.value ? undefined : pose.attachedTo || undefined,
         position: { x: Number(pose.x), y: Number(pose.y), z: Number(pose.z) },
         rotation: Number(pose.rotation),
         carrierRotation: pose.carrierRotation === '' ? undefined : Number(pose.carrierRotation),
@@ -556,55 +726,443 @@ const bind = () => {
     studio.bindMap(reference.value)
 }
 
-/** 로컬 GLB의 내장 형상과 원본 단위를 검증한 라이브러리 등록 */
-const importGlb = async (event: Event) => {
+/** 새 파일과 모델명을 지정하는 등록 팝업 초기화 */
+const openGlbImport = () => {
+  glbFile.value = undefined
+  glbName.value = ''
+  glbImportError.value = ''
+  glbCategory.value = catalogCategory.value
+  lightKind.value = 'spot'
+  lightTemperature.value = '4000'
+  glbImportOpen.value = true
+}
+
+/** 선택한 GLB의 크기와 확장자를 확인하고 파일명을 등록 이름으로 제안 */
+const handleGlbFile = (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const previousFileName = glbFile.value?.name.replace(/\.glb$/i, '')
+  glbFile.value = undefined
+  glbImportError.value = ''
+  if (!file.name.toLowerCase().endsWith('.glb') || file.size > MAX_GLB_BYTES) {
+    glbImportError.value = '단일 GLB 파일은 12MB 이하여야 합니다.'
+    return
+  }
+  glbFile.value = file
+  const preset = legacyFacilityLight(file.name)
+  if (preset) {
+    glbCategory.value = 'lighting'
+    lightKind.value = preset.kind
+    lightTemperature.value = String(preset.temperature)
+  }
+  if (!glbName.value.trim() || glbName.value === previousFileName)
+    glbName.value = file.name.replace(/\.glb$/i, '')
+}
 
-  if (!file || studio.busy) return
+/** 선택한 GLB를 한 번만 읽고 같은 결과를 미리보기와 등록에 사용 */
+watch([glbFile, glbImportOpen], async ([file, open], _, cleanup) => {
+  glbDraft.value = undefined
+  glbPreviewError.value = ''
+  glbPreviewLoading.value = false
+  if (!file || !open) return
 
   const cache = new GlbModelCache()
-
-  studio.busy = true
+  const reader = new FileReader()
+  let cancelled = false
+  glbPreviewLoading.value = true
+  cleanup(() => {
+    cancelled = true
+    cache.dispose()
+    if (reader.readyState === FileReader.LOADING) reader.abort()
+  })
 
   try {
-    if (!file.name.toLowerCase().endsWith('.glb') || file.size > MAX_GLB_BYTES) throw new Error('단일 GLB 파일은 12MB 이하여야 합니다.')
-
     const data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
       reader.onerror = () => reject(new Error('GLB 파일을 읽을 수 없습니다.'))
+      reader.onabort = () => reject(new Error('GLB 파일 읽기를 취소했습니다.'))
       reader.readAsDataURL(file)
     })
+    if (cancelled) return
+    const model = await cache.load(data)
+    if (!cancelled) glbDraft.value = { file, data, model }
+  } catch (cause) {
+    if (!cancelled) glbImportError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (!cancelled) glbPreviewLoading.value = false
+  }
+})
 
-    const size = await cache.measure(data, glbUnits.value)
+/** 팝업 캔버스와 GLB 미리보기의 생성과 정리를 연결 */
+watch([glbPreviewHost, glbDraft], ([element, draft], _, cleanup) => {
+  if (!element || !draft) return
+  try {
+    const preview = createGlbImportPreview(element, draft.model, map.colorMode === 'dark')
+    glbPreview = preview
+    cleanup(() => {
+      preview.dispose()
+      glbPreview = undefined
+    })
+  } catch {
+    glbPreviewError.value = '3D 미리보기를 표시할 수 없습니다.'
+  }
+}, { flush: 'post' })
+
+/** 검증된 GLB에 UUID를 발급하고 지정한 치수와 이름으로 등록 */
+const registerGlb = () => {
+  const file = glbFile.value
+  const draft = glbDraft.value
+  const size = glbDimensions.value
+  if (!file || draft?.file !== file || !size || studio.busy || catalogLoading.value || glbNameError.value) return
+  if (glbCategory.value === 'lighting' && lightError.value) return
+
+  glbImportError.value = ''
+  studio.busy = true
+  try {
 
     studio.setAsset(
       {
         id: crypto.randomUUID(),
-        name: file.name.replace(/\.glb$/i, ''),
+        name: glbName.value.trim(),
         kind: 'equipment',
         parts: [],
-        catalogCategory: catalogCategory.value,
-        glb: { data, size, sourceName: file.name },
+        catalogCategory: glbCategory.value,
+        glb: { data: draft.data, size, sourceName: file.name },
+        ...(glbCategory.value === 'lighting' ? { light: lightSettings.value } : {}),
       },
       reference.value,
     )
 
     error.value = ''
-    studio.message = 'GLB 모델을 가져왔습니다. 바닥이나 포트에 배치하고 크기를 조절하세요.'
+    catalogCategory.value = glbCategory.value
+    glbImportOpen.value = false
+    glbFile.value = undefined
+    studio.message = 'GLB 모델을 등록했습니다. 카탈로그에서 맵으로 끌어다 놓으세요.'
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
+    glbImportError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
-    cache.dispose()
     studio.busy = false
-    input.value = ''
   }
 }
 
-/** 기본 모델을 한 번만 조회하고 팝업에서 선택할 모델을 표시 */
+const openLightSettings = (asset: FacilityAsset) => {
+  const light = facilityLight(asset)
+  if (!light) return
+  lightKind.value = light.kind
+  lightTemperature.value = String(light.temperature)
+  lightEditId.value = asset.id
+}
+
+const saveLightSettings = () => {
+  const asset = editingLight.value
+  if (!asset || lightError.value) return
+  if (attempt(() => studio.setAsset({ ...asset, catalogCategory: 'lighting', light: lightSettings.value }, reference.value)))
+    lightEditId.value = ''
+}
+
+const assetById = computed(() => new Map(studio.document.assets.map((asset) => [asset.id, asset])))
+const structures = computed(() => studio.document.instances.flatMap((instance) => {
+  const asset = assetById.value.get(instance.assetId)
+  if (!asset) return []
+  const role = facilityCutawayRole(instance, asset)
+  return role ? [{ instance, asset, role }] : []
+}))
+const wallTargets = computed(() => structures.value.filter(({ role, asset }) => role === 'wall' && wallBody(asset)))
+const ceilingTargets = computed(() => structures.value.filter(({ role }) => role === 'ceiling'))
+const structureIds = computed(() => new Set(structures.value.map(({ instance }) => instance.id)))
+const wallMounts = computed(() => {
+  const frame = wallFrame.value
+  if (!frame) return []
+  return studio.document.instances.flatMap((instance) => {
+    if (instance.attachedTo !== frame.instance.id) return []
+    const asset = assetById.value.get(instance.assetId)
+    if (!asset) return []
+    const placed = resolveFacilityInstance(instance, map.document.ports)
+    const bounds = facilityModelBounds(asset)
+    const sx = placed.scale?.x ?? 1
+    const sy = placed.scale?.y ?? 1
+    const sz = placed.scale?.z ?? 1
+    const assetCenter = transformPlanPoint({
+      x: (bounds.min.x + bounds.max.x) * sx / 2, y: (bounds.min.y + bounds.max.y) * sy / 2,
+    }, placed.rotation - frame.instance.rotation)
+    const point = transformPlanPoint({
+      x: placed.position.x - frame.instance.position.x, y: placed.position.y - frame.instance.position.y,
+    }, -frame.instance.rotation)
+    return [{
+      id: placed.id, name: placed.name, x: point.x - frame.center.x + assetCenter.x,
+      y: placed.position.z - frame.instance.position.z - frame.center.z + (bounds.min.z + bounds.max.z) * sz / 2,
+    }]
+  })
+})
+const independentInstances = computed(() => studio.document.instances.filter(({ id }) => !structureIds.value.has(id)))
+const selectedStructureRole = computed(() => studio.selected && facilityCutawayRole(studio.selected, selectedModel.value))
+const listedInstances = computed(() => {
+  if (workspace.value === 'equipment') return studio.document.instances
+  if (buildingView.value === 'wall' || buildingView.value === 'ceiling') {
+    const host = buildingView.value === 'wall' ? wallHostId.value : ceilingHostId.value
+    return studio.document.instances.filter((instance) => instance.id === host || instance.attachedTo === host)
+  }
+  return studio.document.instances.filter(({ id, attachedTo }) =>
+    structureIds.value.has(id) || !!attachedTo || selectedIds.value.has(id),
+  )
+})
+const wallFrame = computed(() => {
+  const target = wallTargets.value.find(({ instance }) => instance.id === wallHostId.value)
+  if (!target) return
+  const body = wallBody(target.asset)!
+  const instance = resolveFacilityInstance(target.instance, map.document.ports)
+  const sx = instance.scale?.x ?? 1
+  const sy = instance.scale?.y ?? 1
+  const sz = instance.scale?.z ?? 1
+  return {
+    instance, width: body.size.x * sx, height: body.size.z * sz,
+    center: { x: body.position.x * sx, y: body.position.y * sy, z: (body.position.z - body.size.z / 2) * sz },
+    depth: body.size.y * sy,
+  }
+})
+const ceilingFrame = computed(() => {
+  const target = ceilingTargets.value.find(({ instance }) => instance.id === ceilingHostId.value)
+  if (!target) return
+  const bounds = facilityModelBounds(target.asset)
+  if (bounds.isEmpty()) return
+  const instance = resolveFacilityInstance(target.instance, map.document.ports)
+  const sx = instance.scale?.x ?? 1
+  const sy = instance.scale?.y ?? 1
+  const sz = instance.scale?.z ?? 1
+  const width = (bounds.max.x - bounds.min.x) * sx
+  const depth = (bounds.max.y - bounds.min.y) * sy
+  if (width <= 0 || depth <= 0) return
+  return {
+    instance, width, depth,
+    center: { x: (bounds.min.x + bounds.max.x) * sx / 2, y: (bounds.min.y + bounds.max.y) * sy / 2 },
+    underside: instance.position.z + bounds.min.z * sz,
+  }
+})
+const ceilingFixtures = computed(() => {
+  const frame = ceilingFrame.value
+  if (!frame) return []
+  return studio.document.instances.flatMap((fixture) => {
+    if (fixture.attachedTo !== frame.instance.id) return []
+    const asset = assetById.value.get(fixture.assetId)
+    if (!asset) return []
+    const placed = resolveFacilityInstance(fixture, map.document.ports)
+    const bounds = facilityModelBounds(asset)
+    const size = facilityModelSize(asset)
+    const rotation = placed.rotation - frame.instance.rotation
+    const assetCenter = transformPlanPoint({
+      x: (bounds.min.x + bounds.max.x) * (placed.scale?.x ?? 1) / 2,
+      y: (bounds.min.y + bounds.max.y) * (placed.scale?.y ?? 1) / 2,
+    }, rotation)
+    const local = transformPlanPoint({
+      x: placed.position.x - frame.instance.position.x,
+      y: placed.position.y - frame.instance.position.y,
+    }, -frame.instance.rotation)
+    return [{
+      id: fixture.id, name: fixture.name, x: local.x - frame.center.x + assetCenter.x, y: local.y - frame.center.y + assetCenter.y,
+      width: size.x * (fixture.scale?.x ?? 1), depth: size.y * (fixture.scale?.y ?? 1),
+      rotation,
+    }]
+  })
+})
+const buildingLocked = computed(() => studio.busy || mismatch.value)
+const showScene = computed(() => sitePreview.value || workspace.value === 'equipment' || buildingView.value === 'structure')
+const mounting = computed(() => workspace.value === 'building' && buildingView.value !== 'structure')
+const canAttachSelection = computed(() => studio.selectedIds.length > 0 &&
+  studio.selectedIds.every((id) => !structureIds.value.has(id)))
+
+function transformPlanPoint({ x, y }: FloorPoint, rotation: number): FloorPoint {
+  const angle = rotation * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  return { x: x * cos - y * sin, y: x * sin + y * cos }
+}
+
+function localToMap(instance: FacilityInstance, point: FloorPoint): FloorPoint {
+  const rotated = transformPlanPoint(point, instance.rotation)
+  return { x: instance.position.x + rotated.x, y: instance.position.y + rotated.y }
+}
+
+function switchWorkspace(value: typeof workspace.value) {
+  if (workspace.value === value) return
+  if (sitePreview.value) toggleSitePreview()
+  workspace.value = value
+  switchBuildingView('structure')
+  if (value === 'equipment') void nextTick(() => scene?.fit())
+}
+
+function switchBuildingView(view: typeof buildingView.value) {
+  buildingView.value = view
+  catalogOpen.value = false
+  mountAsset.value = undefined
+  endCatalogDrag()
+  layoutOpen.value = false
+  tool.value = 'select'
+  if (view === 'structure') {
+    if (workspace.value === 'building') void nextTick(() => scene?.fit(true))
+  } else if (view === 'wall') {
+    const preferred = selectedStructureRole.value === 'wall' ? studio.selectedId : studio.selected?.attachedTo
+    openWall(wallTargets.value.find(({ instance }) => instance.id === preferred)?.instance.id ||
+      wallTargets.value.find(({ instance }) => instance.id === wallHostId.value)?.instance.id ||
+      wallTargets.value[0]?.instance.id || '')
+  } else {
+    const preferred = selectedStructureRole.value === 'ceiling' ? studio.selectedId : studio.selected?.attachedTo
+    openCeiling(ceilingTargets.value.find(({ instance }) => instance.id === preferred)?.instance.id ||
+      ceilingTargets.value.find(({ instance }) => instance.id === ceilingHostId.value)?.instance.id ||
+      ceilingTargets.value[0]?.instance.id || '')
+  }
+}
+
+function openWall(id: string) {
+  wallHostId.value = id
+  studio.selectedId = id || null
+  focusedOpening.value = ''
+}
+
+function openCeiling(id: string) {
+  ceilingHostId.value = id
+  studio.selectedId = id || null
+}
+
+const markAsWall = () => {
+  if (!studio.selected || buildingLocked.value) return
+  attempt(() => studio.updateInstance(studio.selected!.id, { cutawayRole: 'wall', attachedTo: undefined }))
+}
+
+const pickExistingObject = (id: string) => {
+  if (id) selectInstances([id], 'replace')
+}
+
+const attachSelected = (target: string) => {
+  if (!canAttachSelection.value || buildingLocked.value) return
+  if (attempt(() => studio.attachInstances(studio.selectedIds, target || undefined)))
+    studio.message = target ? '선택한 객체를 구조물에 연결했습니다.' : '선택한 객체의 연결을 해제했습니다.'
+}
+
+const startCeiling = () => {
+  attempt(() => {
+    if (map.document.units !== 'mm' || mismatch.value) throw new Error('실측 축척이 있는 기준 맵이 필요합니다.')
+    studio.selectedId = null
+    floorId.value = ''
+    ceilingStart.value = undefined
+    tool.value = 'ceiling'
+    void nextTick(() => scene?.fit(true))
+  })
+}
+
+const placeCeilingBetweenPoints = (start: FloorPoint, end: FloorPoint) => {
+  const width = Math.abs(end.x - start.x)
+  const depth = Math.abs(end.y - start.y)
+  if (Math.min(width, depth) < 10) throw new Error('천장 모서리를 서로 다른 위치에 지정하세요.')
+  if (!Number.isFinite(ceilingHeight.value) || ceilingHeight.value <= 0)
+    throw new Error('천장 높이를 0보다 큰 값으로 입력하세요.')
+  const asset = studio.document.assets.find(({ id }) => id === ceilingPreset.id) ?? ceilingPreset
+  const size = facilityModelSize(asset)
+  studio.place((start.x + end.x) / 2, (start.y + end.y) / 2, undefined, {
+    z: ceilingHeight.value, scale: { x: width / size.x, y: depth / size.y, z: 1 },
+  }, { asset, mapRef: reference.value })
+  studio.message = '천장 패널을 추가했습니다.'
+  tool.value = 'select'
+}
+
+const addOpeningToWall = (kind: 'door' | 'window') => {
+  const frame = wallFrame.value
+  if (!frame || buildingLocked.value) return
+  const doors = frame.instance.wallDoors ?? []
+  const window = kind === 'window'
+  attempt(() => {
+    const { width, height } = frame
+    let best = { left: -width / 2, width: 0 }
+    let left = -width / 2
+    for (const door of doors) {
+      const gap = door.offset - door.width / 2 - left
+      if (gap > best.width) best = { left, width: gap }
+      left = door.offset + door.width / 2
+    }
+    const gap = width / 2 - left
+    if (gap > best.width) best = { left, width: gap }
+    if (best.width < 100 || height < 200) throw new Error('벽에 문이나 창문을 추가할 공간이 없습니다.')
+    const openingWidth = Math.min(best.width, window ? 1200 : 1040)
+    const openingHeight = Math.min(height, window ? 1000 : 2160)
+    const center = snapToStep(best.left + best.width / 2, snapStep.value)
+    const offset = Math.max(best.left + openingWidth / 2, Math.min(best.left + best.width - openingWidth / 2, center))
+    const opening: WallDoor = {
+      id: crypto.randomUUID(), offset, width: openingWidth, height: openingHeight,
+      ...(window ? { kind: 'window', sill: Math.min(900, height - openingHeight) } : {}),
+    }
+    studio.updateInstance(frame.instance.id, { wallDoors: [...doors, opening] })
+    focusWallOpening(opening.id)
+  })
+}
+
+function focusWallOpening(id: string) {
+  if (!wallFrame.value) return
+  studio.selectedId = wallFrame.value.instance.id
+  focusedOpening.value = id
+}
+
+const placeMountedAsset = (asset: FacilityAsset, point: FloorPoint) => {
+  if (buildingLocked.value) return
+  attempt(() => {
+    validateCatalogPlacement(asset)
+    const roof = buildingView.value === 'ceiling' ? ceilingFrame.value : undefined
+    const wall = buildingView.value === 'wall' ? wallFrame.value : undefined
+    const frame = roof ?? wall
+    if (!frame) throw new Error('부착할 벽이나 천장을 먼저 선택하세요.')
+    const bounds = facilityModelBounds(asset)
+    if (bounds.isEmpty()) throw new Error('이 모델의 배치 치수를 확인하세요.')
+    const position = localToMap(frame.instance, {
+      x: frame.center.x + point.x - (bounds.min.x + bounds.max.x) / 2,
+      y: wall ? wall.center.y - wall.depth / 2 - bounds.max.y :
+        frame.center.y + point.y - (bounds.min.y + bounds.max.y) / 2,
+    })
+    const z = wall ? wall.instance.position.z + wall.center.z + point.y - (bounds.min.z + bounds.max.z) / 2 :
+      roof!.underside - bounds.max.z
+    studio.place(position.x, position.y, undefined, {
+      z, cutawayRole: 'independent', attachedTo: frame.instance.id, rotation: frame.instance.rotation,
+    }, { asset, mapRef: reference.value })
+    mountAsset.value = undefined
+    studio.message = `${asset.name} · ${frame.instance.name}에 연결했습니다.`
+  })
+}
+
+const placePendingMount = (point: FloorPoint) => {
+  if (mountAsset.value) placeMountedAsset(mountAsset.value, point)
+}
+
+const dropMountedAsset = (event: DragEvent, point: FloorPoint) => {
+  const id = event.dataTransfer?.getData(catalogDragType)
+  const asset = id && id === draggingModelId.value ? catalogAssets.value.find((item) => item.id === id) : undefined
+  endCatalogDrag()
+  if (!asset || buildingLocked.value) return
+  event.preventDefault()
+  placeMountedAsset(asset, point)
+}
+
+const moveCeilingFixture = (fixture: Pick<FacilityInstance, 'id' | 'rotation'> & FloorPoint) => {
+  const frame = ceilingFrame.value
+  const instance = studio.document.instances.find(({ id }) => id === fixture.id)
+  const asset = instance && assetById.value.get(instance.assetId)
+  if (!frame || !instance || !asset || instance.attachedTo !== frame.instance.id || buildingLocked.value) return
+  const bounds = facilityModelBounds(asset)
+  const offset = transformPlanPoint({
+    x: (bounds.min.x + bounds.max.x) * (instance.scale?.x ?? 1) / 2,
+    y: (bounds.min.y + bounds.max.y) * (instance.scale?.y ?? 1) / 2,
+  }, fixture.rotation)
+  const position = localToMap(frame.instance, {
+    x: frame.center.x + fixture.x - offset.x, y: frame.center.y + fixture.y - offset.y,
+  })
+  const z = resolveFacilityInstance(instance, map.document.ports).position.z
+  attempt(() => studio.applyPlacementPose(instance.id, {
+    position: { ...position, z }, rotation: (frame.instance.rotation + fixture.rotation) % 360,
+  }, map.document.ports))
+}
+
+/** 우측 카탈로그를 열고 기본 모델을 한 번만 조회 */
 const openCatalog = async () => {
   error.value = ''
+  if (workspace.value === 'building') catalogCategory.value = buildingView.value === 'ceiling' ? 'lighting' : 'interior'
   catalogOpen.value = true
   if (defaultCatalog.value || catalogLoading.value) return
   catalogLoading.value = true
@@ -617,22 +1175,96 @@ const openCatalog = async () => {
   }
 }
 
+/** 기본 인테리어 배치에 필요한 기준 지도의 실측 축척 검증 */
+const validateCatalogPlacement = (asset: FacilityAsset) => {
+  if (map.document.units !== 'mm' && interiorCatalog.some((model) => model.id === asset.id))
+    throw new Error('인테리어를 배치하기 전에 2D 맵 축척을 확정하세요.')
+}
+
 /** 카탈로그에서 모델을 선택하고 벽 그리기 또는 바닥 배치로 전환 */
 const chooseCatalogModel = (asset: FacilityAsset) => {
+  if (mounting.value) {
+    mountAsset.value = asset
+    catalogOpen.value = false
+    return
+  }
+  if (asset.id === wallPreset.id && workspace.value === 'building') {
+    startWall()
+    return
+  }
   attempt(() => {
-    if (map.document.units !== 'mm' && interiorCatalog.some((model) => model.id === asset.id))
-      throw new Error('인테리어를 배치하기 전에 2D 맵 축척을 확정하세요.')
+    validateCatalogPlacement(asset)
     if (studio.document.assets.some((item) => item.id === asset.id)) studio.selectedAssetId = asset.id
     else studio.setAsset(asset, reference.value)
     catalogOpen.value = false
     wallStart.value = undefined
     floorId.value = ''
-    const drawingWall = asset.id === 'interior-wall'
-    tool.value = drawingWall ? 'wall' : 'place'
-    studio.message = drawingWall
-      ? `${asset.name} · 바닥에서 시작점과 끝점을 클릭하세요.`
-      : `${asset.name} · 배치할 바닥 위치를 클릭하세요.`
+    tool.value = 'place'
+    studio.message = `${asset.name} · 배치할 바닥 위치를 클릭하세요.`
   })
+}
+
+/** 카탈로그 드래그 상태와 캔버스 강조를 함께 정리 */
+const endCatalogDrag = () => {
+  draggingModelId.value = ''
+  catalogDropTarget.value = false
+}
+
+/** 현재 패널에서 끌기 시작한 모델 식별자를 브라우저 드래그 데이터에 등록 */
+const startCatalogDrag = (event: DragEvent, asset: FacilityAsset) => {
+  if (!event.dataTransfer) return
+  draggingModelId.value = asset.id
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData(catalogDragType, asset.id)
+}
+
+/** 편집 가능한 맵에서 현재 카탈로그 드래그만 모델 복사로 허용 */
+const allowCatalogDrop = (event: DragEvent) => {
+  if (!draggingModelId.value || sitePreview.value || mismatch.value || studio.busy ||
+      !event.dataTransfer?.types.includes(catalogDragType)) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'copy'
+  catalogDropTarget.value = true
+}
+
+/** Three.js 캔버스 내부 요소를 지나갈 때 강조를 유지하고 영역을 벗어날 때 해제 */
+const leaveCatalogDrop = (event: DragEvent) => {
+  if (!(event.relatedTarget instanceof Node) || !host.value?.contains(event.relatedTarget))
+    catalogDropTarget.value = false
+}
+
+/** 포트 또는 바닥의 드롭 좌표에 모델 한 개를 추가하고 배열 및 선택 상태를 갱신 */
+const dropCatalogModel = (event: DragEvent) => {
+  const id = event.dataTransfer?.getData(catalogDragType)
+  const isCatalogModel = !!id && id === draggingModelId.value
+  endCatalogDrag()
+  if (!isCatalogModel) return
+  event.preventDefault()
+  if (sitePreview.value || mismatch.value || studio.busy) return
+
+  const asset = catalogAssets.value.find((model) => model.id === id)
+  if (!asset) return
+  attempt(() => {
+    validateCatalogPlacement(asset)
+    const target = scene?.pickCatalogPlacement(event, workspace.value === 'building')
+    if (!target) throw new Error('설비를 놓을 바닥이나 포트를 찾을 수 없습니다.')
+    const portId = 'portId' in target ? target.portId : undefined
+    studio.place(target.x, target.y, portId, undefined, { asset, mapRef: reference.value })
+    placementPort.value = portId ?? ''
+    floorId.value = ''
+    tool.value = 'select'
+    studio.message = `${asset.name} 모델을 ${portId ? `포트 ${portId}에` : '바닥에'} 배치했습니다.`
+  })
+}
+
+/** 삭제할 수 있는 현재 설계의 사용자 모델을 검증하고 일괄 삭제 */
+const removeCatalogModels = (ids: string[]) => {
+  if (studio.busy || !ids.length) return
+  if (attempt(() => {
+    if (ids.some((id) => !registeredCatalogIds.value.has(id)))
+      throw new Error('등록한 사용자 모델을 선택하세요.')
+    studio.removeAssets(ids)
+  })) studio.message = `모델 ${ids.length}개를 카탈로그에서 삭제했습니다.`
 }
 
 /** 기존 일괄 등록 동작으로 공급 모델을 라이브러리에 추가 */
@@ -657,6 +1289,8 @@ onMounted(() => {
       placeAtPort,
       attachOpening,
       measurePoint: addMeasurePoint,
+      moveSelection: (x, y) =>
+        attempt(() => studio.moveSelectionXY(x, y, map.document.ports)),
       move: (id, position, rotation, scale) =>
         attempt(() => studio.applyPlacementPose(id, { position, rotation, scale }, map.document.ports)),
     })
@@ -664,6 +1298,7 @@ onMounted(() => {
     scene.setDocument(studio.document)
     scene.setSelected(studio.selectedIds)
     scene.setTool(sceneTool.value)
+    scene.setSnapStep(snapStep.value)
     scene.fit()
   } catch (e) {
     error.value = `3D 초기화 실패: ${e instanceof Error ? e.message : String(e)}`
@@ -704,7 +1339,17 @@ watch(
     placementPort.value = ''
     floorId.value = ''
     floorPlanVisible.value = undefined
+    buildingView.value = 'structure'
+    wallHostId.value = ''
+    ceilingHostId.value = ''
+    mountAsset.value = undefined
+    layoutOpen.value = false
     designerOpen.value = false
+    catalogOpen.value = false
+    glbImportOpen.value = false
+    lightEditId.value = ''
+    glbFile.value = undefined
+    endCatalogDrag()
     editingAsset.value = null
     tool.value = 'select'
     scene?.setMap(map.document, map.theme, props.layers ?? DEFAULT_LAYERS)
@@ -716,26 +1361,26 @@ watch(
 
 watch(tool, (value) => {
   if (value !== 'wall') wallStart.value = undefined
+  if (value !== 'ceiling') ceilingStart.value = undefined
   if (value !== 'floor') floorDraft.value = undefined
   if (value !== 'measure') measurement.value = []
   scene?.setTool(sceneTool.value)
 })
 watch(measurement, (points) => scene?.setMeasurement(points))
-watch([floorDraft, selectedFloor], ([draft, area]) => {
+watch(snapStep, (step) => scene?.setSnapStep(step))
+watch([wallStart, () => wallSize.thickness], ([start, thickness]) => scene?.setWallDraft(start, thickness))
+watch([floorDraft, selectedFloor, ceilingStart], ([draft, area, ceiling]) => {
   scene?.setFloorOutline(
-    draft?.points ?? area?.points ?? [],
+    ceiling ? [ceiling] : draft?.points ?? area?.points ?? [],
     !draft && !!area,
     draft?.shape === 'polygon',
   )
 })
 watch(floorPlanVisible, (value) => scene?.setFloorPlanVisible(value))
-watch(
-  () => studio.selectedAssetId,
-  (id) => {
-    if (tool.value === 'wall' && id !== 'interior-wall') tool.value = 'select'
-  },
-)
-onBeforeUnmount(() => scene?.dispose())
+onBeforeUnmount(() => {
+  glbFile.value = undefined
+  scene?.dispose()
+})
 </script>
 
 <template>
@@ -758,7 +1403,7 @@ onBeforeUnmount(() => scene?.dispose())
       <v-btn
         :text="`설계 프로젝트 저장 ${studio.dirty ? ' *' : ''}`"
         data-testid="scene-save"
-        :disabled="studio.busy || mismatch || !hasSceneContent"
+        :disabled="studio.busy || mismatch || (!hasSceneContent && !studio.dirty)"
         @click="studio.save(map.projectToken)"
       />
       <v-btn
@@ -790,6 +1435,20 @@ onBeforeUnmount(() => scene?.dispose())
         @click="bind"
       />
     </div>
+    <nav class="facility-workspaces d-flex ga-2 px-4 py-2" aria-label="3D 편집 화면">
+      <v-btn
+        text="설비 배치"
+        data-testid="facility-equipment-mode"
+        :aria-pressed="workspace === 'equipment'"
+        @click="switchWorkspace('equipment')"
+      />
+      <v-btn
+        text="건물 편집"
+        data-testid="facility-building-mode"
+        :aria-pressed="workspace === 'building'"
+        @click="switchWorkspace('building')"
+      />
+    </nav>
     <div class="facility-layout" :class="{ 'facility-site-preview': sitePreview }">
       <v-sheet
         tag="aside"
@@ -808,13 +1467,19 @@ onBeforeUnmount(() => scene?.dispose())
           눈높이 1.6 m · 오른쪽 드래그로 회전 · Space와 왼쪽 드래그로 이동
         </p>
         <div v-show="!sitePreview">
-          <div class="d-flex flex-column ga-2 mb-4">
+          <div v-if="workspace === 'building'" class="d-flex flex-column ga-2 mb-4" aria-label="건물 편집 도구">
+            <v-btn text="구조 배치" data-testid="building-structure-view" :aria-pressed="buildingView === 'structure'" @click="switchBuildingView('structure')" />
+            <v-btn text="벽 정면" data-testid="building-wall-view" :aria-pressed="buildingView === 'wall'" @click="switchBuildingView('wall')" />
+            <v-btn text="천장 배치도" data-testid="building-ceiling-view" :aria-pressed="buildingView === 'ceiling'" @click="switchBuildingView('ceiling')" />
+          </div>
+          <div v-if="!mounting || (buildingView === 'wall' ? wallFrame : ceilingFrame)" class="d-flex flex-column ga-2 mb-4">
             <v-btn
               text="GLB 모델 카탈로그"
               class="facility-primary"
               data-testid="default-catalog"
+              :aria-pressed="catalogOpen"
               :disabled="studio.busy"
-              @click="openCatalog"
+              @click="catalogOpen ? (catalogOpen = false) : openCatalog()"
             />
             <span
               v-if="studio.asset"
@@ -823,7 +1488,7 @@ onBeforeUnmount(() => scene?.dispose())
             >
               {{ studio.asset.name }}
             </span>
-            <div class="facility-tabs">
+            <div v-if="workspace === 'equipment'" class="facility-tabs">
               <v-btn
                 text="새 모델 디자인"
                 data-testid="new-model"
@@ -838,7 +1503,15 @@ onBeforeUnmount(() => scene?.dispose())
               />
             </div>
           </div>
-          <h2>배치 및 편집</h2>
+          <h2>{{ workspace === 'equipment' ? '배치 및 편집' : '편집 기준' }}</h2>
+          <label class="facility-snap-setting d-flex align-center justify-space-between ga-2 mb-1 text-caption">
+            스냅 간격
+            <select v-model="snapStep" data-testid="facility-snap-step">
+              <option v-for="step in transformSnapSteps" :key="step" :value="step">{{ step }} mm</option>
+            </select>
+          </label>
+          <p class="text-caption facility-muted mb-2">Alt 자유 조작</p>
+          <template v-if="workspace === 'equipment'">
           <div class="facility-tabs mb-2">
             <v-btn
               v-for="[value, label] in [
@@ -885,30 +1558,98 @@ onBeforeUnmount(() => scene?.dispose())
               선택 포트에 1개 배치
             </v-btn>
           </div>
-          <h2>인테리어 편집</h2>
+          </template>
+          <template v-if="workspace === 'building' && buildingView === 'structure'">
+          <h2>구조 배치</h2>
+          <div class="facility-tabs mb-2">
+            <v-btn
+              text="벽 그리기"
+              data-testid="interior-wall"
+              :class="{ active: tool === 'wall' }"
+              :aria-pressed="tool === 'wall'"
+              :disabled="studio.busy || mismatch"
+              @click="tool === 'wall' ? (tool = 'select') : startWall()"
+            />
+            <v-btn
+              :text="map.document.layout ? '도면 설정' : '도면 불러오기'"
+              data-testid="interior-layout"
+              :aria-pressed="layoutOpen"
+              @click="layoutOpen = !layoutOpen"
+            />
+          </div>
+          <div v-if="tool === 'wall'" class="d-flex flex-column ga-2 mb-3 text-caption">
+            <div class="d-flex ga-2">
+              <label class="w-50">
+                두께 mm
+                <input v-model.number="wallSize.thickness" data-testid="wall-thickness" type="number" min="1" />
+              </label>
+              <label class="w-50">
+                높이 mm
+                <input v-model.number="wallSize.height" data-testid="wall-height" type="number" min="1" />
+              </label>
+            </div>
+            <p role="status">{{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }}</p>
+            <span>Shift 직각 맞춤 · Esc 취소</span>
+          </div>
           <div class="facility-tabs mb-2">
             <v-btn text="사각 바닥" data-testid="floor-rectangle" :disabled="studio.busy" @click="startFloor('rectangle')" />
             <v-btn text="다각형 바닥" data-testid="floor-polygon" :disabled="studio.busy" @click="startFloor('polygon')" />
           </div>
-          <div class="facility-tabs mb-4">
+          <div class="d-flex flex-column ga-2 mb-3">
+            <v-btn text="천장 그리기" data-testid="place-ceiling" :aria-pressed="tool === 'ceiling'" :disabled="buildingLocked" @click="startCeiling" />
+            <label v-if="tool === 'ceiling'" class="text-caption">
+              천장 아랫면 높이 (mm)
+              <input v-model.number="ceilingHeight" data-testid="building-ceiling-height" type="number" min="1" />
+            </label>
+            <p v-if="tool === 'ceiling'" class="text-caption" role="status">
+              {{ ceilingStart ? '맞은편 모서리를 클릭하세요.' : '천장의 첫 번째 모서리를 클릭하세요.' }}
+            </p>
+            <label v-if="independentInstances.length" class="text-caption">
+              기존 객체 선택
+              <select data-testid="building-existing-object" :value="studio.selectedId ?? ''" @change="pickExistingObject(($event.target as HTMLSelectElement).value)">
+                <option value="">객체 선택</option>
+                <option v-for="instance in independentInstances" :key="instance.id" :value="instance.id">{{ instance.name }}</option>
+              </select>
+            </label>
+          </div>
+          </template>
+          <template v-if="workspace === 'building' && buildingView === 'wall'">
+            <label class="d-block text-caption mb-3">
+              편집할 벽
+              <select data-testid="building-wall-select" :value="wallHostId" @change="openWall(($event.target as HTMLSelectElement).value)">
+                <option value="">벽 선택</option>
+                <option v-for="{ instance } in wallTargets" :key="instance.id" :value="instance.id">{{ instance.name }}</option>
+              </select>
+            </label>
+          </template>
+          <div v-if="workspace === 'building' && buildingView !== 'ceiling'" class="facility-tabs mb-4">
             <v-btn
               text="문 붙이기"
               data-testid="interior-door"
               :class="{ active: tool === 'door' }"
-              :disabled="studio.busy"
+              :disabled="buildingLocked || (buildingView === 'wall' && !wallFrame)"
               @click="startSiteTool('door')"
             />
             <v-btn
               text="창문 붙이기"
               data-testid="interior-window"
               :class="{ active: tool === 'window' }"
-              :disabled="studio.busy"
+              :disabled="buildingLocked || (buildingView === 'wall' && !wallFrame)"
               @click="startSiteTool('window')"
             />
           </div>
           <p v-if="tool === 'door' || tool === 'window'" class="text-caption mb-3" role="status">
             벽에서 {{ tool === 'door' ? '문' : '창문' }}이 들어갈 위치를 클릭하세요. Esc 취소
           </p>
+          <label v-if="workspace === 'building' && buildingView === 'ceiling'" class="d-block text-caption mb-3">
+            부착할 천장
+            <select data-testid="building-ceiling-select" :value="ceilingHostId" @change="openCeiling(($event.target as HTMLSelectElement).value)">
+              <option value="">천장 선택</option>
+              <option v-for="{ instance } in ceilingTargets" :key="instance.id" :value="instance.id">{{ instance.name }}</option>
+            </select>
+          </label>
+          <v-btn v-if="mountAsset && mounting" text="부착 취소" @click="mountAsset = undefined" />
+          <template v-if="showScene">
           <h2>보기</h2>
           <div class="facility-tabs">
             <v-btn
@@ -916,7 +1657,7 @@ onBeforeUnmount(() => scene?.dispose())
               :aria-pressed="tool === 'measure'"
               @click="tool === 'measure' ? (tool = 'select') : startSiteTool('measure')"
             >
-              <span class="facility-measure-indicator mr-2" aria-hidden="true"></span>
+              <span class="facility-view-indicator mr-2" aria-hidden="true"></span>
               치수 확인
             </v-btn>
             <v-btn
@@ -926,6 +1667,14 @@ onBeforeUnmount(() => scene?.dispose())
               전체 보기
             </v-btn>
             <v-btn @click="scene?.fit(true)">위에서 보기</v-btn>
+            <v-btn
+              data-testid="facility-grid-toggle"
+              :aria-pressed="showGrid"
+              @click="emit('layer', 'grid', !showGrid)"
+            >
+              <span class="facility-view-indicator mr-2" aria-hidden="true"></span>
+              격자 표시
+            </v-btn>
             <v-btn
               v-if="map.document.layout"
               :class="{ active: showFloorPlan }"
@@ -944,9 +1693,6 @@ onBeforeUnmount(() => scene?.dispose())
             <small>수평각은 +X 방향, 수직각은 바닥 평면 기준</small>
             <v-btn text="측정 지우기" :disabled="!measurement.length" @click="measurement = []" />
           </div>
-          <p v-if="tool === 'wall'" class="text-caption mt-3" role="status">
-            {{ wallStart ? '벽의 끝점을 클릭하세요.' : '벽의 시작점을 클릭하세요.' }} Esc 취소
-          </p>
           <div
             v-if="floorDraft"
             class="floor-drawing-tools d-flex flex-column ga-2 mt-3"
@@ -976,35 +1722,105 @@ onBeforeUnmount(() => scene?.dispose())
             <v-btn :disabled="!floorDraft.points.length" text="마지막 점 취소" @click="undoFloorPoint" />
             <v-btn text="그리기 취소" @click="tool = 'select'" />
           </div>
+          </template>
         </div>
       </v-sheet>
       <div class="facility-canvas-wrap position-relative d-flex flex-column">
         <div
+          v-show="showScene"
           ref="host"
           class="facility-canvas position-relative overflow-hidden"
+          :class="{ 'facility-drop-target': catalogDropTarget }"
           data-testid="facility-canvas"
           @keydown.enter="finishFloorOnEnter"
+          @dragover="allowCatalogDrop"
+          @dragleave="leaveCatalogDrop"
+          @drop="dropCatalogModel"
         ></div>
+        <template v-if="!showScene">
+          <WallElevation
+            v-if="buildingView === 'wall' && wallFrame"
+            :key="wallFrame.instance.id"
+            :name="wallFrame.instance.name"
+            :doors="wallFrame.instance.wallDoors ?? []"
+            :width="wallFrame.width"
+            :height="wallFrame.height"
+            :focus="focusedOpening"
+            :snap="snapStep"
+            :disabled="buildingLocked"
+            :mounted-objects="wallMounts"
+            :pending="mountAsset?.name ?? ''"
+            @focus="focusWallOpening"
+            @apply="applyWallDoors"
+            @select="studio.selectedId = $event"
+            @place="placePendingMount"
+            @drag-over="allowCatalogDrop"
+            @drop-fixture="dropMountedAsset"
+          />
+          <CeilingPlan
+            v-else-if="buildingView === 'ceiling' && ceilingFrame"
+            :key="ceilingFrame.instance.id"
+            :name="ceilingFrame.instance.name"
+            :width="ceilingFrame.width"
+            :depth="ceilingFrame.depth"
+            :fixtures="ceilingFixtures"
+            :selected="studio.selectedId"
+            :pending="mountAsset?.name ?? ''"
+            :snap="snapStep"
+            :disabled="buildingLocked"
+            @select="studio.selectedId = $event"
+            @place="placePendingMount"
+            @move="moveCeilingFixture"
+            @drag-over="allowCatalogDrop"
+            @drop-fixture="dropMountedAsset"
+          />
+          <div v-else class="d-flex flex-column align-center justify-center ga-3 flex-grow-1 text-center">
+            <span>{{ buildingView === 'wall' ? '직선 벽을 만들거나 선택하세요.' : '천장을 그린 뒤 패널을 선택하세요.' }}</span>
+            <v-btn text="구조 배치로 이동" @click="switchBuildingView('structure')" />
+          </div>
+        </template>
         <div
-          v-if="!sitePreview && !studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !floorDraft"
+          v-if="showScene && tool === 'select' && !sitePreview && !studio.document.instances.length && !map.document.nodes.length && !floorAreas.length && !map.document.layout"
           class="facility-empty position-absolute text-center"
         >
           모델 만들기 → 포트 클릭 또는 Port ID 선택 → 1개 배치
           <br />
           <small>기존 MGS 노드·포트는 2D 맵에서 편집합니다.</small>
         </div>
-        <div v-if="!sitePreview" class="facility-hint position-absolute text-center">
+        <div v-if="showScene && !sitePreview" class="facility-hint position-absolute text-center">
           {{ studio.selected
             ? '객체 드래그: 이동 · 모서리와 X·Y·Z: 크기 · ↻: 회전'
             : '빈 곳 드래그: 영역 선택 · Shift + 클릭: 추가 또는 해제 · Space + 드래그: 화면 이동' }}
         </div>
       </div>
+      <ModelCatalog
+        v-show="catalogOpen && !sitePreview"
+        v-model:category="catalogCategory"
+        :visible="catalogOpen && !sitePreview"
+        :assets="catalogAssets"
+        :registered-ids="registeredCatalogIds"
+        :placed-ids="placedCatalogIds"
+        :busy="studio.busy"
+        :loading="catalogLoading"
+        :selected="studio.selectedAssetId"
+        :error="error"
+        @close="catalogOpen = false"
+        @choose="chooseCatalogModel"
+        @edit-light="openLightSettings"
+        @drag-start="startCatalogDrag"
+        @drag-end="endCatalogDrag"
+        @remove="removeCatalogModels"
+        @import="openGlbImport"
+        @import-library="studio.importModels(reference)"
+        @register-defaults="registerDefaultModels"
+      />
       <v-sheet
         tag="aside"
-        v-show="!sitePreview"
+        v-show="!sitePreview && !catalogOpen"
         class="facility-inspector overflow-auto"
       >
         <FloorAreaEditor
+          v-if="workspace === 'building' && buildingView === 'structure'"
           :areas="floorAreas"
           :selected="selectedFloor"
           :busy="studio.busy || !!floorDraft"
@@ -1016,11 +1832,11 @@ onBeforeUnmount(() => scene?.dispose())
         />
         <h2>
           배치 목록
-          <small data-testid="instance-count">{{ studio.document.instances.length }}</small>
+          <small data-testid="instance-count">{{ listedInstances.length }}</small>
         </h2>
         <div class="facility-instance-list overflow-auto">
           <v-btn
-            v-for="instance in studio.document.instances"
+            v-for="instance in listedInstances"
             :key="instance.id"
             class="facility-row w-100 text-start"
             :class="{ active: selectedIds.has(instance.id) }"
@@ -1032,6 +1848,25 @@ onBeforeUnmount(() => scene?.dispose())
               {{ instance.position.x }}, {{ instance.position.y }}, {{ instance.position.z }} mm
             </small>
           </v-btn>
+        </div>
+        <div v-if="workspace === 'building' && canAttachSelection" class="d-flex flex-column ga-2 mb-3">
+          <v-btn
+            v-if="studio.selected"
+            text="벽으로 지정"
+            data-testid="building-mark-wall"
+            :disabled="buildingLocked"
+            @click="markAsWall"
+          />
+          <v-select
+            label="선택 객체 부착"
+            placeholder="구조물 선택"
+            data-testid="building-attach-selection"
+            :items="attachmentTargets"
+            :model-value="studio.selected?.attachedTo"
+            :disabled="buildingLocked || attachmentTargets.length <= 1"
+            hide-details
+            @update:model-value="attachSelected"
+          />
         </div>
         <form
           v-if="multiSelected"
@@ -1069,6 +1904,20 @@ onBeforeUnmount(() => scene?.dispose())
               required
             />
           </label>
+          <v-select
+            label="구조물 분류"
+            data-testid="facility-cutaway-role"
+            :model-value="pose.cutawayRole"
+            :items="cutawayRoles"
+            @update:model-value="setCutawayRole"
+          />
+          <v-select
+            v-if="!selectedStructure"
+            label="부착 대상"
+            data-testid="facility-attachment"
+            v-model="pose.attachedTo"
+            :items="attachmentTargets"
+          />
           <div class="facility-fields">
             <label
               v-for="axis in ['x', 'y', 'z'] as const"
@@ -1211,7 +2060,7 @@ onBeforeUnmount(() => scene?.dispose())
         >
           시설을 선택하면 가로·세로·높이를 mm로 설정할 수 있습니다.
         </p>
-        <div v-if="studio.selected && selectedWall" ref="doorEditor">
+        <div v-if="workspace === 'building' && buildingView === 'wall' && studio.selected?.id === wallHostId && selectedWall" ref="doorEditor">
           <WallDoorEditor
             :key="studio.selected.id"
             :doors="studio.selected.wallDoors ?? []"
@@ -1230,28 +2079,146 @@ onBeforeUnmount(() => scene?.dispose())
     >
       {{ error || studio.message }}
     </div>
-    <input
-      ref="glbInput"
-      type="file"
-      accept=".glb"
-      hidden
-      data-testid="glb-file"
-      @change="importGlb"
+    <DrawingLayout
+      v-model="layoutOpen"
+      :map="map.document"
+      @apply="applyDrawingLayout"
+      @remove="attempt(() => map.setLayout())"
     />
-    <ModelCatalog
-      v-model="catalogOpen"
-      v-model:category="catalogCategory"
-      v-model:units="glbUnits"
-      :assets="catalogAssets"
-      :busy="studio.busy"
-      :loading="catalogLoading"
-      :selected="studio.selectedAssetId"
-      :error="error"
-      @choose="chooseCatalogModel"
-      @import="glbInput?.click()"
-      @import-library="studio.importModels(reference)"
-      @register-defaults="registerDefaultModels"
-    />
+    <v-dialog v-model="glbImportOpen" :persistent="studio.busy" max-width="820">
+      <v-card title="GLB 모델 등록" data-testid="glb-import-dialog" class="glb-import-card">
+        <form @submit.prevent="registerGlb">
+          <v-card-text class="glb-import-layout">
+            <div class="glb-preview-panel">
+              <div class="d-flex align-center justify-space-between px-3 py-1">
+                <h2 class="text-subtitle-2">3D 미리보기</h2>
+                <v-btn
+                  :icon="[mdiRestore]"
+                  type="button"
+                  variant="text"
+                  size="small"
+                  aria-label="미리보기 시점 초기화"
+                  title="미리보기 시점 초기화"
+                  :disabled="!glbDraft || !!glbPreviewError"
+                  @click="glbPreview?.reset()"
+                />
+              </div>
+              <div class="glb-preview-stage">
+                <div v-if="glbDraft" ref="glbPreviewHost" class="glb-preview-canvas" />
+                <div
+                  v-if="!glbDraft || glbPreviewError"
+                  class="glb-preview-empty d-flex flex-column align-center justify-center ga-2"
+                >
+                  <v-progress-circular v-if="glbPreviewLoading" indeterminate size="26" />
+                  <v-icon v-else :icon="[mdiCubeOutline]" size="32" />
+                  <span role="status">
+                    {{ glbPreviewError || (glbPreviewLoading ? '모델 불러오는 중' : 'GLB 파일을 선택하세요') }}
+                  </span>
+                </div>
+              </div>
+              <div class="glb-preview-meta d-flex flex-wrap justify-space-between ga-2 px-3 py-2 text-caption">
+                <span v-if="glbDimensionLabel" data-testid="glb-preview-size">{{ glbDimensionLabel }} mm</span>
+                <span v-if="glbDraft && !glbPreviewError">드래그 회전 · 휠 확대</span>
+              </div>
+            </div>
+            <div class="glb-import-fields d-flex flex-column ga-3">
+              <input
+                ref="glbInput"
+                type="file"
+                accept=".glb"
+                hidden
+                data-testid="glb-file"
+                :disabled="studio.busy"
+                @change="handleGlbFile"
+              />
+              <v-btn
+                :text="glbFile ? 'GLB 파일 변경' : 'GLB 파일 선택'"
+                :prepend-icon="[mdiFolderOpenOutline]"
+                type="button"
+                variant="outlined"
+                :disabled="studio.busy"
+                @click="glbInput?.click()"
+              />
+              <span v-if="glbFile" class="text-caption text-truncate" :title="glbFile.name">
+                {{ glbFile.name }}
+              </span>
+              <v-text-field
+                v-model="glbName"
+                label="모델 이름"
+                maxlength="300"
+                density="compact"
+                hide-details="auto"
+                data-testid="glb-name"
+                :disabled="studio.busy"
+                :error-messages="glbName.trim() ? glbNameError : ''"
+              />
+              <div class="glb-import-options">
+                <v-select
+                  v-model="glbCategory"
+                  :items="[
+                    { title: '설비', value: 'equipment' },
+                    { title: '인테리어', value: 'interior' },
+                    { title: '조명', value: 'lighting' },
+                  ]"
+                  label="카테고리"
+                  data-testid="glb-category"
+                  density="compact"
+                  hide-details
+                  :disabled="studio.busy"
+                />
+                <v-select
+                  v-model="glbUnits"
+                  :items="[
+                    { title: 'm', value: 'm' },
+                    { title: 'mm', value: 'mm' },
+                  ]"
+                  label="GLB 원본 단위"
+                  data-testid="glb-units"
+                  density="compact"
+                  hide-details
+                  :disabled="studio.busy"
+                />
+              </div>
+              <GlbLightFields
+                v-if="glbCategory === 'lighting'"
+                v-model:kind="lightKind"
+                v-model:temperature="lightTemperature"
+                :error="lightError"
+              />
+              <v-alert v-if="glbImportError" :text="glbImportError" type="error" density="compact" />
+            </div>
+          </v-card-text>
+          <v-card-actions class="glb-import-actions px-5 py-3">
+            <v-spacer />
+            <v-btn type="button" text="취소" :disabled="studio.busy" @click="glbImportOpen = false" />
+            <v-btn
+              type="submit"
+              text="등록"
+              color="primary"
+              variant="flat"
+              data-testid="glb-register"
+              :disabled="!glbDraft || !!glbNameError || catalogLoading || (glbCategory === 'lighting' && !!lightError)"
+              :loading="studio.busy"
+            />
+          </v-card-actions>
+        </form>
+      </v-card>
+    </v-dialog>
+    <v-dialog :model-value="!!editingLight" max-width="390" @update:model-value="!$event && (lightEditId = '')">
+      <v-card v-if="editingLight" :title="editingLight.name">
+        <form @submit.prevent="saveLightSettings">
+          <v-card-text class="d-flex flex-column ga-3">
+            <GlbLightFields v-model:kind="lightKind" v-model:temperature="lightTemperature" :error="lightError" />
+            <p class="text-caption">이 모델의 모든 배치에 적용됩니다.</p>
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn type="button" text="취소" @click="lightEditId = ''" />
+            <v-btn type="submit" text="적용" color="primary" :disabled="!!lightError" data-testid="catalog-light-save" />
+          </v-card-actions>
+        </form>
+      </v-card>
+    </v-dialog>
     <ModelDesigner
       v-if="designerOpen"
       :asset="editingAsset"
@@ -1263,6 +2230,58 @@ onBeforeUnmount(() => scene?.dispose())
 </template>
 
 <style scoped lang="scss">
+.glb-import-card {
+  overflow-y: auto;
+}
+.glb-import-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(245px, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.glb-import-fields {
+  min-width: 0;
+}
+.glb-import-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.glb-preview-panel {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.glb-preview-stage {
+  position: relative;
+  min-height: 190px;
+  height: min(34vh, 315px);
+  background: var(--surface-muted);
+}
+.glb-preview-canvas,
+.glb-preview-empty {
+  position: absolute;
+  inset: 0;
+}
+.glb-preview-canvas :deep(canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  &:active { cursor: grabbing; }
+}
+.glb-preview-meta {
+  min-height: 35px;
+  color: var(--text-secondary);
+}
+.glb-import-actions {
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 660px) {
+  .glb-import-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 // 화면 구성과 고유 시각 요소에 필요한 컴포넌트 전용 스타일
 
 input {
@@ -1358,6 +2377,9 @@ select {
   border-radius: 7px;
   padding: 5px 7px;
 }
+.facility-workspaces { background: var(--surface); border-bottom: 1px solid var(--border); }
+.facility-workspaces [aria-pressed='true'] { background: var(--accent); color: var(--surface); }
+.facility-tools-panel label select { display: block; width: 100%; margin-top: 4px; }
 .facility-layout {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr) 270px;
@@ -1398,13 +2420,13 @@ select {
 .facility-tabs > * {
   flex: 1;
 }
-.facility-measure-indicator {
+.facility-view-indicator {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #8b929b;
 }
-[aria-pressed='true'] .facility-measure-indicator {
+[aria-pressed='true'] .facility-view-indicator {
   background: #24ad5f;
 }
 .facility-form {
@@ -1494,11 +2516,19 @@ select {
   width: 100%;
   height: 100%;
 }
+.facility-drop-target::after {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border: 2px solid var(--accent);
+  content: '';
+  pointer-events: none;
+}
 
 .facility-canvas :deep(.facility-direct-frame) {
   position: absolute;
+  inset: 0;
   z-index: 4;
-  border: 1px solid #48bdac;
   pointer-events: none;
 }
 .facility-canvas :deep(.facility-direct-handle) {
@@ -1523,32 +2553,25 @@ select {
 .facility-canvas :deep(.facility-direct-handle:focus-visible) {
   outline: 2px solid #48bdac;
 }
+.facility-canvas :deep(.facility-direct-handle[hidden]) {
+  display: none;
+}
 .facility-canvas :deep(.facility-direct-nw),
 .facility-canvas :deep(.facility-direct-se) { cursor: nwse-resize; }
 .facility-canvas :deep(.facility-direct-ne),
 .facility-canvas :deep(.facility-direct-sw) { cursor: nesw-resize; }
-.facility-canvas :deep(.facility-direct-x) { left: 100%; top: 50%; cursor: ew-resize; }
-.facility-canvas :deep(.facility-direct-y) { left: 50%; top: 100%; cursor: ns-resize; }
-.facility-canvas :deep(.facility-direct-z) { left: 50%; top: 0; cursor: ns-resize; }
-.facility-canvas :deep(.facility-direct-nw) { left: 0; top: 0; }
-.facility-canvas :deep(.facility-direct-ne) { left: 100%; top: 0; }
-.facility-canvas :deep(.facility-direct-sw) { left: 0; top: 100%; }
-.facility-canvas :deep(.facility-direct-se) { left: 100%; top: 100%; }
+.facility-canvas :deep(.facility-direct-x),
+.facility-canvas :deep(.facility-direct-x-min) { cursor: ew-resize; }
+.facility-canvas :deep(.facility-direct-y),
+.facility-canvas :deep(.facility-direct-y-min),
+.facility-canvas :deep(.facility-direct-z),
+.facility-canvas :deep(.facility-direct-z-min) { cursor: ns-resize; }
 .facility-canvas :deep(.facility-direct-rotate) {
-  left: 50%;
-  top: -24px;
   width: 20px;
   height: 20px;
   border-radius: 50%;
   font-size: 14px;
   cursor: grab;
-}
-.facility-canvas :deep(.facility-direct-rotate::after) {
-  position: absolute;
-  top: 100%;
-  height: 7px;
-  border-left: 1px solid #48bdac;
-  content: '';
 }
 
 .facility-canvas :deep(.facility-marquee) {

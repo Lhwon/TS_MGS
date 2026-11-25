@@ -9,6 +9,7 @@ export { buildWipRacks, wipRackKey } from './wipRacks'
 export { createInteriorModel, fillLegacyStainlessPipe, interiorModels, type InteriorModel } from './interiorModels'
 export {
   FACILITY_CYLINDER_SEGMENTS,
+  facilityModelBounds,
   facilityModelSize,
   facilityPartMatrix,
 } from './facilityDimensions'

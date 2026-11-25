@@ -34,9 +34,12 @@ export const facilityPartMatrix = (part: FacilityPart) => {
   )
 }
 
-/** 배치 배율과 방향을 적용하기 전 모델 외곽의 가로와 세로 및 높이를 밀리미터로 계산 */
-export const facilityModelSize = (asset: FacilityAsset) => {
-  if (asset.glb) return asset.glb.size
+/** 배치 변환 전 모델의 밀리미터 단위 외곽 */
+export const facilityModelBounds = (asset: FacilityAsset) => {
+  if (asset.glb) {
+    const { x, y, z } = asset.glb.size
+    return new THREE.Box3(new THREE.Vector3(-x / 2, -y / 2, 0), new THREE.Vector3(x / 2, y / 2, z))
+  }
   const bounds = new THREE.Box3()
   const unitBox = new THREE.Box3(
     new THREE.Vector3(-0.5, -0.5, -0.5),
@@ -59,6 +62,14 @@ export const facilityModelSize = (asset: FacilityAsset) => {
       bounds.expandByPoint(point.set(x, -0.5, z).applyMatrix4(matrix))
     }
   }
-  const { x, y, z } = bounds.getSize(point).multiplyScalar(1000)
+  bounds.min.multiplyScalar(1000)
+  bounds.max.multiplyScalar(1000)
+  return bounds
+}
+
+/** 배치 배율과 방향을 적용하기 전 모델 외곽의 가로와 세로 및 높이를 밀리미터로 계산 */
+export const facilityModelSize = (asset: FacilityAsset) => {
+  if (asset.glb) return asset.glb.size
+  const { x, y, z } = facilityModelBounds(asset).getSize(new THREE.Vector3())
   return { x, y, z }
 }

@@ -389,6 +389,7 @@ const requireDrawing = async () => {
   attachment.value = drawing
   return drawing
 }
+
 /** 내부 이름 대신 사용자 작업 목적을 표시하는 실행 제목 */
 const toolLabel = (name: string) =>
   ({
@@ -516,30 +517,43 @@ const answerQuestion = (id: string, answer: AgentAnswer) => {
     error.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
+
 /** 전송할 첨부를 대화 참조로 옮기며 입력칸의 대기 첨부만 제거하는 전송 처리 */
 const consumeAttachment = (messageId: string) => {
   const drawing = pendingAttachment.value
+
   if (!drawing) return
+
   attachment.value = drawing
+
   const message = messages.value.find((message) => message.id === messageId)
+
   if (message) message.image = drawing.visionImage
+  
   pendingAttachment.value = undefined
 }
+
 /** 대기 중인 확인 질문에 답하거나 입력한 메시지로 새 추론 시작 */
 const handleSendMessage = async () => {
   const question = prompt.value.trim()
+
   if (!question || attaching.value) return
+
   if (awaiting.value) {
     prompt.value = ''
+
     answerQuestion(awaiting.value.question.id, {
       status: 'answered',
       text: question,
       values: {},
       units: {},
     })
+
     return
   }
+
   if (props.busy) return
+
   await runConversationTurn(question)
 }
 
@@ -550,14 +564,19 @@ const handleSendMessage = async () => {
  */
 const runConversationTurn = async (question: string) => {
   if (controller) cancel('새 메시지를 반영하기 위해 이전 작업을 중단했습니다.')
+
   const sequence = conversationSequence
   const request = new AbortController()
+  
   controller = request
   phase.value = 'running'
   error.value = ''
   prompt.value = ''
+  
   const userId = addMessage('user', question)
+  
   consumeAttachment(userId)
+  
   /** 추론 시작과 확인 질문 응답 직후에 새 작업 내역을 가진 답변 생성 */
   const createLoadingReply = () => {
     const id = addMessage('assistant', '', 'loading')
@@ -566,13 +585,17 @@ const runConversationTurn = async (question: string) => {
     message.tasks = []
     return message
   }
+
   let reply = createLoadingReply()
   let activeTask: NonNullable<ChatMessage['tasks']>[number] | undefined
+  
   const isCurrentRequest = () => controller === request && !request.signal.aborted
+  
   /** 새 지시나 취소 뒤 도착한 이전 진행 표시를 차단하는 상태 갱신 */
   const progress = (message: string) => {
     if (isCurrentRequest()) updateMessage(reply.id, message, 'loading')
   }
+
   try {
     const answer = await runAgent({
       question,
@@ -632,11 +655,13 @@ const runConversationTurn = async (question: string) => {
     }
   }
 }
+
 /** 사용자 직접 편집으로 진행 중인 관찰이 달라진 경우의 작업 취소 */
 const invalidate = () => {
   if (!internalDrawingChange)
     cancel('맵이 변경되어 진행 중인 작업을 중단했습니다. 현재 상태에서 이어서 요청할 수 있습니다.')
 }
+
 /** 첨부와 대화 이력을 초기화하는 새 대화 */
 const newConversation = () => {
   conversationSequence++
@@ -650,16 +675,20 @@ const newConversation = () => {
   pendingAttachment.value = undefined
   attaching.value = false
 }
+
 /** 한글 조합과 줄바꿈을 보존하는 채팅 전송 키 처리 */
 const composeKey = (event: KeyboardEvent) => {
   if (event.isComposing || event.keyCode === 229 || event.shiftKey) return
   event.preventDefault()
   void handleSendMessage()
 }
+
 watch(() => [editor.document, facility.document, editor.readOnly], invalidate, { flush: 'sync' })
+
 watch(open, (value) => {
   if (value) void connect()
 })
+
 watch(
   () => [
     messages.value.map(

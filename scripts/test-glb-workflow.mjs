@@ -25,7 +25,10 @@ try {
     const THREE = await import(url)
     const previous = THREE.Scene.prototype.onBeforeRender
     THREE.Scene.prototype.onBeforeRender = (renderer, scene, camera, ...rest) => {
-      window.__facilityView = { THREE, scene, camera, renderer }
+      if (scene.children.some(({ type }) => type === 'GridHelper'))
+        window.__facilityView = { THREE, scene, camera, renderer }
+      if (scene.name === 'facility-selection-mask') window.__selectedMask = scene
+      if (scene.name === 'glb-import-preview') window.__glbPreviewCamera = camera.position.toArray()
       Reflect.apply(previous, scene, [renderer, scene, camera, ...rest])
     }
   })
@@ -56,6 +59,74 @@ try {
     )
   })
   await page.getByTestId('mode-facility').click()
+  await page.waitForFunction(() =>
+    window.__facilityView?.renderer.domElement.nextElementSibling instanceof HTMLCanvasElement,
+  )
+  await page.evaluate(() => {
+    const { renderer } = window.__facilityView
+    const context = renderer.domElement.nextElementSibling.getContext('2d')
+    const { clearRect, fillText } = context
+    window.__rulerText = []
+    context.clearRect = function (...args) {
+      window.__rulerText = []
+      window.__rulerFromAbove = window.__facilityView.camera.matrixWorld.elements[10] > 0.99999
+      Reflect.apply(clearRect, this, args)
+    }
+    context.fillText = function (text, x, y, ...args) {
+      if (y === 10 && (/^[XY] · mm$/.test(text) || /^-?[\d,]+$/.test(text)))
+        window.__rulerText.push({ text, pixel: x, vertical: Math.abs(this.getTransform().b) > 0.5 })
+      Reflect.apply(fillText, this, [text, x, y, ...args])
+    }
+  })
+  await page.getByRole('button', { name: '위에서 보기' }).click()
+  await page.waitForFunction(() => window.__rulerFromAbove && window.__rulerText.length > 4)
+  const rulerText = await page.evaluate(() => window.__rulerText)
+  assert.ok(rulerText.some((tick) => tick.text === 'X · mm' && !tick.vertical))
+  assert.ok(rulerText.some((tick) => tick.text === 'Y · mm' && tick.vertical))
+  const rulerAccuracy = await page.evaluate((ticks) => {
+    const { THREE, renderer, camera } = window.__facilityView
+    const { width, height } = renderer.domElement.getBoundingClientRect()
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+    const ray = new THREE.Raycaster()
+    return ticks.filter(({ text }) => /^-?[\d,]+$/.test(text)).map(({ text, pixel, vertical }) => {
+      const x = vertical ? 24 : pixel
+      const y = vertical ? height - pixel : 24
+      ray.setFromCamera(new THREE.Vector2(2 * x / width - 1, 1 - 2 * y / height), camera)
+      const hit = ray.ray.intersectPlane(plane, new THREE.Vector3())
+      return { vertical, error: Math.abs(hit[vertical ? 'y' : 'x'] * 1000 - Number(text.replaceAll(',', ''))) }
+    })
+  }, rulerText)
+  assert.ok(rulerAccuracy.some(({ vertical }) => vertical))
+  assert.ok(rulerAccuracy.some(({ vertical }) => !vertical))
+  assert.ok(rulerAccuracy.every(({ error }) => error < 0.1), JSON.stringify(rulerAccuracy))
+  const canvasBounds = await page.locator('canvas[data-engine]').boundingBox()
+  await page.mouse.move(canvasBounds.x + canvasBounds.width / 2, canvasBounds.y + canvasBounds.height / 2)
+  await page.mouse.wheel(0, -240)
+  await page.waitForFunction((previous) => JSON.stringify(window.__rulerText) !== previous, JSON.stringify(rulerText))
+
+  const gridToggle = page.getByTestId('facility-grid-toggle')
+  const gridState = () => page.evaluate(() => {
+    const grid = window.__facilityView.scene.children.find(({ type }) => type === 'GridHelper')
+    const minor = grid.getObjectByName('minor-grid')
+    return {
+      visible: grid.visible,
+      vertexColors: grid.material.vertexColors,
+      minorVisible: grid.visible && minor.visible,
+      minorStep: minor.material.uniforms.stepMeters.value,
+      sharedColor: minor.material.uniforms.gridColor.value === grid.material.color,
+    }
+  })
+  const visibleGrid = { visible: true, vertexColors: false, minorVisible: true, minorStep: 0.1, sharedColor: true }
+  assert.deepEqual(await gridState(), visibleGrid)
+  await gridToggle.click()
+  assert.equal(await gridToggle.getAttribute('aria-pressed'), 'false')
+  assert.deepEqual(await gridState(), { ...visibleGrid, visible: false, minorVisible: false })
+  assert.ok(await page.evaluate(() => window.__rulerText.some(({ text }) => text === 'X · mm')))
+  await gridToggle.click()
+  assert.equal(await gridToggle.getAttribute('aria-pressed'), 'true')
+  assert.deepEqual(await gridState(), visibleGrid)
+  await page.getByTestId('scene-fit').click()
+
   await page.getByTestId('default-catalog').click()
   await page.getByTestId('catalog-register-defaults').click()
   await page.waitForFunction(
@@ -119,6 +190,8 @@ try {
     ),
   )
   assert.notEqual(moved.position.x, 1000)
+  assert.equal(moved.position.x % 100, 0)
+  assert.equal(moved.position.y % 100, 0)
   assert.equal(moved.portOffset.x, moved.position.x - 1000)
   assert.equal(
     Number(await page.getByTestId('instance-x').locator('input').inputValue()),
@@ -145,8 +218,12 @@ try {
     ),
   )
   assert.ok(Math.abs(axisScaled.scale.x - scaled.scale.x) > 0.01)
+  assert.ok(Math.abs(axisScaled.scale.x * 25 - Math.round(axisScaled.scale.x * 25)) < 0.00001)
   assert.equal(axisScaled.scale.y, scaled.scale.y)
   assert.equal(axisScaled.scale.z, scaled.scale.z)
+  const fixedRackEdge = (placement) => placement.position.x - 1250 * placement.scale.x
+  assert.ok(Math.abs(fixedRackEdge(axisScaled) - fixedRackEdge(scaled)) < 0.001)
+  assert.ok(Math.abs(axisScaled.portOffset.x - (axisScaled.position.x - 1000)) < 0.001)
   await page.getByTestId('scene-undo').click()
   await page.getByTestId('scene-redo').click()
   await page.evaluate(async () => {
@@ -191,15 +268,105 @@ try {
   assert.equal(first.rotation, 90)
   await page.getByTestId('scene-undo').click()
   await page.getByTestId('scene-redo').click()
-  await page
-    .getByTestId('glb-file')
-    .setInputFiles(path.resolve('public/models/ceram-mp5/robot.glb'))
+  await page.getByTestId('default-catalog').click()
+  const catalog = page.getByTestId('model-catalog')
+  const viewport = page.getByTestId('facility-canvas')
+  const panelBox = await catalog.boundingBox()
+  const mapBox = await viewport.boundingBox()
+  assert.ok(panelBox.x >= mapBox.x + mapBox.width - 1)
+  const dialog = page.getByTestId('glb-import-dialog')
+  const nameInput = page.getByTestId('glb-name').locator('input')
+  const registerGlb = page.getByTestId('glb-register')
+  const chooseGlb = async (file) => {
+    await page.getByTestId('glb-import').click()
+    await dialog.waitFor()
+    await page.getByTestId('glb-file').setInputFiles(path.resolve(`public/models/ceram-mp5/${file}.glb`))
+    await dialog.getByTestId('glb-preview-canvas').waitFor()
+  }
+  await chooseGlb('robot')
+  await page.waitForFunction(() => !!window.__glbPreviewCamera)
+  assert.match(await dialog.getByTestId('glb-preview-size').textContent(), /mm/)
+  const previewView = await page.evaluate(() => window.__glbPreviewCamera)
+  const previewBounds = await dialog.getByTestId('glb-preview-canvas').boundingBox()
+  await page.mouse.move(previewBounds.x + previewBounds.width / 2, previewBounds.y + previewBounds.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(previewBounds.x + previewBounds.width / 2 + 45, previewBounds.y + previewBounds.height / 2 + 15, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForFunction((initial) => window.__glbPreviewCamera.some((value, index) => Math.abs(value - initial[index]) > 0.05), previewView)
+  await page.screenshot({ path: path.join(output, 'glb-registration-preview.png') })
+  assert.equal(await nameInput.inputValue(), 'robot')
+  await nameInput.fill('Catalog Robot')
+  await registerGlb.click()
+  await dialog.waitFor({ state: 'hidden' })
+
+  await chooseGlb('crate')
+  await nameInput.fill('  CATALOG ROBOT  ')
+  await dialog.getByText('같은 이름의 모델이 이미 있습니다.').waitFor()
+  assert.equal(await registerGlb.isDisabled(), true)
+  await nameInput.fill('삭제 검증 모델 A')
+  await registerGlb.click()
+  await dialog.waitFor({ state: 'hidden' })
+  await chooseGlb('crate')
+  await nameInput.fill('삭제 검증 모델 B')
+  await registerGlb.click()
+  await dialog.waitFor({ state: 'hidden' })
+
+  const model = await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const { id, name, glb } = useFacilityEditor().document.assets.find(({ name }) => name === 'Catalog Robot')
+    return { id, name, sourceName: glb.sourceName }
+  })
+  assert.match(model.id, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/)
+  assert.equal(model.sourceName, 'robot.glb')
+  await page.getByTestId('scene-fit').click()
+  const dragModelTo = async (x, y, assetId = model.id) => {
+    const targetPosition = await page.evaluate(({ x, y }) => {
+      const { renderer, camera, THREE } = window.__facilityView
+      camera.updateMatrixWorld()
+      const point = new THREE.Vector3(x / 1000, y / 1000, 0).project(camera)
+      const { width, height } = renderer.domElement.getBoundingClientRect()
+      return { x: ((point.x + 1) * width) / 2, y: ((1 - point.y) * height) / 2 }
+    }, { x, y })
+    await catalog
+      .getByTestId(`catalog-model-${assetId}`)
+      .dragTo(viewport.locator('canvas[data-engine]'), { targetPosition })
+    return page.evaluate(async () => {
+      const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+      return structuredClone(useFacilityEditor().selected)
+    })
+  }
+  const floorPlacement = await dragModelTo(21000, 11900)
+  assert.equal(floorPlacement.assetId, model.id)
+  assert.equal(floorPlacement.portId, undefined)
+  assert.ok(Math.abs(floorPlacement.position.x - 21000) < 150)
+  assert.ok(Math.abs(floorPlacement.position.y - 11900) < 150)
+  const portPlacement = await dragModelTo(5300, 13500)
+  assert.equal(portPlacement.portId, 'PORT-10')
+  assert.deepEqual(portPlacement.position, { x: 5300, y: 13500, z: 0 })
+  await page.getByTestId('scene-undo').click()
+
+  await catalog.getByTestId('catalog-select').click()
+  assert.equal(await catalog.getByRole('checkbox', { name: /Catalog Robot/ }).isDisabled(), true)
+  for (const name of ['삭제 검증 모델 A', '삭제 검증 모델 B']) {
+    const checkbox = catalog.getByRole('checkbox', { name: new RegExp(name) })
+    await checkbox.click()
+    assert.equal(await checkbox.getAttribute('aria-checked'), 'true')
+  }
+  await catalog.getByTestId('catalog-delete').click()
+  const assetCount = () => page.evaluate(async () =>
+    (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document.assets.length,
+  )
+  assert.equal(await assetCount(), 24)
+  await page.getByTestId('scene-undo').click()
+  assert.equal(await assetCount(), 26)
+  await page.getByTestId('scene-redo').click()
+  assert.equal(await assetCount(), 24)
+  await catalog.getByTestId('catalog-close').click()
   await page.waitForFunction(
     async () =>
       (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document
         .assets.length === 24,
   )
-  await page.getByTestId('place-center').click()
   await page.waitForTimeout(500)
   const snapshot = await page.evaluate(async () =>
     structuredClone(
@@ -271,7 +438,7 @@ try {
             id: 'box',
             name: 'Box',
             shape: 'box',
-            position: { x: 0, y: 0, z: 500 },
+            position: { x: 0, y: 0, z: 650 },
             size: { x: 1000, y: 2000, z: 1000 },
             rotation: 90,
             color: '#dddddd',
@@ -280,7 +447,7 @@ try {
             id: 'cylinder',
             name: 'Cylinder',
             shape: 'cylinder',
-            position: { x: 1250, y: 0, z: 250 },
+            position: { x: 1250, y: 0, z: 400 },
             size: { x: 500, y: 1000, z: 500 },
             rotation: 0,
             color: '#dddddd',
@@ -331,7 +498,10 @@ try {
   assert.equal(resized.scale.x, 1.5)
   assert.equal(resized.scale.y, 1)
   assert.ok(resized.scale.z > 1)
-  assert.deepEqual(resized.position, beforeQuickResize.position)
+  assert.equal(resized.position.x, beforeQuickResize.position.x)
+  assert.equal(resized.position.y, beforeQuickResize.position.y)
+  const fixedBottom = (placement) => placement.position.z + 150 * placement.scale.z
+  assert.ok(Math.abs(fixedBottom(resized) - fixedBottom(beforeQuickResize)) < 0.001)
   assert.equal(resized.rotation, beforeQuickResize.rotation)
   assert.ok(Math.abs(Number(await page.getByTestId('instance-size-z').locator('input').inputValue()) - resized.scale.z * 1000) < 0.001)
   await page.getByTestId('scene-undo').click()
@@ -342,6 +512,7 @@ try {
   assert.deepEqual(await placed(), beforeQuickResize)
   await sizeHandle.press('Shift+ArrowRight')
   assert.equal((await placed()).scale.z, 1.1)
+  assert.ok(Math.abs(fixedBottom(await placed()) - fixedBottom(beforeQuickResize)) < 0.001)
   const resizedHandle = await sizeHandle.boundingBox()
   const handleX = resizedHandle.x + resizedHandle.width / 2
   const handleY = resizedHandle.y + resizedHandle.height / 2
@@ -351,14 +522,524 @@ try {
   await page.keyboard.press('Escape')
   await page.mouse.up()
   assert.equal((await placed()).scale.z, 1.1)
+
+  const worldCenter = (placement) => {
+    const angle = placement.rotation * Math.PI / 180
+    const centerX = 250 * placement.scale.x
+    return {
+      x: placement.position.x + centerX * Math.cos(angle),
+      y: placement.position.y + centerX * Math.sin(angle),
+    }
+  }
+  const centerBeforeRotation = worldCenter(await placed())
+  await page.getByTestId('direct-rotate').press('Shift+ArrowRight')
+  const afterRotation = await placed()
+  const centerAfterRotation = worldCenter(afterRotation)
+  assert.equal(afterRotation.rotation, 15)
+  assert.ok(Math.hypot(centerAfterRotation.x - centerBeforeRotation.x, centerAfterRotation.y - centerBeforeRotation.y) < 0.001)
+
+  const cameraPosition = await page.evaluate(() => window.__facilityView.camera.position.toArray())
+  const canvasBox = await viewport.boundingBox()
+  const cameraDragX = canvasBox.x + canvasBox.width / 2
+  const cameraDragY = canvasBox.y + canvasBox.height / 2
+  await page.mouse.move(cameraDragX, cameraDragY)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(cameraDragX + 120, cameraDragY + 25, { steps: 10 })
+  await page.mouse.up({ button: 'right' })
+  await page.waitForFunction((original) =>
+    window.__facilityView.camera.position.toArray().some((value, index) => Math.abs(value - original[index]) > 0.1),
+  cameraPosition)
+  await page.getByTestId('direct-transform').waitFor()
+  const highlight = await page.evaluate(() => ({
+    maskParts: window.__selectedMask.children.length,
+    boxBorder: getComputedStyle(document.querySelector('[data-testid=direct-transform]')).borderTopWidth,
+  }))
+  assert.deepEqual(highlight, { maskParts: 2, boxBorder: '0px' })
+  assert.deepEqual(await placed(), afterRotation)
+
+  const replaceLibrary = (assets) => page.evaluate(async (assets) => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const studio = useFacilityEditor()
+    studio.load(JSON.stringify({ ...studio.document, instances: [], assets }), 'catalog-test.map3d.json')
+  }, assets)
+  await replaceLibrary([project.assets.find(({ id }) => id === model.id)])
+  await page.getByTestId('default-catalog').click()
+  await catalog.getByTestId('catalog-select').click()
+  await catalog.getByRole('checkbox', { name: /Catalog Robot/ }).click()
+  await catalog.getByTestId('catalog-delete').click()
+  const [emptyDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('scene-save').click(),
+  ])
+  const emptyProject = JSON.parse(await fs.readFile(await emptyDownload.path(), 'utf8'))
+  assert.deepEqual(emptyProject.assets, [])
+  assert.deepEqual(emptyProject.instances, [])
+
+  await replaceLibrary(emptyProject.assets)
+  await catalog.getByTestId('catalog-select').click()
+  await page.getByTestId('scene-fit').click()
+  const builtInId = 'ceram-mp5-storage-rack'
+  assert.equal((await dragModelTo(21000, 11900, builtInId)).assetId, builtInId)
+  assert.equal(await assetCount(), 1)
+  await page.getByTestId('scene-undo').click()
+  assert.equal(await assetCount(), 0)
+
+  await catalog.getByTestId('catalog-close').click()
+  const originalGlb = project.assets.find(({ id }) => id === model.id)
+  const tinySize = { x: 2.5, y: 2, z: 2.14400005341 }
+  await replaceLibrary([{ ...originalGlb, glb: { ...originalGlb.glb, size: tinySize } }])
+  await page.getByTestId('place-center').click()
+  const targetSize = { x: 1400, y: 1600, z: 2500 }
+  for (const [axis, mm] of Object.entries(targetSize))
+    await page.getByTestId(`instance-size-${axis}`).locator('input').fill(String(mm))
+  await page.getByTestId('instance-apply').click()
+  const corrected = await placed()
+  for (const [axis, mm] of Object.entries(targetSize))
+    assert.ok(Math.abs(corrected.scale[axis] * tinySize[axis] - mm) < 0.0001)
+  assert.ok(corrected.scale.z > 1000)
+  await page.getByTestId('selection-focus').click()
+  await page.getByTestId('direct-z').press('Shift+ArrowRight')
+  assert.ok(Math.abs((await placed()).scale.z * tinySize.z - 2750) < 0.0001)
+  const [correctedDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('scene-save').click(),
+  ])
+  const correctedProject = JSON.parse(await fs.readFile(await correctedDownload.path(), 'utf8'))
+  assert.ok(Math.abs(correctedProject.instances[0].scale.z * correctedProject.assets[0].glb.size.z - 2750) < 0.0001)
+
+  const door = {
+    id: 'slim-door-fixture', name: '유리문 핸들 검증', kind: 'equipment',
+    parts: [
+      { x: -485, z: 1100, width: 30, height: 2200 },
+      { x: 485, z: 1100, width: 30, height: 2200 },
+      { x: 0, z: 2185, width: 940, height: 30 },
+      { x: 0, z: 1100, width: 940, height: 2140, opacity: 0.25 },
+    ].map(({ x, z, width, height, opacity }, index) => ({
+      id: `door-${index}`, name: `Door part ${index}`, shape: 'box', position: { x, y: 0, z },
+      size: { x: width, y: 45, z: height }, rotation: 0, color: '#dddfe2', opacity,
+    })),
+  }
+  await replaceLibrary([door])
+  await page.getByTestId('place-center').click()
+  await page.getByTestId('direct-x-min').waitFor()
+  await page.getByTestId('selection-focus').click()
+  await page.getByTestId('direct-x-min').hover()
+  const left = await page.getByTestId('direct-x-min').boundingBox()
+  const right = await page.getByTestId('direct-x').boundingBox()
+  assert.ok(left.x < right.x)
+  const doorBefore = await placed()
+  await dragHandle('x-min', (left.x - right.x) * 0.2, (left.y - right.y) * 0.2)
+  const doorAfter = await placed()
+  assert.ok(doorAfter.scale.x > 1.1)
+  assert.equal(doorAfter.scale.y, 1)
+  assert.equal(doorAfter.scale.z, 1)
+  const fixedRight = (placement) => placement.position.x + 500 * (placement.scale?.x ?? 1)
+  assert.ok(Math.abs(fixedRight(doorBefore) - fixedRight(doorAfter)) < 0.001)
+  assert.equal(await page.evaluate(() => window.__selectedMask.children.length), 4)
+  await page.screenshot({ path: path.join(output, 'door-edge-handles.png') })
+
+  await replaceLibrary([])
+  await page.getByTestId('facility-building-mode').click()
+  await page.getByTestId('interior-layout').click()
+  const plan = await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 320
+    canvas.height = 240
+    const context = canvas.getContext('2d')
+    context.fillStyle = '#fff'
+    context.fillRect(0, 0, 320, 240)
+    context.fillStyle = '#32445d'
+    context.fillRect(40, 110, 240, 6)
+    return canvas.toDataURL().split(',')[1]
+  })
+  await page.getByTestId('layout-file').setInputFiles({
+    name: 'wall-plan.png', mimeType: 'image/png', buffer: Buffer.from(plan, 'base64'),
+  })
+  await page.getByText('위치와 실제 크기 직접 맞추기', { exact: true }).click()
+  await page.getByRole('spinbutton', { name: '실제 가로 길이 mm' }).fill('24000')
+  await page.getByTestId('layout-apply').click()
+  await page.getByTestId('layout-panel').getByRole('button', { name: '닫기', exact: true }).click()
+  await page.waitForFunction(() => {
+    const plan = window.__facilityView.scene.getObjectByName('facility-floor-plan')
+    return plan.visible && plan.material.map?.image?.width === 320
+  })
+
+  const screenPoint = ([x, y, z]) => page.evaluate(([x, y, z]) => {
+    const { THREE, camera, renderer } = window.__facilityView
+    const point = new THREE.Vector3(x / 1000, y / 1000, z / 1000).project(camera)
+    const bounds = renderer.domElement.getBoundingClientRect()
+    return [bounds.x + (point.x + 1) * bounds.width / 2, bounds.y + (1 - point.y) * bounds.height / 2]
+  }, [x, y, z])
+  const drawWall = page.getByTestId('interior-wall')
+  await drawWall.click()
+  await page.getByTestId('wall-thickness').fill('210')
+  await page.getByTestId('wall-height').fill('3000')
+  await page.mouse.click(...await screenPoint([6000, 6000, 0]))
+  await page.getByText('벽의 끝점을 클릭하세요.', { exact: true }).waitFor()
+  assert.equal(await assetCount(), 0)
+  await page.keyboard.press('Escape')
+  assert.equal(await drawWall.getAttribute('aria-pressed'), 'false')
+  assert.equal(await assetCount(), 0)
+  await drawWall.click()
+  await page.mouse.click(...await screenPoint([6000, 6000, 0]))
+  const end = await screenPoint([10500, 6600, 0])
+  await page.keyboard.down('Shift')
+  await page.mouse.move(...end)
+  await page.waitForFunction(() => {
+    const preview = window.__facilityView.scene.getObjectByName('facility-wall-preview')
+    return preview.visible && preview.scale.x > 4 && preview.scale.y === 0.21 && preview.rotation.z === 0
+  })
+  await page.screenshot({ path: path.join(output, 'drawing-wall-on-plan.png') })
+  await page.mouse.click(...end)
+  await page.keyboard.up('Shift')
+  const wall = await placed()
+  assert.equal(wall.assetId, 'interior-wall')
+  assert.equal(wall.rotation, 0)
+  assert.ok(Math.abs(wall.scale.x * 3000 - 4500) < 100)
+  assert.ok(Math.abs(wall.scale.y * 150 - 210) < 0.001)
+  assert.ok(Math.abs(wall.scale.z * 2600 - 3000) < 0.001)
+  assert.equal(await drawWall.getAttribute('aria-pressed'), 'true')
+  await drawWall.click()
+  await page.getByTestId('scene-undo').click()
+  assert.equal(await assetCount(), 0)
+  assert.equal(await page.getByTestId('instance-count').textContent(), '0')
+  await page.getByTestId('scene-redo').click()
+  assert.equal(await page.getByTestId('instance-count').textContent(), '1')
+  await page.getByTestId('interior-door').click()
+  await page.mouse.click(...await screenPoint([wall.position.x, wall.position.y, 3000]))
+  assert.equal((await placed()).wallDoors.length, 1)
+  const dragElement = async (locator, dx, dy) => {
+    const rect = await locator.boundingBox()
+    assert.ok(rect)
+    const x = rect.x + rect.width / 2
+    const y = rect.y + rect.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + dx, y + dy, { steps: 6 })
+    await page.mouse.up()
+  }
+  const elevation = page.getByTestId('wall-elevation-board')
+  const elevationSize = await elevation.boundingBox()
+  assert.ok(elevationSize)
+  const wallWidth = wall.scale.x * 3000
+  const opening = (await placed()).wallDoors[0]
+  const doorControl = page.getByRole('button', { name: '문 선택 또는 이동', exact: true })
+  await dragElement(doorControl, -800 * elevationSize.width / wallWidth, -30)
+  const shiftedDoor = (await placed()).wallDoors[0]
+  assert.ok(shiftedDoor.offset < opening.offset - 600)
+  assert.equal(shiftedDoor.sill, undefined)
+  await dragElement(page.getByTestId('wall-opening-resize-e'), 300 * elevationSize.width / wallWidth, 0)
+  assert.ok((await placed()).wallDoors[0].width > shiftedDoor.width + 150)
+  await page.getByTestId('interior-window').click()
+  const windowBefore = (await placed()).wallDoors.find(item => item.kind === 'window')
+  await page.keyboard.down('Alt')
+  await dragElement(page.getByRole('button', { name: '창문 선택 또는 이동' }), 0, -137 * elevationSize.height / 3000)
+  await page.keyboard.up('Alt')
+  const windowAfter = (await placed()).wallDoors.find(item => item.kind === 'window')
+  assert.ok(windowAfter.sill > windowBefore.sill + 100)
+  assert.notEqual(windowAfter.sill % 100, 0)
+  await dragElement(
+    page.getByRole('button', { name: '창문 선택 또는 이동' }),
+    ((await placed()).wallDoors[0].offset - windowAfter.offset) * elevationSize.width / wallWidth, 0,
+  )
+  assert.deepEqual((await placed()).wallDoors.find(item => item.kind === 'window'), windowAfter)
+  const [wallDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('scene-save').click(),
+  ])
+  const wallProject = await fs.readFile(await wallDownload.path(), 'utf8')
+  const restoredWall = await page.evaluate(async (content) => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const studio = useFacilityEditor()
+    studio.load(content, 'drawn-wall.map3d.json')
+    return structuredClone(studio.document.instances[0])
+  }, wallProject)
+  assert.deepEqual(restoredWall, JSON.parse(wallProject).instances[0])
+
+  await page.getByTestId('building-structure-view').click()
+  await page.getByTestId('floor-rectangle').click()
+  await page.mouse.click(...await screenPoint([3000, 2000, 0]))
+  await page.mouse.click(...await screenPoint([15000, 10000, 0]))
+  await page.getByTestId('floor-material').selectOption('showroom-epoxy')
+  assert.equal(await page.getByTestId('floor-repeat').locator('input').inputValue(), '4800')
+  await page.getByTestId('floor-apply').click()
+  await page.waitForFunction(() => {
+    const { scene, THREE } = window.__facilityView
+    const floor = scene.getObjectByName('바닥 영역 1')
+    return floor?.material.map?.image?.width === 1024 &&
+      floor.material.map.wrapS === THREE.MirroredRepeatWrapping &&
+      !floor.material.depthTest &&
+      floor.material.color.getHex() > 0xc9c9c9 &&
+      floor.material.envMap === scene.environment &&
+      floor.material.specularIntensity > 0 &&
+      floor.material.clearcoat > 0 &&
+      floor.material.clearcoatRoughness > 0
+  })
+  const [epoxyDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('scene-save').click(),
+  ])
+  const epoxyProject = JSON.parse(await fs.readFile(await epoxyDownload.path(), 'utf8'))
+  assert.equal(epoxyProject.floors[0].material, 'showroom-epoxy')
+  assert.equal(epoxyProject.floors[0].color, '#c9c9c9')
+  assert.equal(epoxyProject.floors[0].repeatMm, 4800)
+  assert.equal(epoxyProject.floors[0].points.length, 4)
+
+  await page.getByTestId('building-structure-view').click()
+  await page.getByTestId('place-ceiling').click()
+  await page.getByTestId('building-ceiling-height').fill('3500')
+  await page.mouse.click(...await screenPoint([3000, 3000, 0]))
+  await page.getByText('맞은편 모서리를 클릭하세요.', { exact: true }).waitFor()
+  await page.mouse.click(...await screenPoint([12000, 9000, 0]))
+  const ceiling = await placed()
+  assert.equal(ceiling.cutawayRole, 'ceiling')
+  assert.equal(ceiling.position.z, 3500)
+  assert.ok(Math.abs(ceiling.scale.x * 3000 - 9000) < 125)
+  assert.ok(Math.abs(ceiling.scale.y * 3000 - 6000) < 125)
+  const glassId = await page.evaluate(async (asset) => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const { createInteriorModel } = await import('/src/entities/facility/interiorModels.ts')
+    const studio = useFacilityEditor()
+    studio.setAsset({
+      ...asset, id: 'building-line-fixture', name: 'Building fixture', catalogCategory: 'lighting',
+      light: { kind: 'line', temperature: 6000 },
+      glb: { ...asset.glb, sourceName: '19_linear_led.glb', size: { x: 1200, y: 100, z: 70 } },
+    }, studio.document.mapRef)
+    const glass = createInteriorModel('glass')
+    studio.setAsset(glass, studio.document.mapRef)
+    studio.place(12000, 6000)
+    const id = studio.selectedId
+    studio.place(15000, 6500)
+    return id
+  }, originalGlb)
+  await page.getByTestId('building-mark-wall').click()
+  assert.equal((await placed()).cutawayRole, 'wall')
+  await page.getByTestId('building-existing-object').selectOption(glassId)
+  await page.getByTestId('building-attach-selection').locator('.v-field__append-inner').click()
+  await page.getByRole('option').filter({ hasText: /^벽 · 벽 / }).click()
+  assert.equal((await placed()).attachedTo, wall.id)
+  await page.getByTestId('building-ceiling-view').click()
+  const ceilingPlan = page.getByTestId('ceiling-plan-board')
+  await ceilingPlan.waitFor()
+  await page.getByTestId('default-catalog').click()
+  await page.getByTestId('catalog-model-building-line-fixture').dragTo(ceilingPlan, { targetPosition: { x: 180, y: 120 } })
+  await page.getByTestId('ceiling-fixture').waitFor()
+  const mounted = await placed()
+  assert.equal(mounted.attachedTo, ceiling.id)
+  assert.equal(mounted.position.z, 3430)
+  await dragElement(page.getByTestId('ceiling-fixture'), 38, 23)
+  const shifted = await placed()
+  assert.notDeepEqual(shifted.position, mounted.position)
+  assert.equal(shifted.position.z, mounted.position.z)
+  await dragElement(page.getByTestId('ceiling-fixture-rotate'), -18, -36)
+  assert.notEqual((await placed()).rotation, shifted.rotation)
+  const buildingExport = await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const { useEditor } = await import('/src/features/map-editor/model/editor.ts')
+    const { exportFacilityFiles } = await import('/src/entities/facility/index.ts')
+    return { ...exportFacilityFiles(useFacilityEditor().document), nodes: useEditor().document.nodes }
+  })
+  await fs.writeFile(path.join(output, 'building-editor-cross-app.json'), JSON.stringify(buildingExport))
+  await page.getByTestId('facility-equipment-mode').click()
+  assert.equal(await page.getByTestId('building-structure-view').count(), 0)
+  await page.getByTestId('tool-place').waitFor()
+
+  const initialGroup = await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const studio = useFacilityEditor()
+    const asset = {
+      id: 'snap-block', name: 'Snap block', kind: 'equipment',
+      parts: [{
+        id: 'body', name: 'Body', shape: 'box', color: '#273039', surface: 'stainlessSteel', rotation: 0,
+        position: { x: 0, y: 0, z: 300 }, size: { x: 1200, y: 800, z: 600 },
+      }],
+    }
+    const instances = [
+      { id: 'snap-first', position: { x: 7123, y: 5127, z: 250 }, rotation: 30 },
+      { id: 'snap-second', position: { x: 8500, y: 5600, z: 0 }, rotation: 0 },
+    ].map(item => ({ ...item, assetId: asset.id, name: item.id }))
+    studio.load(JSON.stringify({ ...studio.document, assets: [asset], instances, floors: [] }), 'snap-test.map3d.json')
+    return instances
+  })
+  await page.getByTestId('facility-snap-step').selectOption('50')
+  await page.getByRole('button', { name: '위에서 보기' }).click()
+  const groupPositions = () => page.evaluate(async () =>
+    (await import('/src/features/facility-editor/model/studio.ts')).useFacilityEditor().document.instances
+      .map(({ position }) => ({ ...position })),
+  )
+  const footprint = () => page.evaluate(() => {
+    const mesh = window.__facilityView.scene.getObjectByName('facility-selection-footprints')
+    return Array.from(mesh.geometry.attributes.position.array.slice(0, mesh.geometry.drawRange.count * 3))
+  })
+  const groupStart = await screenPoint([7123, 5127, 850])
+  await page.waitForFunction(() => {
+    const { scene } = window.__facilityView
+    let metal
+    scene.traverse((object) => {
+      if (object.userData.ids?.includes('snap-first')) metal = object.material
+    })
+    return !!metal?.envMap && metal.envMapIntensity === 0.72 && metal.color.getHex() === 0x273039
+  })
+  await page.mouse.click(...groupStart)
+  await page.keyboard.down('Shift')
+  await page.mouse.click(...await screenPoint([8500, 5600, 600]))
+  await page.keyboard.up('Shift')
+  await page.waitForFunction(() =>
+    window.__facilityView.scene.getObjectByName('facility-selection-footprints').geometry.drawRange.count === 16,
+  )
+  const beforeFootprint = await footprint()
+  assert.equal(beforeFootprint.length, 48)
+  const edge = [beforeFootprint[3] - beforeFootprint[0], beforeFootprint[4] - beforeFootprint[1]]
+  assert.ok(Math.abs(Math.hypot(...edge) - 1.2) < 0.00001)
+  assert.ok(Math.abs(Math.atan2(edge[1], edge[0]) - Math.PI / 6) < 0.00001)
+  assert.ok(beforeFootprint.filter((_, index) => index % 3 === 2).every(z => Math.abs(z - 0.004) < 0.00001))
+  await page.mouse.move(...groupStart)
+  await page.mouse.down()
+  await page.mouse.move(...await screenPoint([7472, 5383, 850]))
+  await page.waitForFunction((x) => {
+    const mesh = window.__facilityView.scene.getObjectByName('facility-selection-footprints')
+    return Math.abs(mesh.geometry.attributes.position.array[0] - x) > 0.1
+  }, beforeFootprint[0])
+  const snappedPreview = await footprint()
+  await page.keyboard.down('Alt')
+  await page.waitForFunction((x) => {
+    const mesh = window.__facilityView.scene.getObjectByName('facility-selection-footprints')
+    const position = mesh.geometry.attributes.position.array
+    return Math.hypot(position[0] - x[0], position[1] - x[1]) > 0.004
+  }, snappedPreview.slice(0, 2))
+  await page.keyboard.up('Alt')
+  await page.mouse.up()
+  const groupMoved = await groupPositions()
+  assert.equal(groupMoved[0].x % 50, 0)
+  assert.equal(groupMoved[0].y % 50, 0)
+  const initialPositions = initialGroup.map(({ position }) => position)
+  for (const axis of ['x', 'y'])
+    assert.equal(groupMoved[1][axis] - groupMoved[0][axis], initialPositions[1][axis] - initialPositions[0][axis])
+  await page.getByTestId('scene-undo').click()
+  assert.deepEqual(await groupPositions(), initialPositions)
+  await page.mouse.click(...groupStart)
+  await page.mouse.move(...groupStart)
+  await page.mouse.down()
+  await page.keyboard.down('Alt')
+  await page.mouse.move(...await screenPoint([7472, 5383, 850]))
+  await page.mouse.up()
+  await page.keyboard.up('Alt')
+  const freePosition = (await groupPositions())[0]
+  assert.ok(Math.abs(freePosition.x - 7472) < 35)
+  assert.ok(freePosition.x % 50 !== 0 || freePosition.y % 50 !== 0)
+  await page.getByTestId('direct-rotate').waitFor()
+  await dragHandle('rotate', 44, 7)
+  const snappedRotation = (await placed()).rotation
+  assert.notEqual(snappedRotation, 30)
+  assert.equal(Math.abs(snappedRotation % 15), 0)
+  await page.keyboard.down('Alt')
+  await dragHandle('rotate', -31, 12)
+  await page.keyboard.up('Alt')
+  assert.notEqual(Math.abs((await placed()).rotation % 15), 0)
+  await page.getByTestId('scene-fit').click()
+  const fromAbove = await footprint()
+  await page.getByRole('button', { name: '위에서 보기' }).click()
+  assert.deepEqual(await footprint(), fromAbove)
+
+  await page.evaluate(async () => {
+    const { THREE } = window.__facilityView
+    const { GLTFExporter } = await import('/node_modules/three/examples/jsm/exporters/GLTFExporter.js')
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const lens = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 0.06, 0.04),
+      new THREE.MeshStandardMaterial({ name: 'Diffused lamp lens' }),
+    )
+    const binary = await new GLTFExporter().parseAsync(lens, { binary: true })
+    const data = btoa(String.fromCharCode(...new Uint8Array(binary)))
+    const assets = ['18_track_spotlight.glb', '19_linear_led.glb'].map((sourceName, index) => ({
+      id: 'light-' + index, name: sourceName, kind: 'equipment', parts: [],
+      glb: { data, size: { x: 2000, y: 40, z: 60 }, sourceName },
+    }))
+    const instances = assets.flatMap(({ id }, index) => Array.from({ length: 4 }, (_, fixture) => ({
+      id: id + '-fixture-' + fixture, assetId: id, name: id, rotation: 90,
+      position: { x: index * 4000 + fixture * 2500, y: 2000, z: 3700 },
+    })))
+    const floors = [{
+      id: 'light-floor', name: 'Lighting fixture floor', color: '#c9c9c9', material: 'showroom-epoxy',
+      rotation: 0, repeatMm: 4800, points: [{ x: 0, y: 0 }, { x: 12000, y: 0 }, { x: 12000, y: 8000 }, { x: 0, y: 8000 }],
+    }]
+    const studio = useFacilityEditor()
+    studio.load(JSON.stringify({ ...studio.document, assets, instances, floors }), 'fixtures.map3d.json')
+  })
+  await page.waitForFunction(() => {
+    const { scene } = window.__facilityView
+    const group = scene.getObjectByName('showroom-fixtures')
+    const lights = group.children
+    const map = scene.getObjectByName('Lighting fixture floor')?.material.lightMap
+    return lights.some(light => light.isSpotLight && light.userData.temperature === 2000) &&
+      lights.some(light => light.isRectAreaLight && light.userData.temperature === 6000 &&
+        Math.abs(light.width - 2) < 0.00001 && Math.abs(light.rotation.z - Math.PI / 2) < 0.00001) &&
+      scene.environmentIntensity === 0 &&
+      !scene.children.some(child => child.isDirectionalLight && child.visible) &&
+      lights.length === 8 && group.visible && scene.environment === null && map?.channel === 1 &&
+      lights.filter(light => light.visible && light.isSpotLight).length === 2 &&
+      lights.filter(light => light.visible && light.isRectAreaLight).length === 1
+  })
+  const bakedId = await page.evaluate(() => window.__facilityView.scene.getObjectByName('Lighting fixture floor').material.lightMap.uuid)
+  assert.equal(await page.getByTestId('facility-realtime-reflections').count(), 0)
+  await page.getByTestId('scene-fit').click()
+  assert.equal(await page.evaluate(() => window.__facilityView.scene.getObjectByName('Lighting fixture floor').material.lightMap.uuid), bakedId)
+  await page.getByRole('button', { name: 'GLB 모델 카탈로그', exact: true }).click()
+  await page.getByTestId('model-catalog').getByRole('button', { name: '조명', exact: true }).click()
+  await page.getByTestId('catalog-light-edit-light-0').click()
+  const temperatureInput = page.getByTestId('glb-light-temperature').locator('input')
+  assert.equal(await temperatureInput.inputValue(), '2000')
+  await temperatureInput.fill('950')
+  assert.equal(await page.getByTestId('catalog-light-save').isDisabled(), true)
+  await temperatureInput.fill('2700')
+  await page.getByTestId('catalog-light-save').click()
+  await page.waitForFunction(() => window.__facilityView.scene.getObjectByName('showroom-fixtures').children
+    .some(light => light.isSpotLight && light.userData.temperature === 2700))
+  await chooseGlb('robot')
+  await nameInput.fill('Custom light')
+  await temperatureInput.fill('5300')
+  await registerGlb.click()
+  await page.getByTestId('catalog-close').click()
+  const [lightingDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('scene-save').click(),
+  ])
+  const lightingProject = JSON.parse(await fs.readFile(await lightingDownload.path(), 'utf8'))
+  assert.deepEqual(lightingProject.assets.find(asset => asset.id === 'light-0').light, { kind: 'spot', temperature: 2700 })
+  assert.deepEqual(lightingProject.assets.find(asset => asset.name === 'Custom light').light, { kind: 'spot', temperature: 5300 })
+  await fs.writeFile(path.join(output, 'lighting.map3d.json'), JSON.stringify(lightingProject))
+  await page.evaluate(async () => {
+    const { useFacilityEditor } = await import('/src/features/facility-editor/model/studio.ts')
+    const studio = useFacilityEditor()
+    studio.load(JSON.stringify({ ...studio.document, instances: [] }), 'empty-fixtures.map3d.json')
+  })
+  await page.waitForFunction(() => {
+    const { scene } = window.__facilityView
+    return scene.getObjectByName('showroom-fixtures').children.length === 0 &&
+      scene.environmentIntensity === 0.55 && !scene.getObjectByName('Lighting fixture floor').material.lightMap
+  })
+
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify({
       editor: true,
+      facilityRulers: true,
+      facilityGridToggle: true,
       catalog: 23,
       importedGlb: true,
+      glbMillimeterSizeCorrection: true,
+      catalogDragAndDrop: true,
+      catalogBatchDeletion: true,
+      catalogEmptySave: true,
       scaled: true,
       mouseSelectionMoveScale: true,
+      anchoredResize: true,
+      meshSelectionOutline: true,
+      transformSnappingAndFootprints: true,
+      wallDrawingFromPlan: true,
+      showroomEpoxyFloor: true,
+      showroomFixtureLighting: true,
+      glbImportPreview: true,
       catalogRefreshPreservesPlacement: true,
       undoRedo: true,
       portableExport: true,

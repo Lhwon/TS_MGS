@@ -18,7 +18,11 @@ export const surfaceMaterials = {
 export type SurfaceMaterial = keyof typeof surfaceMaterials
 
 /** 저장된 표면을 우선하고 이전 파일의 기본 부품 이름에서 대응하는 재질 선택 */
-export const surfaceForPart = (part: { surface?: SurfaceMaterial; wall?: true; name: string }): SurfaceMaterial => {
+export const surfaceForPart = (part: {
+  surface?: SurfaceMaterial
+  wall?: true
+  name: string
+}): SurfaceMaterial => {
   if (part.surface) return part.surface
   if (part.wall) return 'plaster'
   if (part.name === '유리') return 'glass'

@@ -1,7 +1,12 @@
 import { decodeEmbeddedGlb, embeddedGlbPartCount } from './glbData'
 import { normalizeCargoDocument } from './cargo'
 import { parseFloorAreas, type FloorArea } from './floorAreas'
-import { legacyFacilityLight, minLightTemperature, maxLightTemperature, type FacilityLight } from './facilityLights'
+import {
+  legacyFacilityLight,
+  minLightTemperature,
+  maxLightTemperature,
+  type FacilityLight,
+} from './facilityLights'
 import { parseWallDoors, wallOpeningPartBudget, type WallDoor } from './wallDoors'
 import { parseSceneResource } from './sceneResources'
 import type { SceneResource } from './sceneResources'
@@ -41,8 +46,9 @@ export interface FacilityPart {
   wall?: true
 }
 /** 내장 바이너리와 외부 리소스 참조를 공통 치수로 표현 */
-export type FacilityGlb = { size: Point3; sourceName: string } &
-  ({ data: string; uri?: never; hash?: never } | (SceneResource & { data?: never }))
+export type FacilityGlb = { size: Point3; sourceName: string } & (
+  { data: string; uri?: never; hash?: never } | (SceneResource & { data?: never })
+)
 
 export interface FacilityAsset {
   id: string
@@ -84,7 +90,7 @@ export interface FacilityInstance {
 }
 
 export const facilityLight = (asset: FacilityAsset) =>
-  asset.glb ? asset.light ?? legacyFacilityLight(asset.glb.sourceName) : undefined
+  asset.glb ? (asset.light ?? legacyFacilityLight(asset.glb.sourceName)) : undefined
 export const facilityCutawayRole = (instance: FacilityInstance, asset?: FacilityAsset) => {
   if (instance.cutawayRole === 'independent') return undefined
   if (instance.cutawayRole) return instance.cutawayRole
@@ -195,7 +201,11 @@ export const parseFacilitySceneFile = (file: import('./sceneResources').SceneFil
   const project = parseFacilityDocument(file.content)
   if (!file.catalog || project.version !== 2) return project
   const catalog = JSON.parse(file.catalog)
-  if (catalog.format !== 'bem-map3d-catalog' || catalog.version !== 2 || !Array.isArray(catalog.assets))
+  if (
+    catalog.format !== 'bem-map3d-catalog' ||
+    catalog.version !== 2 ||
+    !Array.isArray(catalog.assets)
+  )
     throw new Error('편집용 모델 목록 형식을 확인하세요.')
   return validateFacilityDraft({ ...project, assets: [...project.assets, ...catalog.assets] })
 }
@@ -204,13 +214,17 @@ const glbCosts = new WeakMap<FacilityAsset, number>()
 const libraryBytes = new WeakMap<FacilityAsset[], number>()
 
 /** 편집 중에는 이미 검증한 라이브러리를 재사용하고 새 배치 데이터만 검증 */
-export const validateFacilityPlacements = (source: FacilityDocument, instances: FacilityInstance[]) => {
+export const validateFacilityPlacements = (
+  source: FacilityDocument,
+  instances: FacilityInstance[],
+) => {
   let bytes = libraryBytes.get(source.assets)
   if (bytes === undefined) {
     const library = source.assets.map((asset) =>
       asset.glb ? { ...asset, glb: { ...asset.glb, data: '' } } : asset,
     )
-    bytes = new TextEncoder().encode(JSON.stringify(library)).length +
+    bytes =
+      new TextEncoder().encode(JSON.stringify(library)).length +
       source.assets.reduce((length, asset) => length + (asset.glb?.data?.length ?? 0), 0)
     libraryBytes.set(source.assets, bytes)
   }
@@ -348,76 +362,93 @@ const validateFacilityDocument = (
     name: reference.name === undefined ? '' : str(reference.name),
     geometryKey: reference.geometryKey === undefined ? '' : str(reference.geometryKey),
   }
-  const floors = validated ? validated.floors : parseFloorAreas(data.floors, draft || data.version === 2)
+  const floors = validated
+    ? validated.floors
+    : parseFloorAreas(data.floors, draft || data.version === 2)
   if (floors?.length) result.floors = floors
-  result.assets = validated?.assets ?? list(data.assets, 500).map((value) => {
-    const a = record(value)
-    if (!['rack', 'shelf', 'equipment', 'conveyor'].includes(a.kind))
-      throw new Error('지원하지 않는 모델 종류입니다.')
-    const parts = list(a.parts ?? [], 10000).map((value) => {
-      const p = record(value)
-      if (!['box', 'cylinder'].includes(p.shape))
-        throw new Error('지원하지 않는 설비 부품 도형입니다.')
-      if (p.wall !== undefined && p.wall !== true) throw new Error('벽체 부품 표시가 잘못되었습니다.')
-      if (p.surface !== undefined && (typeof p.surface !== 'string' || !Object.hasOwn(surfaceMaterials, p.surface)))
-        throw new Error('지원하지 않는 부품 재질입니다.')
-      return {
-        id: identifier(p.id),
-        name: str(p.name),
-        shape: p.shape,
-        position: point(p.position),
-        size: point(p.size, true),
-        rotation: num(p.rotation),
-        color: color(p.color),
-        ...(p.surface === undefined ? {} : { surface: p.surface }),
-        ...(p.tiltX === undefined ? {} : { tiltX: num(p.tiltX) }),
-        ...(p.tiltY === undefined ? {} : { tiltY: num(p.tiltY) }),
-        ...(p.opacity === undefined ? {} : { opacity: num(p.opacity, 0, 1) }),
-        ...(p.wall === true ? { wall: true } : {}),
-      } as FacilityPart
+  result.assets =
+    validated?.assets ??
+    list(data.assets, 500).map((value) => {
+      const a = record(value)
+      if (!['rack', 'shelf', 'equipment', 'conveyor'].includes(a.kind))
+        throw new Error('지원하지 않는 모델 종류입니다.')
+      const parts = list(a.parts ?? [], 10000).map((value) => {
+        const p = record(value)
+        if (!['box', 'cylinder'].includes(p.shape))
+          throw new Error('지원하지 않는 설비 부품 도형입니다.')
+        if (p.wall !== undefined && p.wall !== true)
+          throw new Error('벽체 부품 표시가 잘못되었습니다.')
+        if (
+          p.surface !== undefined &&
+          (typeof p.surface !== 'string' || !Object.hasOwn(surfaceMaterials, p.surface))
+        )
+          throw new Error('지원하지 않는 부품 재질입니다.')
+        return {
+          id: identifier(p.id),
+          name: str(p.name),
+          shape: p.shape,
+          position: point(p.position),
+          size: point(p.size, true),
+          rotation: num(p.rotation),
+          color: color(p.color),
+          ...(p.surface === undefined ? {} : { surface: p.surface }),
+          ...(p.tiltX === undefined ? {} : { tiltX: num(p.tiltX) }),
+          ...(p.tiltY === undefined ? {} : { tiltY: num(p.tiltY) }),
+          ...(p.opacity === undefined ? {} : { opacity: num(p.opacity, 0, 1) }),
+          ...(p.wall === true ? { wall: true } : {}),
+        } as FacilityPart
+      })
+      if (!parts.length && a.glb === undefined) throw new Error('부품 또는 GLB 모델이 필요합니다.')
+      if (parts.length && a.glb !== undefined)
+        throw new Error('부품 모델과 GLB 모델을 함께 지정할 수 없습니다.')
+      unique(parts.map((p) => p.id))
+      const asset: FacilityAsset = { id: identifier(a.id), name: str(a.name), kind: a.kind, parts }
+      if (
+        a.catalogCategory === 'equipment' ||
+        a.catalogCategory === 'interior' ||
+        a.catalogCategory === 'lighting'
+      )
+        asset.catalogCategory = a.catalogCategory
+      if (a.glb !== undefined) {
+        const glb = record(a.glb)
+        const metadata = { size: point(glb.size, true), sourceName: str(glb.sourceName) }
+        if (
+          (draft || data.version === 1) &&
+          typeof glb.data === 'string' &&
+          glb.uri === undefined &&
+          glb.hash === undefined
+        ) {
+          const cost = embeddedGlbPartCount(decodeEmbeddedGlb(glb.data))
+          if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
+          glbCosts.set(asset, cost)
+          asset.glb = { data: glb.data, ...metadata }
+        } else if ((draft || data.version === 2) && glb.data === undefined) {
+          asset.glb = { ...metadata, ...parseSceneResource(glb, false, draft) }
+        } else throw new Error('설계 버전에 맞는 GLB 데이터 또는 외부 참조가 필요합니다.')
+      }
+      if (a.light !== undefined || a.catalogCategory === 'lighting') {
+        const light = record(a.light)
+        if (!asset.glb || (light.kind !== 'spot' && light.kind !== 'line'))
+          throw new Error('GLB 조명 모델과 조명 종류를 확인하세요.')
+        asset.light = {
+          kind: light.kind,
+          temperature: integer(light.temperature, minLightTemperature, maxLightTemperature),
+        }
+      }
+      if (a.design !== undefined) {
+        const d = record(a.design)
+        asset.design = {
+          width: num(d.width, 100, 100000),
+          depth: num(d.depth, 100, 100000),
+          height: num(d.height, 100, 100000),
+          bays: integer(d.bays, 1, 50),
+          levels: integer(d.levels, 1, 50),
+          frame: num(d.frame, 5, 500),
+          color: color(d.color),
+        }
+      }
+      return asset
     })
-    if (!parts.length && a.glb === undefined) throw new Error('부품 또는 GLB 모델이 필요합니다.')
-    if (parts.length && a.glb !== undefined)
-      throw new Error('부품 모델과 GLB 모델을 함께 지정할 수 없습니다.')
-    unique(parts.map((p) => p.id))
-    const asset: FacilityAsset = { id: identifier(a.id), name: str(a.name), kind: a.kind, parts }
-    if (a.catalogCategory === 'equipment' || a.catalogCategory === 'interior' || a.catalogCategory === 'lighting')
-      asset.catalogCategory = a.catalogCategory
-    if (a.glb !== undefined) {
-      const glb = record(a.glb)
-      const metadata = { size: point(glb.size, true), sourceName: str(glb.sourceName) }
-      if ((draft || data.version === 1) && typeof glb.data === 'string' && glb.uri === undefined && glb.hash === undefined) {
-        const cost = embeddedGlbPartCount(decodeEmbeddedGlb(glb.data))
-        if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
-        glbCosts.set(asset, cost)
-        asset.glb = { data: glb.data, ...metadata }
-      } else if ((draft || data.version === 2) && glb.data === undefined) {
-        asset.glb = { ...metadata, ...parseSceneResource(glb, false, draft) }
-      } else throw new Error('설계 버전에 맞는 GLB 데이터 또는 외부 참조가 필요합니다.')
-    }
-    if (a.light !== undefined || a.catalogCategory === 'lighting') {
-      const light = record(a.light)
-      if (!asset.glb || (light.kind !== 'spot' && light.kind !== 'line'))
-        throw new Error('GLB 조명 모델과 조명 종류를 확인하세요.')
-      asset.light = {
-        kind: light.kind,
-        temperature: integer(light.temperature, minLightTemperature, maxLightTemperature),
-      }
-    }
-    if (a.design !== undefined) {
-      const d = record(a.design)
-      asset.design = {
-        width: num(d.width, 100, 100000),
-        depth: num(d.depth, 100, 100000),
-        height: num(d.height, 100, 100000),
-        bays: integer(d.bays, 1, 50),
-        levels: integer(d.levels, 1, 50),
-        frame: num(d.frame, 5, 500),
-        color: color(d.color),
-      }
-    }
-    return asset
-  })
   unique(result.assets.map((a) => a.id))
   const assets = new Map(result.assets.map((a) => [a.id, a]))
   result.instances = list(data.instances, 10000).map((value) => {
@@ -451,7 +482,11 @@ const validateFacilityDocument = (
     }
     if (i.nodeId !== undefined) instance.nodeId = integer(i.nodeId, 0, 1e9)
     if (i.cutawayRole !== undefined) {
-      if (i.cutawayRole !== 'wall' && i.cutawayRole !== 'ceiling' && i.cutawayRole !== 'independent')
+      if (
+        i.cutawayRole !== 'wall' &&
+        i.cutawayRole !== 'ceiling' &&
+        i.cutawayRole !== 'independent'
+      )
         throw new Error('구조물 분류를 확인하세요.')
       instance.cutawayRole = i.cutawayRole
     }
@@ -460,12 +495,18 @@ const validateFacilityDocument = (
   })
   unique(result.instances.map((i) => i.id))
   if (result.instances.some((instance) => instance.attachedTo)) {
-    const structures = new Set(result.instances
-      .filter((instance) => facilityCutawayRole(instance, assets.get(instance.assetId)))
-      .map((instance) => instance.id))
+    const structures = new Set(
+      result.instances
+        .filter((instance) => facilityCutawayRole(instance, assets.get(instance.assetId)))
+        .map((instance) => instance.id),
+    )
     for (const instance of result.instances) {
-      if (instance.attachedTo && (structures.has(instance.id) || !structures.has(instance.attachedTo))) {
-        if (data.version === 2 && !draft) throw new Error('구조물 부착 대상이 없거나 순환 연결입니다.')
+      if (
+        instance.attachedTo &&
+        (structures.has(instance.id) || !structures.has(instance.attachedTo))
+      ) {
+        if (data.version === 2 && !draft)
+          throw new Error('구조물 부착 대상이 없거나 순환 연결입니다.')
         delete instance.attachedTo
       }
     }
@@ -479,7 +520,12 @@ const validateFacilityDocument = (
       wall.wallDoors = wall.wallDoors.filter((opening) => {
         if (!opening.modelId) return true
         const model = byId.get(opening.modelId)
-        if (model?.attachedTo !== wall.id || !assets.get(model.assetId)?.glb || linked.has(model.id)) return false
+        if (
+          model?.attachedTo !== wall.id ||
+          !assets.get(model.assetId)?.glb ||
+          linked.has(model.id)
+        )
+          return false
         linked.add(model.id)
         return true
       })
@@ -487,21 +533,22 @@ const validateFacilityDocument = (
     }
   }
   if (
-    result.instances.reduce(
-      (sum, instance) => {
-        const asset = assets.get(instance.assetId)!
-        if (!asset.glb) return sum + (instance.wallDoors ? wallOpeningPartBudget(instance.wallDoors) : asset.parts.length)
-        if (!asset.glb.data) return sum + 1
-        let cost = glbCosts.get(asset)
-        if (cost === undefined) {
-          cost = embeddedGlbPartCount(decodeEmbeddedGlb(asset.glb.data))
-          if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
-          glbCosts.set(asset, cost)
-        }
-        return sum + cost
-      },
-      0,
-    ) > MAX_PART_INSTANCES
+    result.instances.reduce((sum, instance) => {
+      const asset = assets.get(instance.assetId)!
+      if (!asset.glb)
+        return (
+          sum +
+          (instance.wallDoors ? wallOpeningPartBudget(instance.wallDoors) : asset.parts.length)
+        )
+      if (!asset.glb.data) return sum + 1
+      let cost = glbCosts.get(asset)
+      if (cost === undefined) {
+        cost = embeddedGlbPartCount(decodeEmbeddedGlb(asset.glb.data))
+        if (cost > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
+        glbCosts.set(asset, cost)
+      }
+      return sum + cost
+    }, 0) > MAX_PART_INSTANCES
   )
     throw new Error('배치 부품은 총 100,000개 이하여야 합니다.')
   return upgradeCargo && result.version === 1 ? normalizeCargoDocument(result) : result

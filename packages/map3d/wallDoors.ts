@@ -50,13 +50,17 @@ export const wallMountFrame = (instance: FacilityInstance, asset?: FacilityAsset
     width: body.size.x * x,
     depth: body.size.y * y,
     height: body.size.z * z,
-    center: { x: body.position.x * x, y: body.position.y * y, z: (body.position.z - body.size.z / 2) * z },
+    center: {
+      x: body.position.x * x,
+      y: body.position.y * y,
+      z: (body.position.z - body.size.z / 2) * z,
+    },
   }
 }
 
 /** 벽의 로컬 좌표를 지도 좌표로 변환 */
 export const wallWorldPoint = (wall: FacilityInstance, point: Point3): Point3 => {
-  const angle = wall.rotation * Math.PI / 180
+  const angle = (wall.rotation * Math.PI) / 180
   const cos = Math.cos(angle)
   const sin = Math.sin(angle)
   return {
@@ -68,7 +72,7 @@ export const wallWorldPoint = (wall: FacilityInstance, point: Point3): Point3 =>
 
 /** 지도 좌표를 벽의 로컬 좌표로 변환 */
 export const wallLocalPoint = (wall: FacilityInstance, point: Point3): Point3 => {
-  const angle = wall.rotation * Math.PI / 180
+  const angle = (wall.rotation * Math.PI) / 180
   const cos = Math.cos(angle)
   const sin = Math.sin(angle)
   const x = point.x - wall.position.x
@@ -77,10 +81,14 @@ export const wallLocalPoint = (wall: FacilityInstance, point: Point3): Point3 =>
 }
 
 /** 부모의 이동과 회전에서 부착 모델의 상대 변환 유지 */
-export const carryAttachedInstance = (before: FacilityInstance, after: FacilityInstance, instance: FacilityInstance) => ({
+export const carryAttachedInstance = (
+  before: FacilityInstance,
+  after: FacilityInstance,
+  instance: FacilityInstance,
+) => ({
   ...instance,
   position: wallWorldPoint(after, wallLocalPoint(before, instance.position)),
-  rotation: ((instance.rotation + after.rotation - before.rotation) % 360 + 360) % 360,
+  rotation: (((instance.rotation + after.rotation - before.rotation) % 360) + 360) % 360,
 })
 
 /** 정규화된 GLB의 폭과 높이를 개구부에 맞추는 배치 변환 반환 */
@@ -122,7 +130,8 @@ export const parseWallDoors = (
         !item.id ||
         item.id.length > 300 ||
         ids.has(item.id) ||
-        (item.modelId !== undefined && (typeof item.modelId !== 'string' || !item.modelId || item.modelId.length > 300)) ||
+        (item.modelId !== undefined &&
+          (typeof item.modelId !== 'string' || !item.modelId || item.modelId.length > 300)) ||
         !Number.isFinite(item.offset) ||
         !Number.isFinite(item.width) ||
         !Number.isFinite(item.height) ||
@@ -138,7 +147,10 @@ export const parseWallDoors = (
         throw new Error('문 또는 창문의 폭, 높이와 위치가 벽 범위 안에 있어야 합니다.')
       ids.add(item.id)
       return {
-        id: item.id, offset: item.offset, width: item.width, height: item.height,
+        id: item.id,
+        offset: item.offset,
+        width: item.width,
+        height: item.height,
         ...(item.kind === 'window' ? { kind: item.kind, sill } : {}),
         ...(item.modelId ? { modelId: item.modelId } : {}),
       }
@@ -202,7 +214,10 @@ export const instanceParts = (asset: FacilityAsset, instance: FacilityInstance):
     box('상부 벽체', x1, x2, z, top, body.color, true)
     if (window) {
       box('하부 벽체', x1, x2, bottom, base, body.color, true)
-      if (!door.modelId) box('하부 창틀', x1 + jamb, x2 - jamb, base, base + header, trim, false, body.size.y, { surface: 'paintedSteel' })
+      if (!door.modelId)
+        box('하부 창틀', x1 + jamb, x2 - jamb, base, base + header, trim, false, body.size.y, {
+          surface: 'paintedSteel',
+        })
     }
     if (door.modelId) {
       previous = x2

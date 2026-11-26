@@ -28,25 +28,40 @@ export const createFacilityObjectLighting = () => {
     material.onBeforeCompile = (shader, renderer) => {
       compile.call(material, shader, renderer)
       Object.assign(shader.uniforms, uniforms)
-      shader.vertexShader = shader.vertexShader.replace('#include <common>', `
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `
         #include <common>
         uniform mat4 fixtureLightMatrix;
         varying vec2 vFixtureUv;
-      `).replace('#include <project_vertex>', `
+      `,
+        )
+        .replace(
+          '#include <project_vertex>',
+          `
         #include <project_vertex>
         vec4 fixturePosition = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
           fixturePosition = instanceMatrix * fixturePosition;
         #endif
         vFixtureUv = (fixtureLightMatrix * modelMatrix * fixturePosition).xy;
-      `)
-      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
+      `,
+        )
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `
         #include <common>
         uniform sampler2D fixtureLightMap;
         uniform vec3 fixtureLightUp;
         uniform bool fixtureLightingEnabled;
         varying vec2 vFixtureUv;
-      `).replace('#include <lights_fragment_end>', `
+      `,
+        )
+        .replace(
+          '#include <lights_fragment_end>',
+          `
         #if defined(RE_IndirectDiffuse)
           if (fixtureLightingEnabled &&
               all(greaterThanEqual(vFixtureUv, vec2(0.0))) &&
@@ -57,7 +72,8 @@ export const createFacilityObjectLighting = () => {
           }
         #endif
         #include <lights_fragment_end>
-      `)
+      `,
+        )
     }
     material.needsUpdate = true
   }

@@ -3,7 +3,9 @@ import type { FloorArea } from './floorAreas'
 
 /** Approximate the diffuse floor contribution once per layout change in map coordinates. */
 export const bakeFacilityFloorLightMap = (
-  areas: FloorArea[], fixtures: THREE.Group, unit: number,
+  areas: FloorArea[],
+  fixtures: THREE.Group,
+  unit: number,
 ) => {
   if (typeof document === 'undefined') return
   const bounds = new THREE.Box2()
@@ -34,8 +36,8 @@ export const bakeFacilityFloorLightMap = (
 
   const canvas = document.createElement('canvas')
   const longest = Math.max(size.x, size.y)
-  canvas.width = Math.max(2, Math.ceil(192 * size.x / longest))
-  canvas.height = Math.max(2, Math.ceil(192 * size.y / longest))
+  canvas.width = Math.max(2, Math.ceil((192 * size.x) / longest))
+  canvas.height = Math.max(2, Math.ceil((192 * size.y) / longest))
   const context = canvas.getContext('2d')
   if (!context) return
 
@@ -46,7 +48,8 @@ export const bakeFacilityFloorLightMap = (
   context.translate(-bounds.min.x, -bounds.min.y)
   const pixels = (v: number) => Math.round(255 * THREE.MathUtils.clamp(v, 0, 1))
   for (const { x, y, angle, length, spread, strength, color: tint } of emitters) {
-    const color = (alpha: number) => `rgba(${pixels(tint.r)},${pixels(tint.g)},${pixels(tint.b)},${alpha})`
+    const color = (alpha: number) =>
+      `rgba(${pixels(tint.r)},${pixels(tint.g)},${pixels(tint.b)},${alpha})`
     context.save()
     context.translate(x, y)
     context.rotate(angle)

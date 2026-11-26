@@ -17,7 +17,9 @@ export interface FacilityEmitter {
 
 /** 이름을 붙인 확산판 또는 기존 발광부를 찾고 일반 GLB는 모델 밑면을 사용 */
 export const prepareFacilityEmitter = (
-  asset: FacilityAsset, source: THREE.Object3D, modelScale: Pick<THREE.Matrix4, 'elements'>,
+  asset: FacilityAsset,
+  source: THREE.Object3D,
+  modelScale: Pick<THREE.Matrix4, 'elements'>,
 ): FacilityEmitter | undefined => {
   const fixture = facilityLight(asset)
   if (!fixture) return
@@ -25,9 +27,12 @@ export const prepareFacilityEmitter = (
   const scaleMatrix = new THREE.Matrix4().fromArray(modelScale.elements)
   let lens: THREE.Mesh | undefined
   source.traverse((part) => {
-    if (!(part instanceof THREE.Mesh) || !(part.material instanceof THREE.MeshStandardMaterial)) return
-    if (part.material.name === 'Diffused lamp lens' ||
-      (!lens && (part.material.emissiveMap || part.material.emissive.getHex() !== 0)))
+    if (!(part instanceof THREE.Mesh) || !(part.material instanceof THREE.MeshStandardMaterial))
+      return
+    if (
+      part.material.name === 'Diffused lamp lens' ||
+      (!lens && (part.material.emissiveMap || part.material.emissive.getHex() !== 0))
+    )
       lens = part
   })
   if (lens) {
@@ -62,14 +67,22 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
   const transform = new THREE.Matrix4()
 
   const update = (
-    id: string, { fixture, color, bounds }: FacilityEmitter, placement: Pick<THREE.Matrix4, 'elements'>, parentScale = 1,
+    id: string,
+    { fixture, color, bounds }: FacilityEmitter,
+    placement: Pick<THREE.Matrix4, 'elements'>,
+    parentScale = 1,
   ) => {
     let light = lights.get(id)
     if (!light) {
       if (fixture.kind === 'spot') {
         const worldUnitsPerMeter = localUnitsPerMeter * parentScale
-        const spot = new THREE.SpotLight(color, 48 * worldUnitsPerMeter ** 2, 10 * worldUnitsPerMeter,
-          THREE.MathUtils.degToRad(60), 0.65)
+        const spot = new THREE.SpotLight(
+          color,
+          48 * worldUnitsPerMeter ** 2,
+          10 * worldUnitsPerMeter,
+          THREE.MathUtils.degToRad(60),
+          0.65,
+        )
         spot.target.position.z = -1
         spot.add(spot.target)
         light = spot

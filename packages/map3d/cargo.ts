@@ -16,7 +16,8 @@ export const normalizeCargoDocument = (document: FacilityDocument): FacilityDocu
     const current = models.get(asset.id)
     if (
       !current?.glb ||
-      (asset.glb && asset.glb.data === current.glb.data &&
+      (asset.glb &&
+        asset.glb.data === current.glb.data &&
         asset.glb.size.x === current.glb.size.x &&
         asset.glb.size.y === current.glb.size.y &&
         asset.glb.size.z === current.glb.size.z)

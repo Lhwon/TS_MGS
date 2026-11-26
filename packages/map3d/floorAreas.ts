@@ -44,7 +44,10 @@ const intersects = (a: FloorPoint, b: FloorPoint, c: FloorPoint, d: FloorPoint) 
   Math.sign(turn(c, d, a)) * Math.sign(turn(c, d, b)) <= 0
 
 /** 겹치거나 면적이 없는 경계와 잘못된 재질을 파일 열기와 편집 단계에서 거부 */
-export const parseFloorAreas = (value: unknown, externalTextures = false): FloorArea[] | undefined => {
+export const parseFloorAreas = (
+  value: unknown,
+  externalTextures = false,
+): FloorArea[] | undefined => {
   if (value === undefined) return
   if (!Array.isArray(value) || value.length > MAX_FLOOR_AREAS)
     throw new Error('바닥 영역은 최대 128개까지 만들 수 있습니다.')
@@ -98,7 +101,8 @@ export const parseFloorAreas = (value: unknown, externalTextures = false): Floor
     }
     if (Math.abs(doubledArea) < 2) throw new Error('바닥 영역의 면적이 너무 작습니다.')
     ids.add(area.id)
-    if (area.texture && !externalTextures) throw new Error('외부 텍스처를 지원하는 설계 버전이 필요합니다.')
+    if (area.texture && !externalTextures)
+      throw new Error('외부 텍스처를 지원하는 설계 버전이 필요합니다.')
     return {
       id: area.id,
       name: area.name.trim(),

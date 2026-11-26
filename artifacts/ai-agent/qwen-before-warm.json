@@ -1,0 +1,138 @@
+{
+  "mode": "live-proposal",
+  "baseline": true,
+  "model": "qwen3.8:27b",
+  "total": 10,
+  "passed": 9,
+  "failed": 1,
+  "medianMs": 802,
+  "p95Ms": 2097,
+  "rows": [
+    {
+      "name": "일반 인사",
+      "passed": true,
+      "ms": 977,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7055,
+      "generatedTokens": 16,
+      "selectedTools": [],
+      "responseCharacters": 26
+    },
+    {
+      "name": "지도 문제 검사",
+      "passed": true,
+      "ms": 719,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7053,
+      "generatedTokens": 31,
+      "selectedTools": [
+        "inspect_map",
+        "audit_port_references"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "선택 노드 상대 이동",
+      "passed": true,
+      "ms": 1026,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7062,
+      "generatedTokens": 76,
+      "selectedTools": [
+        "edit_selection"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "조회 요청의 편집 방지",
+      "passed": true,
+      "ms": 770,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7062,
+      "generatedTokens": 38,
+      "selectedTools": [
+        "edit_selection"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "모델을 지정 포트에 배치",
+      "passed": true,
+      "ms": 802,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7058,
+      "generatedTokens": 46,
+      "selectedTools": [
+        "place_equipment"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "지도 실행 취소",
+      "passed": true,
+      "ms": 764,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7061,
+      "generatedTokens": 37,
+      "selectedTools": [
+        "history"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "대상 없는 이동 요청",
+      "passed": true,
+      "ms": 2097,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7004,
+      "generatedTokens": 242,
+      "selectedTools": [
+        "ask_user"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "사용자 확인 후 이어가기",
+      "passed": true,
+      "ms": 736,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7123,
+      "generatedTokens": 31,
+      "selectedTools": [
+        "inspect_map",
+        "audit_port_references"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "도구 오류 후 복구 판단",
+      "passed": true,
+      "ms": 1205,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7111,
+      "generatedTokens": 108,
+      "selectedTools": [
+        "get_map_context",
+        "get_map_context",
+        "get_map_context",
+        "get_map_context"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "대용량 도구 결과 연속 처리",
+      "passed": false,
+      "ms": 481,
+      "error": "AI 서비스 요청 실패 (500, /api/chat) · no user query found in messages"
+    }
+  ]
+}

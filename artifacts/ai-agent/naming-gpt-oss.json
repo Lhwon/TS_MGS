@@ -1,0 +1,85 @@
+{
+  "live": true,
+  "model": "gpt-oss:20b",
+  "results": [
+    {
+      "question": "배치된 3D 객체 전체의 이름을 원본 모델 이름과 일련번호 기준으로 변경해줘.",
+      "answer": "이름이 모두 원본 모델 이름과 일련번호 기준으로 바뀌었습니다. 필요하신 다른 작업이 있으면 알려 주세요!",
+      "steps": [
+        "rename_equipment"
+      ],
+      "asked": false,
+      "changed": true,
+      "ms": 728
+    },
+    {
+      "question": "3D 모델에 적용된 이름을 다 알맞게 변경 가능한가?",
+      "answer": "네, 3D 모델에 적용된 이름은 언제든지 바꿀 수 있습니다. 필요하신 경우 원하는 명명 규칙(예: 모델명 + 일련번호, 부서명 등)을 알려 주시면 바로 적용해 드릴게요!",
+      "steps": [],
+      "asked": false,
+      "changed": false,
+      "ms": 560
+    },
+    {
+      "question": "가능한지 불가능한지만 알려줘",
+      "answer": "가능합니다.",
+      "steps": [],
+      "asked": false,
+      "changed": false,
+      "ms": 201
+    },
+    {
+      "question": "facility에 등록된 객체들 이름 알맞게 변경해줘",
+      "answer": "현재 문서에는 3D 객체(인스턴스)가 없어서 이름을 바꿀 대상이 없습니다. 다른 객체(예: 라이브러리 모델)를 바꾸고 싶으시면 알려 주세요!",
+      "steps": [
+        "rename_equipment"
+      ],
+      "asked": false,
+      "changed": false
+    }
+  ],
+  "metrics": [
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 46,
+      "promptTokens": 4774,
+      "thinkingCharacters": 66
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 34,
+      "promptTokens": 5218,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 78,
+      "promptTokens": 5274,
+      "thinkingCharacters": 56
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 19,
+      "promptTokens": 5348,
+      "thinkingCharacters": 28
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 119,
+      "promptTokens": 5374,
+      "thinkingCharacters": 388
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 118,
+      "promptTokens": 5437,
+      "thinkingCharacters": 314
+    }
+  ]
+}

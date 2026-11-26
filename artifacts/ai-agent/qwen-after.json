@@ -1,0 +1,151 @@
+{
+  "mode": "live-proposal",
+  "baseline": false,
+  "model": "qwen3.8:27b",
+  "total": 10,
+  "passed": 10,
+  "failed": 0,
+  "medianMs": 1017,
+  "p95Ms": 2605,
+  "rows": [
+    {
+      "name": "일반 인사",
+      "passed": true,
+      "ms": 1017,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7055,
+      "generatedTokens": 16,
+      "selectedTools": [],
+      "responseCharacters": 26
+    },
+    {
+      "name": "지도 문제 검사",
+      "passed": true,
+      "ms": 723,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7053,
+      "generatedTokens": 31,
+      "selectedTools": [
+        "inspect_map",
+        "audit_port_references"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "선택 노드 상대 이동",
+      "passed": true,
+      "ms": 1042,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7062,
+      "generatedTokens": 76,
+      "selectedTools": [
+        "edit_selection"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "조회 요청의 편집 방지",
+      "passed": true,
+      "ms": 773,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7062,
+      "generatedTokens": 38,
+      "selectedTools": [
+        "edit_selection"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "모델을 지정 포트에 배치",
+      "passed": true,
+      "ms": 817,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7058,
+      "generatedTokens": 46,
+      "selectedTools": [
+        "place_equipment"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "지도 실행 취소",
+      "passed": true,
+      "ms": 778,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7061,
+      "generatedTokens": 37,
+      "selectedTools": [
+        "history"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "대상 없는 이동 요청",
+      "passed": true,
+      "ms": 2072,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7004,
+      "generatedTokens": 242,
+      "selectedTools": [
+        "ask_user"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "사용자 확인 후 이어가기",
+      "passed": true,
+      "ms": 715,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7123,
+      "generatedTokens": 31,
+      "selectedTools": [
+        "inspect_map",
+        "audit_port_references"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "도구 오류 후 복구 판단",
+      "passed": true,
+      "ms": 1180,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 7111,
+      "generatedTokens": 108,
+      "selectedTools": [
+        "get_map_context",
+        "get_map_context",
+        "get_map_context",
+        "get_map_context"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "대용량 도구 결과 연속 처리",
+      "passed": true,
+      "ms": 2605,
+      "model": "qwen3.8:27b",
+      "chatRequests": 1,
+      "promptTokens": 9731,
+      "generatedTokens": 218,
+      "selectedTools": [
+        "get_map_context",
+        "get_map_context",
+        "get_map_context",
+        "get_map_context",
+        "get_map_context",
+        "inspect_map",
+        "audit_port_references"
+      ],
+      "responseCharacters": 0
+    }
+  ]
+}

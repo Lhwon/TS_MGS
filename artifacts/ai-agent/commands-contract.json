@@ -1,0 +1,36 @@
+{
+  "live": false,
+  "model": "gpt-oss:20b",
+  "passed": true,
+  "initialCommands": 96,
+  "sceneCommands": 39,
+  "categories": [
+    "Workspace",
+    "2D/View",
+    "2D/Drawing",
+    "File",
+    "3D/ViewTools",
+    "3D/Workspace",
+    "3D/Selection",
+    "3D/Facility",
+    "3D/Building",
+    "3D/Inspector",
+    "3D/Lighting"
+  ],
+  "requests": 7,
+  "actualLightTemperature": 5500,
+  "checks": [
+    "잘못된 기능과 입력 차단",
+    "비활성 상태 재검증",
+    "화면 수명과 기능 해제",
+    "다단계 UI 채팅 실행과 완료 답변",
+    "조명 설정 및 벽 생성",
+    "속성 편집과 뷰포트 유지",
+    "천장 및 바닥 생성",
+    "벽 부착 및 잘못된 부모 참조 차단",
+    "분류 검색 보정 및 화면 범위 안내",
+    "창 열기와 편집 완료 구분",
+    "기존 파일 함수의 저장 추출 및 취소와 실패 보존"
+  ],
+  "errors": []
+}

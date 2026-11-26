@@ -1,0 +1,73 @@
+{
+  "regression": {
+    "passed": 26,
+    "total": 26
+  },
+  "models": [
+    {
+      "model": "gpt-oss:20b",
+      "total": 10,
+      "beforePassed": 9,
+      "afterPassed": 10,
+      "afterMedianMs": 507,
+      "commonSuccessMedianBeforeMs": 443,
+      "commonSuccessMedianAfterMs": 461,
+      "beforeFile": "gpt-oss-before.json",
+      "afterFile": "gpt-oss-after.json"
+    },
+    {
+      "model": "qwen3.8:27b",
+      "total": 10,
+      "beforePassed": 9,
+      "afterPassed": 10,
+      "afterMedianMs": 1017,
+      "commonSuccessMedianBeforeMs": 802,
+      "commonSuccessMedianAfterMs": 817,
+      "beforeFile": "qwen-before-warm.json",
+      "afterFile": "qwen-after.json"
+    }
+  ],
+  "ipc": {
+    "mode": "live-ipc",
+    "baseline": false,
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "medianMs": 3483,
+    "p95Ms": 3483,
+    "rows": [
+      {
+        "name": "실제 ai:propose IPC 대용량 요청",
+        "passed": true,
+        "ms": 3483,
+        "model": "qwen3.8:27b",
+        "selectedTools": [
+          "get_map_context",
+          "get_map_context",
+          "get_map_context",
+          "get_map_context",
+          "get_map_context",
+          "get_map_context",
+          "get_map_context"
+        ],
+        "responseCharacters": 0
+      }
+    ]
+  },
+  "checks": {
+    "typecheck": "passed",
+    "build": "passed with chunk size warning",
+    "format": "passed",
+    "desktopBridge": "passed",
+    "selection": "passed",
+    "uiToolParity": "passed",
+    "eslint": "project has no ESLint command"
+  },
+  "notes": [
+    "실제 모델 검사는 합성 문맥의 도구 선택과 응답 계약 검사이며 운영 지도 변경 없이 수행",
+    "기본 요청의 추론 속도 향상을 보장하는 측정이 아니라 긴 문맥의 요청 성공 여부와 지연 검사",
+    "qwen-before.json 첫 요청의 약 149초 지연은 실행 도구 중단과 겹친 관측값으로 별도 보존하며 예열된 비교는 qwen-before-warm.json 활용",
+    "토큰 사용량은 근사치 기반 제한이며 모든 모델과 장시간 실사용 품질은 미검증",
+    "실행 중인 TS_MGS의 Electron 메인 변경은 앱 재시작 후 적용"
+  ]
+}

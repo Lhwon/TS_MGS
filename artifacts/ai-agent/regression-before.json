@@ -1,0 +1,155 @@
+{
+  "mode": "mock-regression",
+  "baseline": true,
+  "total": 24,
+  "passed": 14,
+  "failed": 10,
+  "medianMs": 1,
+  "p95Ms": 17,
+  "rows": [
+    {
+      "name": "기본 대화",
+      "passed": true,
+      "ms": 17,
+      "chatRequests": 1
+    },
+    {
+      "name": "같은 문구의 새 질문",
+      "passed": false,
+      "ms": 2,
+      "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ '다른 질문'\n- '현재 맵을 검사하고 결과를 요약해줘.'\n"
+    },
+    {
+      "name": "완료된 질문을 다시 요청",
+      "passed": false,
+      "ms": 2,
+      "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'assistant'\n- 'user'\n"
+    },
+    {
+      "name": "도구 실행 후 질문 중복 방지",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "대용량 병렬 도구 결과",
+      "passed": false,
+      "ms": 2,
+      "error": "AI 서비스 요청 실패 (500, /api/chat) · no user query found in messages"
+    },
+    {
+      "name": "대용량 단일 작업 연속 조회",
+      "passed": false,
+      "ms": 3,
+      "error": "AI 서비스 요청 실패 (500, /api/chat) · no user query found in messages"
+    },
+    {
+      "name": "오래된 대화 축약",
+      "passed": false,
+      "ms": 4,
+      "error": "The expression evaluated to a falsy value:\n\n  assert(requests[0].messages.length < history.length)\n"
+    },
+    {
+      "name": "큰 지도 상태",
+      "passed": false,
+      "ms": 2,
+      "error": "The expression evaluated to a falsy value:\n\n  assert(requests[0].messages[1].content.length < 10000)\n"
+    },
+    {
+      "name": "최대 길이 한국어 질문 보존",
+      "passed": true,
+      "ms": 2,
+      "chatRequests": 1
+    },
+    {
+      "name": "실패 도구 결과 상태 보존",
+      "passed": false,
+      "ms": 1,
+      "error": "AI 서비스 요청 실패 (500, /api/chat) · no user query found in messages"
+    },
+    {
+      "name": "확인 질문 응답 보존",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "도구 미지원 모델 전환",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 1
+    },
+    {
+      "name": "사용자 문맥 유실 오류 단일 복구",
+      "passed": false,
+      "ms": 1,
+      "error": "AI 서비스 요청 실패 (500, /api/chat) · no user query found in messages"
+    },
+    {
+      "name": "복구 재실패 재시도 제한",
+      "passed": false,
+      "ms": 1,
+      "error": "Expected values to be strictly equal:\n\n1 !== 2\n"
+    },
+    {
+      "name": "일반 서버 오류 재시도 방지",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "허용되지 않은 응답 도구",
+      "passed": true,
+      "ms": 2,
+      "chatRequests": 1
+    },
+    {
+      "name": "빈 모델 응답",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "출력 토큰 한도 초과",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "빈 사용자 질문 차단",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "대화 이력 개수 제한",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "미지원 입력 도구 차단",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "추론 취소 및 요청 슬롯 반환",
+      "passed": true,
+      "ms": 22,
+      "chatRequests": 2
+    },
+    {
+      "name": "동일 조회 중복 실행 방지",
+      "passed": false,
+      "ms": 1,
+      "error": "Expected values to be strictly equal:\n\n5 !== 4\n"
+    },
+    {
+      "name": "편집 이후 동일 조회 재실행 유지",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    }
+  ]
+}

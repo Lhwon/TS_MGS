@@ -1,0 +1,217 @@
+{
+  "scope": "AI 이름 변경과 후속 대화 완료 검증",
+  "regression": {
+    "passed": 29,
+    "total": 29
+  },
+  "naming": [
+    {
+      "file": "naming-gpt-oss.json",
+      "live": true,
+      "model": "gpt-oss:20b",
+      "results": [
+        {
+          "question": "배치된 3D 객체 전체의 이름을 원본 모델 이름과 일련번호 기준으로 변경해줘.",
+          "answer": "이름이 모두 원본 모델 이름과 일련번호 기준으로 바뀌었습니다. 필요하신 다른 작업이 있으면 알려 주세요!",
+          "steps": [
+            "rename_equipment"
+          ],
+          "asked": false,
+          "changed": true,
+          "ms": 728
+        },
+        {
+          "question": "3D 모델에 적용된 이름을 다 알맞게 변경 가능한가?",
+          "answer": "네, 3D 모델에 적용된 이름은 언제든지 바꿀 수 있습니다. 필요하신 경우 원하는 명명 규칙(예: 모델명 + 일련번호, 부서명 등)을 알려 주시면 바로 적용해 드릴게요!",
+          "steps": [],
+          "asked": false,
+          "changed": false,
+          "ms": 560
+        },
+        {
+          "question": "가능한지 불가능한지만 알려줘",
+          "answer": "가능합니다.",
+          "steps": [],
+          "asked": false,
+          "changed": false,
+          "ms": 201
+        },
+        {
+          "question": "facility에 등록된 객체들 이름 알맞게 변경해줘",
+          "answer": "현재 문서에는 3D 객체(인스턴스)가 없어서 이름을 바꿀 대상이 없습니다. 다른 객체(예: 라이브러리 모델)를 바꾸고 싶으시면 알려 주세요!",
+          "steps": [
+            "rename_equipment"
+          ],
+          "asked": false,
+          "changed": false
+        }
+      ],
+      "metrics": [
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 46,
+          "promptTokens": 4774,
+          "thinkingCharacters": 66
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 34,
+          "promptTokens": 5218,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 78,
+          "promptTokens": 5274,
+          "thinkingCharacters": 56
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 19,
+          "promptTokens": 5348,
+          "thinkingCharacters": 28
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 119,
+          "promptTokens": 5374,
+          "thinkingCharacters": 388
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 118,
+          "promptTokens": 5437,
+          "thinkingCharacters": 314
+        }
+      ]
+    },
+    {
+      "file": "naming-qwen.json",
+      "live": true,
+      "model": "qwen3.8:27b",
+      "results": [
+        {
+          "question": "배치된 3D 객체 전체의 이름을 원본 모델 이름과 일련번호 기준으로 변경해줘.",
+          "answer": "배치된 3D 객체 199개 전체를 원본 모델 이름과 일련번호 기준으로 변경했습니다. 예: OBJECT_0 → \"랙 1\", OBJECT_1 → \"작업대 1\" 등. ID, GLB 파일, 위치·회전값은 그대로 유지됩니다.",
+          "steps": [
+            "rename_equipment"
+          ],
+          "asked": false,
+          "changed": true,
+          "ms": 13115
+        },
+        {
+          "question": "3D 모델에 적용된 이름을 다 알맞게 변경 가능한가?",
+          "answer": "네, 가능합니다. 배치된 3D 객체(인스턴스)와 라이브러리 모델 모두 이름을 변경할 수 있습니다. ID, GLB 파일, 위치·회전값은 그대로 유지되고 이름만 바뀌며, 한 번에 여러 개를 일괄 변경할 수도 있습니다.",
+          "steps": [],
+          "asked": false,
+          "changed": false,
+          "ms": 890
+        },
+        {
+          "question": "가능한지 불가능한지만 알려줘",
+          "answer": "가능합니다.",
+          "steps": [],
+          "asked": false,
+          "changed": false,
+          "ms": 338
+        },
+        {
+          "question": "facility에 등록된 객체들 이름 알맞게 변경해줘",
+          "asked": true,
+          "steps": [
+            "get_map_context",
+            "get_map_context"
+          ],
+          "changed": false
+        }
+      ],
+      "metrics": [
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 52,
+          "promptTokens": 7628,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 68,
+          "promptTokens": 8124,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 61,
+          "promptTokens": 8220,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 4,
+          "promptTokens": 8301,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 40,
+          "promptTokens": 8331,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 27,
+          "promptTokens": 9751,
+          "thinkingCharacters": 0
+        },
+        {
+          "done": true,
+          "reason": "stop",
+          "tokens": 162,
+          "promptTokens": 9919,
+          "thinkingCharacters": 0
+        }
+      ]
+    },
+    {
+      "file": "naming-contract.json",
+      "live": false,
+      "model": "gpt-oss:20b",
+      "results": [
+        "기존 모델명 수정과 일괄 배치 이름 및 GLB 참조와 변형 보존과 실행 취소 및 다시 실행 통과",
+        "모델명과 배치명 구분 및 잘못된 목록 원자성 검증 통과"
+      ],
+      "metrics": []
+    }
+  ],
+  "checks": {
+    "typecheck": "passed",
+    "build": "passed with chunk-size warning",
+    "format": "passed",
+    "desktopBridge": "passed",
+    "uiToolParity": "passed"
+  },
+  "runtime": {
+    "restarted": true,
+    "operatingMapRenamed": false,
+    "screenVerification": "창 활성화 도구 실패로 현재 운영 창의 직접 질문 입력은 미검증"
+  },
+  "notes": [
+    "기존 도구 선택 검사에서 누락된 실제 도구 실행과 최종 답변 및 후속 질문까지 검사",
+    "객체 이름 변경은 격리된 편집기에서 실행하여 운영 프로젝트 이름 보존",
+    "명명 범위나 기준이 불명확한 요청은 확인 질문으로 전환",
+    "입력 예산을 유지하고 출력 예산을 이천사십팔 토큰에서 사천구십육 토큰으로 조정하여 전체 문맥은 일만팔천사백삼십이 토큰 사용",
+    "모델 서버 과부하나 모든 장시간 대화의 성공률 보장은 미검증"
+  ]
+}

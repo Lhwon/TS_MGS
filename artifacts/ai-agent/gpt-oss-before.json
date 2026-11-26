@@ -1,0 +1,131 @@
+{
+  "mode": "live-proposal",
+  "baseline": true,
+  "model": "gpt-oss:20b",
+  "total": 10,
+  "passed": 9,
+  "failed": 1,
+  "medianMs": 495,
+  "p95Ms": 12167,
+  "rows": [
+    {
+      "name": "일반 인사",
+      "passed": true,
+      "ms": 727,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4343,
+      "generatedTokens": 20,
+      "selectedTools": [],
+      "responseCharacters": 6
+    },
+    {
+      "name": "지도 문제 검사",
+      "passed": true,
+      "ms": 245,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4341,
+      "generatedTokens": 29,
+      "selectedTools": [
+        "inspect_map"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "선택 노드 상대 이동",
+      "passed": true,
+      "ms": 495,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4347,
+      "generatedTokens": 71,
+      "selectedTools": [
+        "edit_selection"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "조회 요청의 편집 방지",
+      "passed": true,
+      "ms": 623,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4349,
+      "generatedTokens": 91,
+      "selectedTools": [
+        "get_map_context"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "모델을 지정 포트에 배치",
+      "passed": true,
+      "ms": 443,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4347,
+      "generatedTokens": 62,
+      "selectedTools": [
+        "place_equipment"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "지도 실행 취소",
+      "passed": true,
+      "ms": 303,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4348,
+      "generatedTokens": 36,
+      "selectedTools": [
+        "history"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "대상 없는 이동 요청",
+      "passed": true,
+      "ms": 849,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4290,
+      "generatedTokens": 141,
+      "selectedTools": [
+        "ask_user"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "사용자 확인 후 이어가기",
+      "passed": true,
+      "ms": 258,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4395,
+      "generatedTokens": 30,
+      "selectedTools": [
+        "inspect_map"
+      ],
+      "responseCharacters": 0
+    },
+    {
+      "name": "도구 오류 후 복구 판단",
+      "passed": true,
+      "ms": 369,
+      "model": "gpt-oss:20b",
+      "chatRequests": 1,
+      "promptTokens": 4396,
+      "generatedTokens": 58,
+      "selectedTools": [],
+      "responseCharacters": 76
+    },
+    {
+      "name": "대용량 도구 결과 연속 처리",
+      "passed": false,
+      "ms": 12167,
+      "error": "AI 응답이 완성되지 않았습니다. 다시 요청해 주세요."
+    }
+  ]
+}

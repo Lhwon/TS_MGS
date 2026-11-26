@@ -1,0 +1,146 @@
+{
+  "status": "implemented_with_known_model_limitations",
+  "purpose": "기존 사용자 기능을 공통 계약으로 등록하고 조회 및 검증 후 에이전트 도구로 실행",
+  "coverage": {
+    "mapModeRegisteredCommands": 96,
+    "facilityModeRegisteredCommands": 39,
+    "includesSharedCommands": true,
+    "availability": "현재 화면과 선택 및 편집 가능 상태에서 실행 직전 재검증"
+  },
+  "design": [
+    "화면 수명에 따른 기능 등록 및 해제",
+    "기존 UI 함수와 편집 이력 재사용",
+    "활성 화면 및 조회한 입력 규격을 제한된 정식 도구로 제공",
+    "실행 완료와 사용자 입력 대기 및 취소와 오류 구분",
+    "화면 전환 후 기능 목록 갱신",
+    "기존 조명과 건물 및 렌더링 처리 재사용"
+  ],
+  "sourceFiles": [
+    "src/shared/lib/input/commands.ts",
+    "src/shared/lib/input/index.ts",
+    "src/pages/studio/ui/StudioPage.vue",
+    "src/widgets/mgs-workspace/ui/MgsWorkspace.vue",
+    "src/widgets/facility-studio/ui/FacilityStudio.vue",
+    "src/features/facility-editor/model/studio.ts",
+    "src/widgets/ai-assistant/model/tools.ts",
+    "src/widgets/ai-assistant/ui/AiAssistant.vue",
+    "src/features/ai-assistant/model/agent.ts",
+    "electron/assistant-tools.cjs",
+    "electron/ai-service.cjs",
+    "scripts/check-agent-commands.mjs",
+    "scripts/check-agent-scenarios.cjs"
+  ],
+  "validation": {
+    "regression": {
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    "commands": {
+      "live": false,
+      "model": "gpt-oss:20b",
+      "passed": true,
+      "initialCommands": 96,
+      "sceneCommands": 39,
+      "categories": [
+        "Workspace",
+        "2D/View",
+        "2D/Drawing",
+        "File",
+        "3D/ViewTools",
+        "3D/Workspace",
+        "3D/Selection",
+        "3D/Facility",
+        "3D/Building",
+        "3D/Inspector",
+        "3D/Lighting"
+      ],
+      "requests": 7,
+      "actualLightTemperature": 5500,
+      "checks": [
+        "잘못된 기능과 입력 차단",
+        "비활성 상태 재검증",
+        "화면 수명과 기능 해제",
+        "다단계 UI 채팅 실행과 완료 답변",
+        "조명 설정 및 벽 생성",
+        "속성 편집과 뷰포트 유지",
+        "천장 및 바닥 생성",
+        "벽 부착 및 잘못된 부모 참조 차단",
+        "분류 검색 보정 및 화면 범위 안내",
+        "창 열기와 편집 완료 구분",
+        "기존 파일 함수의 저장 추출 및 취소와 실패 보존"
+      ],
+      "errors": []
+    },
+    "qwen": {
+      "live": true,
+      "model": "qwen3.8:27b",
+      "passed": true,
+      "initialCommands": 96,
+      "sceneCommands": 39,
+      "categories": [
+        "Workspace",
+        "2D/View",
+        "2D/Drawing",
+        "File",
+        "3D/ViewTools",
+        "3D/Workspace",
+        "3D/Selection",
+        "3D/Facility",
+        "3D/Building",
+        "3D/Inspector",
+        "3D/Lighting"
+      ],
+      "requests": 6,
+      "actualLightTemperature": 5500,
+      "checks": [
+        "잘못된 기능과 입력 차단",
+        "비활성 상태 재검증",
+        "화면 수명과 기능 해제",
+        "다단계 UI 채팅 실행과 완료 답변",
+        "조명 설정 및 벽 생성",
+        "속성 편집과 뷰포트 유지",
+        "천장 및 바닥 생성",
+        "벽 부착 및 잘못된 부모 참조 차단",
+        "분류 검색 보정 및 화면 범위 안내",
+        "창 열기와 편집 완료 구분",
+        "기존 파일 함수의 저장 추출 및 취소와 실패 보존"
+      ],
+      "errors": []
+    },
+    "gptOss": {
+      "live": true,
+      "model": "gpt-oss:20b",
+      "passed": false,
+      "error": "램프 조명을 선택해 주세요. 현재 화면에 있는 램프 인스턴스 ID를 알려 주세요.램프 인스턴스가 필요합니다.램프 인스턴스 ID램프 인스턴스 ID확인작업 중단아래 채팅창에 직접 답하거나 요청을 바꿀 수도 있습니다.\n\n1 !== 0\n"
+    },
+    "typecheck": "passed",
+    "build": "passed",
+    "buildWarning": "기존 대형 청크 경고 유지",
+    "format": "수정한 공통 계약과 에이전트 및 검사 스크립트 Prettier 통과",
+    "eslint": "프로젝트에 ESLint 명령 및 설정 없음",
+    "naming": {
+      "live": false,
+      "model": "gpt-oss:20b",
+      "results": [
+        "기존 모델명 수정과 일괄 배치 이름 및 GLB 참조와 변형 보존과 실행 취소 및 다시 실행 통과",
+        "모델명과 배치명 구분 및 잘못된 목록 원자성 검증 통과"
+      ],
+      "metrics": []
+    }
+  },
+  "limitations": [
+    "GPT OSS 모델이 필요한 조회 대신 불필요한 객체 식별자 질문을 생성하는 실제 시나리오 잔존",
+    "모든 수동 기능과 임의의 자연어 요청에 대한 완전한 자동 수행 검증 미완료",
+    "파일 선택과 GLB 등록 및 일부 편집 팝업의 사용자 입력 필요",
+    "파일 완료와 실패 테스트는 격리된 IPC 응답으로 수행하며 운영 고객사 파일의 덮어쓰기 미수행",
+    "실행 중인 기존 데스크톱 세션에서 새 Electron Main 도구 규격 미검증"
+  ],
+  "runtime": {
+    "restartRequired": true,
+    "reason": "Electron Main 모듈에서 도구 규격과 추론 요청 구성 변경",
+    "existingSessionRestarted": false
+  },
+  "renderingAlgorithmsChanged": false,
+  "tsUiChangedForThisTask": false
+}

@@ -1,0 +1,92 @@
+{
+  "live": true,
+  "model": "qwen3.8:27b",
+  "results": [
+    {
+      "question": "배치된 3D 객체 전체의 이름을 원본 모델 이름과 일련번호 기준으로 변경해줘.",
+      "answer": "배치된 3D 객체 199개 전체를 원본 모델 이름과 일련번호 기준으로 변경했습니다. 예: OBJECT_0 → \"랙 1\", OBJECT_1 → \"작업대 1\" 등. ID, GLB 파일, 위치·회전값은 그대로 유지됩니다.",
+      "steps": [
+        "rename_equipment"
+      ],
+      "asked": false,
+      "changed": true,
+      "ms": 13115
+    },
+    {
+      "question": "3D 모델에 적용된 이름을 다 알맞게 변경 가능한가?",
+      "answer": "네, 가능합니다. 배치된 3D 객체(인스턴스)와 라이브러리 모델 모두 이름을 변경할 수 있습니다. ID, GLB 파일, 위치·회전값은 그대로 유지되고 이름만 바뀌며, 한 번에 여러 개를 일괄 변경할 수도 있습니다.",
+      "steps": [],
+      "asked": false,
+      "changed": false,
+      "ms": 890
+    },
+    {
+      "question": "가능한지 불가능한지만 알려줘",
+      "answer": "가능합니다.",
+      "steps": [],
+      "asked": false,
+      "changed": false,
+      "ms": 338
+    },
+    {
+      "question": "facility에 등록된 객체들 이름 알맞게 변경해줘",
+      "asked": true,
+      "steps": [
+        "get_map_context",
+        "get_map_context"
+      ],
+      "changed": false
+    }
+  ],
+  "metrics": [
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 52,
+      "promptTokens": 7628,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 68,
+      "promptTokens": 8124,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 61,
+      "promptTokens": 8220,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 4,
+      "promptTokens": 8301,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 40,
+      "promptTokens": 8331,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 27,
+      "promptTokens": 9751,
+      "thinkingCharacters": 0
+    },
+    {
+      "done": true,
+      "reason": "stop",
+      "tokens": 162,
+      "promptTokens": 9919,
+      "thinkingCharacters": 0
+    }
+  ]
+}

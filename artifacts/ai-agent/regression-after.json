@@ -1,0 +1,220 @@
+{
+  "mode": "mock-regression",
+  "baseline": false,
+  "total": 36,
+  "passed": 36,
+  "failed": 0,
+  "medianMs": 4,
+  "p95Ms": 53,
+  "rows": [
+    {
+      "name": "조회한 화면 입력 규격의 정식 도구 제공",
+      "passed": true,
+      "ms": 53,
+      "chatRequests": 1
+    },
+    {
+      "name": "도구 오류의 화면 계약을 다음 추론에 제공",
+      "passed": true,
+      "ms": 9,
+      "chatRequests": 1
+    },
+    {
+      "name": "허용하지 않은 화면 입력 규격의 도구 노출 차단",
+      "passed": true,
+      "ms": 8,
+      "chatRequests": 1
+    },
+    {
+      "name": "기본 대화",
+      "passed": true,
+      "ms": 7,
+      "chatRequests": 1
+    },
+    {
+      "name": "같은 문구의 새 질문",
+      "passed": true,
+      "ms": 6,
+      "chatRequests": 1
+    },
+    {
+      "name": "완료된 질문을 다시 요청",
+      "passed": true,
+      "ms": 4,
+      "chatRequests": 1
+    },
+    {
+      "name": "도구 실행 후 질문 중복 방지",
+      "passed": true,
+      "ms": 4,
+      "chatRequests": 1
+    },
+    {
+      "name": "대용량 병렬 도구 결과",
+      "passed": true,
+      "ms": 26,
+      "chatRequests": 1
+    },
+    {
+      "name": "대용량 단일 작업 연속 조회",
+      "passed": true,
+      "ms": 20,
+      "chatRequests": 1
+    },
+    {
+      "name": "오래된 대화 축약",
+      "passed": true,
+      "ms": 33,
+      "chatRequests": 1
+    },
+    {
+      "name": "큰 지도 상태",
+      "passed": true,
+      "ms": 5,
+      "chatRequests": 1
+    },
+    {
+      "name": "최대 길이 한국어 질문 보존",
+      "passed": true,
+      "ms": 6,
+      "chatRequests": 1
+    },
+    {
+      "name": "실패 도구 결과 상태 보존",
+      "passed": true,
+      "ms": 4,
+      "chatRequests": 1
+    },
+    {
+      "name": "확인 질문 응답 보존",
+      "passed": true,
+      "ms": 3,
+      "chatRequests": 1
+    },
+    {
+      "name": "도구 미지원 모델 전환",
+      "passed": true,
+      "ms": 1,
+      "chatRequests": 1
+    },
+    {
+      "name": "사용자 문맥 유실 오류 단일 복구",
+      "passed": true,
+      "ms": 5,
+      "chatRequests": 2
+    },
+    {
+      "name": "도구 구문 오류의 단일 추론 복구",
+      "passed": true,
+      "ms": 6,
+      "chatRequests": 2
+    },
+    {
+      "name": "복구 재실패 재시도 제한",
+      "passed": true,
+      "ms": 6,
+      "chatRequests": 2
+    },
+    {
+      "name": "일반 서버 오류 재시도 방지",
+      "passed": true,
+      "ms": 2,
+      "chatRequests": 1
+    },
+    {
+      "name": "허용되지 않은 응답 도구",
+      "passed": true,
+      "ms": 3,
+      "chatRequests": 1
+    },
+    {
+      "name": "빈 모델 응답",
+      "passed": true,
+      "ms": 3,
+      "chatRequests": 1
+    },
+    {
+      "name": "출력 토큰 한도 초과",
+      "passed": true,
+      "ms": 4,
+      "chatRequests": 2
+    },
+    {
+      "name": "잘린 도구 호출의 실행 방지와 응답 복구",
+      "passed": true,
+      "ms": 6,
+      "chatRequests": 2
+    },
+    {
+      "name": "빈 사용자 질문 차단",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "대화 이력 개수 제한",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "미지원 입력 도구 차단",
+      "passed": true,
+      "ms": 0,
+      "chatRequests": 0
+    },
+    {
+      "name": "추론 취소 및 요청 슬롯 반환",
+      "passed": true,
+      "ms": 10,
+      "chatRequests": 2
+    },
+    {
+      "name": "동일 조회 중복 실행 방지",
+      "passed": true,
+      "ms": 5,
+      "chatRequests": 1
+    },
+    {
+      "name": "편집 이후 동일 조회 재실행 유지",
+      "passed": true,
+      "ms": 4,
+      "chatRequests": 1
+    },
+    {
+      "name": "단일 작업 이력의 통신 크기 제한",
+      "passed": true,
+      "ms": 87
+    },
+    {
+      "name": "실행 루프의 큰 내부 오류 상태 보존",
+      "passed": true,
+      "ms": 1
+    },
+    {
+      "name": "완료한 작업과 마지막 답변 실패 구분",
+      "passed": true,
+      "ms": 2
+    },
+    {
+      "name": "입력창 열기를 편집 완료로 보고하는 응답 차단",
+      "passed": true,
+      "ms": 2
+    },
+    {
+      "name": "대기 입력을 실제 배치로 마친 뒤 완료 답변 유지",
+      "passed": true,
+      "ms": 1
+    },
+    {
+      "name": "파일 작업 취소 이후 남은 편집 실행 방지",
+      "passed": true,
+      "ms": 1
+    },
+    {
+      "name": "Electron 호출 오류 접두어 제거",
+      "passed": true,
+      "ms": 1
+    }
+  ]
+}

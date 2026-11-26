@@ -1,0 +1,22 @@
+{
+  "mode": "live-ipc",
+  "baseline": false,
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "medianMs": 2115,
+  "p95Ms": 2115,
+  "rows": [
+    {
+      "name": "실제 ai:propose IPC 대용량 요청",
+      "passed": true,
+      "ms": 2115,
+      "model": "gpt-oss:20b",
+      "selectedTools": [
+        "get_map_context"
+      ],
+      "responseCharacters": 0,
+      "capabilityReply": "가능합니다. 3D 모델(라이브러리 모델)과 배치된 인스턴스 모두 이름을 바꿀 수 있어요. 단, 모델 이름을 바꾸면 그 모델을 사용한 인스턴스의 이름은 그대로 남아 있고, 인스턴스 이름을 바꾸려면 별도로 `rename_equipment` 도구를 사용해야 합니다."
+    }
+  ]
+}

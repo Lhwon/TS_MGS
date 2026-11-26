@@ -35,7 +35,7 @@ const mgsNodeFill = (node: MapDocument['nodes'][number], theme: ReturnType<typeo
  *
  * @param document 기준 노드와 경로 및 포트를 포함하는 지도 문서
  * @param theme 원본 지도 색상과 크기 및 선 두께 설정
- * @param mgs2d 원본 편집 화면의 노드와 방향 표식 규칙 적용 여부
+ * @param mgs2d 평면 편집 화면의 노드 반경과 채움 색상 적용 여부
  * @returns 도형 그룹과 노드 및 포트 인스턴스 참조
  */
 export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs2d = false) => {
@@ -184,8 +184,8 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
       length = Math.hypot(dx, dy)
     if (!length) continue
     const angle = Math.atan2(dy, dx)
-    const size = Math.min(length * 0.14, theme.arrowSize / 3)
-    if (mgs2d && theme.arrowSize > 0 && !a.curve) {
+    /** 기존 MGS와 동일하게 연결 노드 반대쪽을 향하는 노드 중심 표식을 두 화면에 적용 */
+    if (theme.arrowSize > 0 && !a.curve) {
       const side = theme.arrowSize
       const fill = new THREE.Color(
         mgsNodeFill({ ...a, direction: edge.direction ?? a.direction }, theme),
@@ -202,14 +202,6 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
           a.x - uy * side, a.y + ux * side, 2,
         )
         for (let vertex = 0; vertex < 3; vertex++) arrowColors.push(fill.r, fill.g, fill.b)
-        arrowIndices.push(first, first + 1, first + 2)
-      }
-    } else if (!mgs2d && size > 0 && (!a.curve || !b.curve)) {
-      if (both) {
-        if (!a.curve) addPathDiamond(a.x, a.y, angle, size * 2.5, size, color)
-      } else {
-        const first = arrowPositions.length / 3
-        directionMarker(arrowPositions, arrowColors, (a.x + b.x) / 2, (a.y + b.y) / 2, angle, size, color)
         arrowIndices.push(first, first + 1, first + 2)
       }
     }
@@ -478,5 +470,22 @@ export const createMapTopology = (document: MapDocument, theme = mgsTheme(), mgs
     object.position.x += origin.x
     object.position.y += origin.y
   }
-  return { group, nodeMesh, portMesh }
+  let nodeDisplayScale = 1
+  /**
+   * 평면과 삼차원에서 동일한 배율 기준으로 원형 노드의 최소 표시 반경 보정
+   * @param pixelsPerUnit 지도 좌표 단위당 화면 픽셀 수
+   */
+  const updateNodeDisplaySize = (pixelsPerUnit: number) => {
+    if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit <= 0) return
+    const scale = Math.max(1, 2.5 / (baseRadius * pixelsPerUnit))
+    if (scale === nodeDisplayScale) return
+    const ratio = scale / nodeDisplayScale
+    for (const mesh of [nodeMesh, borders]) {
+      mesh.geometry.scale(ratio, ratio, 1)
+      mesh.boundingBox = null
+      mesh.boundingSphere = null
+    }
+    nodeDisplayScale = scale
+  }
+  return { group, nodeMesh, portMesh, updateNodeDisplaySize }
 }

@@ -63,7 +63,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let topologyGroup = new THREE.Group()
   let nodeMesh: THREE.InstancedMesh | null = null
   let nodeBorders: THREE.InstancedMesh | null = null
-  let nodeDisplayScale = 1
+  let updateTopologyNodeSize: ((pixelsPerUnit: number) => void) | undefined
   let portMesh: THREE.Mesh | null = null
   let basePortColors: Float32Array | undefined
   let portDisplayType: PortDisplayType = ''
@@ -278,6 +278,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   let viewportHeight = 1
   let drag: {
     pointerId: number
+    button: number
     pan: boolean
     anchor: THREE.Vector3
     startX: number
@@ -383,7 +384,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     nodeMesh = topology.nodeMesh
     nodeBorders =
       (topologyGroup.getObjectByName('node-borders') as THREE.InstancedMesh | undefined) ?? null
-    nodeDisplayScale = 1
+    updateTopologyNodeSize = topology.updateNodeDisplaySize
     updateNodeDisplaySize()
     portMesh = topology.portMesh
     basePortColors = new Float32Array(portMesh.geometry.getAttribute('color').array)
@@ -541,17 +542,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   /** 축소해도 원형 노드와 선택 표시가 화면에서 사라지지 않도록 공용 도형 크기 보정 */
   const updateNodeDisplaySize = () => {
     const pixelsPerUnit = getScale() / 10
-    const scale = Math.max(1, 2.5 / (50 * pixelsPerUnit))
-    if (scale !== nodeDisplayScale) {
-      const ratio = scale / nodeDisplayScale
-      for (const mesh of [nodeMesh, nodeBorders]) {
-        if (!mesh) continue
-        mesh.geometry.scale(ratio, ratio, 1)
-        mesh.boundingBox = null
-        mesh.boundingSphere = null
-      }
-      nodeDisplayScale = scale
-    }
+    updateTopologyNodeSize?.(pixelsPerUnit)
     highlightMesh.scale.setScalar(Math.max(1, 8 / (150 * pixelsPerUnit)))
   }
   /**
@@ -599,7 +590,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    * @param event 브라우저 또는 데스크톱에서 전달한 입력 이벤트
    */
   const pointerDown = (event: PointerEvent) => {
-    if (drag || ![0, 2].includes(event.button)) return
+    if (drag || ![0, 1, 2].includes(event.button)) return
     event.preventDefault()
     const p = getPointerPosition(event),
       world = screenToWorld(p.x, p.y)
@@ -623,12 +614,12 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
       )
       return
     }
-    // 스페이스 입력 상태에서만 카메라 이동을 허용하는 드래그 분기
-    const pan = spacePan.active()
+    const pan = event.button === 1 || spacePan.active()
     renderer.domElement.setPointerCapture(event.pointerId)
     // 선택 조작으로 좌표를 변경하지 않고 속성 입력에서만 위치를 편집하는 원본 동작
     drag = {
       pointerId: event.pointerId,
+      button: event.button,
       pan,
       anchor: world,
       startX: p.x,
@@ -696,7 +687,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
    */
   const pointerUp = (event: PointerEvent) => {
     const previousDrag = drag
-    if (!previousDrag || previousDrag.pointerId !== event.pointerId || event.button !== 0) return
+    if (!previousDrag || previousDrag.pointerId !== event.pointerId || previousDrag.button !== event.button) return
     const p = getPointerPosition(event),
       world = screenToWorld(p.x, p.y)
     cancelDrag()
@@ -915,6 +906,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     topologyGroup.clear()
     nodeMesh = null
     nodeBorders = null
+    updateTopologyNodeSize = undefined
     portMesh = null
   }
   /**
@@ -960,6 +952,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
     selectionBox.remove()
   }
   const spacePan = createSpacePan((pressed) => {
+    if (drag?.button === 1) return
     if (!pressed && drag?.pan) cancelDrag()
     renderer.domElement.style.cursor = pressed ? 'grab' : 'default'
   })
@@ -967,7 +960,7 @@ export const createMapScene = (host: HTMLElement, callbacks: Callbacks) => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.domElement.setAttribute(
     'aria-label',
-    '지도 편집 영역: 왼쪽 클릭 노드 선택, 왼쪽 드래그 영역 선택·해제, 스페이스와 왼쪽 드래그 화면 이동, 오른쪽 클릭 편집 메뉴, 더블클릭 위치 확대',
+    '지도 편집 영역: 왼쪽 클릭 노드 선택, 왼쪽 드래그 영역 선택·해제, 스페이스와 왼쪽 드래그 또는 휠 버튼 드래그 화면 이동, 오른쪽 클릭 편집 메뉴, 더블클릭 위치 확대',
   )
   renderer.domElement.tabIndex = 0
   labelCanvas.className = 'map-labels'

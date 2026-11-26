@@ -130,6 +130,7 @@ export const createFacilityScene = (
   marquee.className = 'facility-marquee'
   marquee.hidden = true
   let ground = new THREE.Group()
+  let updateMapNodeSize: ((pixelsPerUnit: number) => void) | undefined
   const floorSurfaces = createFloorSurfaces(0.001, reflections.texture, () => requestRender())
   const floorOutline = new THREE.Line(
     new THREE.BufferGeometry(),
@@ -347,6 +348,10 @@ export const createFacilityScene = (
         camera.far = far
         camera.updateProjectionMatrix()
       }
+      /** 카메라 중심 거리의 지도 배율을 평면 화면과 동일한 노드 크기 보정에 전달 */
+      updateMapNodeSize?.(
+        viewportHost.clientHeight * camera.projectionMatrix.elements[5]! / (2 * distance * 1000),
+      )
       if (siteView && siteLightingDirty) fitSiteLighting(siteBounds())
       if (toolMode === 'measure' && !siteView) updateMeasurement()
       updateWallPreview()
@@ -380,6 +385,7 @@ export const createFacilityScene = (
       if (object instanceof THREE.InstancedMesh) object.dispose()
     })
     ground.clear()
+    updateMapNodeSize = undefined
   }
   /** 잘라낸 원본 도면을 기준 맵의 좌표와 회전 그대로 3D 바닥에 표시 */
   const updateFloorPlan = () => {
@@ -442,7 +448,9 @@ export const createFacilityScene = (
     grid.material.color.set(theme.grid)
     if (geometryChanged) {
       clearGround()
-      const topology = createMapTopology(map, theme)
+      /** 평면 편집기의 노드 반경과 채움 및 방향 표식 생성 규칙 재사용 */
+      const topology = createMapTopology(map, theme, true)
+      updateMapNodeSize = topology.updateNodeDisplaySize
       // 평면 도형의 앞뒤 순서는 재질 깊이 대신 렌더 순서로 유지하는 바닥 변환
       ground.scale.set(0.001, 0.001, 0.000001)
       ground.add(...[...topology.group.children])

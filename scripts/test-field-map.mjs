@@ -32,7 +32,9 @@ try {
     if (store.colorMode !== 'dark') store.toggleColorMode()
   }, source)
   await page.getByTestId('mode-facility').click()
+  await page.getByRole('tablist', { name: '3D 작업 메뉴' }).getByRole('tab', { name: 'File', exact: true }).click()
   await page.getByTestId('scene-open').waitFor()
+  await page.getByRole('tablist', { name: '3D 작업 메뉴' }).getByRole('tab', { name: 'Facility', exact: true }).click()
   await page.evaluate(
     async ({ content }) => {
       ;(await import('/src/features/facility-editor/model/studio.ts'))
@@ -77,6 +79,7 @@ try {
       },
     }
   })
+  await page.getByRole('tablist', { name: '3D 작업 메뉴' }).getByRole('tab', { name: 'File', exact: true }).click()
   await page.getByTestId('scene-save').click()
   await page.getByTestId('scene-export').click()
   const requests = await page.evaluate(() => window.__sceneRequests)

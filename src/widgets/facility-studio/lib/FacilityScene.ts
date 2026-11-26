@@ -4,14 +4,15 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-18
  */
+import { readSceneResource } from '@/entities/facility/index.ts'
 import { createMapLabels, paintMapLabel } from '@/entities/map/index.ts'
 import { createSpacePan } from '@/shared/lib/input/index.ts'
 import * as THREE from 'three'
-import { createFacilityLights, facilityEmitterMaterial, GlbModelCache, prepareFacilityEmitter, selectFacilityLights, type FacilityEmitter } from '@bem/map3d/glb'
+import { createFacilityLights, facilityEmitterMaterial, GlbModelCache, prepareFacilityEmitter, validateLoadedFacilityBudget, type FacilityEmitter } from '@bem/map3d/glb'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { FacilityAsset, FacilityDocument, FacilityInstance, FacilityPart, Point3 } from '@/entities/facility/index.ts'
-import { resolveFacilityInstance } from '@/entities/facility/index.ts'
+import { carryAttachedInstance, facilityCutawayRole, facilityModelBounds, resolveFacilityInstance } from '@/entities/facility/index.ts'
 import {
   createMapTopology,
   cropLayoutImage,
@@ -34,7 +35,16 @@ import { createSelectionOutline } from '@/widgets/facility-studio/lib/selectionO
 import { defaultTransformSnap, snapToStep, type TransformSnapStep } from '@/widgets/facility-studio/lib/transformSnap.ts'
 import type { FloorPoint } from '@/entities/facility/index.ts'
 
-type FacilitySceneTool = 'select' | 'place' | 'port' | 'attach' | 'measure' | 'wall'
+type BuildingRole = 'wall' | 'ceiling'
+
+type FacilitySceneTool = 'select' | 'place' | 'port' | 'attach' | 'measure' | 'wall' | 'mount'
+
+/** 확정 좌표와 동일한 벽 윤곽 및 모델 배치 미리보기 정보 */
+export type WallMountPreview = {
+  position: Point3
+  rotation: number
+  wall: { position: Point3; size: Point3; rotation: number }
+}
 /**
  * 기준 지도와 설비 모델을 합성하는 삼차원 렌더러 생성
  * 포트 기준 배치와 이동 핸들 및 시점 조작을 독립적으로 관리하는 편집 화면 구성
@@ -48,10 +58,12 @@ export const createFacilityScene = (
   callbacks: {
     error(message: string): void
     select(ids: string[], operation: 'replace' | 'add' | 'toggle'): void
+    preview(instance: FacilityInstance): void
     place(x: number, y: number): void
     finishFloor(): void
     placeAtPort(id: string): void
     attachOpening(id: string | undefined, point: Point3, free: boolean): void
+    mountWall(id: string, point: Point3, free: boolean, commit: boolean): WallMountPreview | undefined
     moveSelection(x: number, y: number): boolean
     measurePoint(point: Point3): void
     move(
@@ -100,6 +112,14 @@ export const createFacilityScene = (
   renderer.shadowMap.autoUpdate = false
   let controls: OrbitControls
   let models = new THREE.Group()
+  const buildingGuide = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({
+      color: 0x718eac, transparent: true, opacity: 0.62, depthWrite: false, toneMapped: false,
+    }),
+  )
+  buildingGuide.name = 'facility-building-guide'
+  buildingGuide.visible = false
   const selectionBounds = new THREE.Box3()
   const selectionProjections = new Map<string, { bounds: THREE.Box3; transform: THREE.Matrix4 }>()
   let selectionGeometryDirty = false
@@ -217,6 +237,16 @@ export const createFacilityScene = (
   const projectedLabel = new THREE.Vector3()
   const viewLabel = new THREE.Vector3()
   const instanceBounds = new Map<string, THREE.Box3>()
+  const placementRoots = new Map<string, THREE.Matrix4>()
+  const noBuildingRoles = new Map<string, BuildingRole>()
+  let buildingRoles = noBuildingRoles
+  let outlinedStructures = noBuildingRoles
+  let buildingGuideDirty = true
+  let equipmentGuides = false
+  /** 구조 배치에서 천장과 종속 모델만 윤곽 처리하는 표시 상태 관리 */
+  let ceilingGuides = false
+  let ceilingStructures = noBuildingRoles
+  const hiddenScale = new THREE.Vector3()
   const seeThroughInstances = new Set<string>()
   const labelRay = new THREE.Ray()
   const labelIntersection = new THREE.Vector3()
@@ -238,6 +268,21 @@ export const createFacilityScene = (
   wallPreview.visible = false
   let wallDraft: { start: FloorPoint; thickness: number } | undefined
   let wallPointer: Pick<PointerEvent, 'clientX' | 'clientY' | 'shiftKey' | 'altKey'> | undefined
+  const mountGhost = new THREE.Group()
+  mountGhost.name = 'facility-wall-mount-preview'
+  mountGhost.visible = false
+  mountGhost.renderOrder = 10
+  const mountMaterial = new THREE.MeshBasicMaterial({ color: 0x00c8b0, transparent: true, opacity: 0.44, depthTest: false, depthWrite: false })
+  const mountOutline = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({
+    color: 0x00c8b0, depthTest: false,
+  }))
+  mountOutline.name = 'facility-wall-mount-outline'
+  mountOutline.visible = false
+  type MountPointer = Pick<PointerEvent, 'clientX' | 'clientY' | 'altKey'>
+  let mountPointer: MountPointer | undefined
+  let mountAsset: FacilityAsset | undefined
+  const attachments = new Map<string, FacilityInstance[]>()
+  const openingModels = new Set<string>()
   let cylinder = new THREE.CylinderGeometry(0.5, 0.5, 1, FACILITY_CYLINDER_SEGMENTS)
   let observer: ResizeObserver
   let meshes: THREE.InstancedMesh[] = []
@@ -353,14 +398,16 @@ export const createFacilityScene = (
         viewportHost.clientHeight * camera.projectionMatrix.elements[5]! / (2 * distance * 1000),
       )
       if (siteView && siteLightingDirty) fitSiteLighting(siteBounds())
+      updateBuildingGuide()
       if (toolMode === 'measure' && !siteView) updateMeasurement()
       updateWallPreview()
+      if (toolMode === 'mount') updateMountPreview()
       if (selectionGeometryDirty) updateSelectionBounds()
       floorFootprints.visible = models.visible && !siteView && !!floorFootprints.geometry.getAttribute('position') &&
         floorFootprints.geometry.drawRange.count > 0
-      selectFacilityLights(fixtures.group, camera.position, controls.target)
       wallOverlap.render(scene, camera)
-      const activeSelection = selectedId && models.visible && !siteView ? instanceBindings.get(selectedId) : undefined
+      const activeSelection = selectedId && models.visible && !siteView && !outlinedStructures.has(selectedId)
+        ? instanceBindings.get(selectedId) : undefined
       selectionOutline.render(activeSelection, camera)
       directTransform.draw(canEditDirectly() && activeSelection ? selectionProjections.get(selectedId!) : undefined)
       drawMeasurementLabel()
@@ -500,7 +547,7 @@ export const createFacilityScene = (
           labelFrustum.setFromProjectionMatrix(labelProjection)
           occluders = [...instanceBounds]
             .filter(
-              ([id, bounds]) => !seeThroughInstances.has(id) && labelFrustum.intersectsBox(bounds),
+              ([id, bounds]) => !outlinedStructures.has(id) && !seeThroughInstances.has(id) && labelFrustum.intersectsBox(bounds),
             )
             .map(([, bounds]) => bounds)
         }
@@ -546,17 +593,19 @@ export const createFacilityScene = (
       if (source instanceof THREE.MeshStandardMaterial && !source.envMap) {
         const { r, g, b } = source.color
         const metal = source.metalness >= 0.25 || (source.metalness > 0 && source.metalnessMap)
-        const darkGloss = source.roughness < 0.68 && Math.max(r, g, b) < 0.13
-        if (metal || darkGloss) {
-          // The scene owns the room map. Keep it out of the shared GLB cache's resource disposal.
+          /** 비발광 반광택 표면에 기존 실내 환경 맵을 활용한 간접 반사 적용 */
+          const reflective = source.roughness < 0.86 && source.emissive.r === 0 && source.emissive.g === 0 && source.emissive.b === 0
+        if (metal || reflective || source.roughness < 0.68 && Math.max(r, g, b) < 0.13) {
+            /** 장면 소유 환경 맵의 공유 모델 캐시 해제 대상 편입 방지 */
           const material = mesh.userData.sharedGlb ? source.clone() : source
           material.envMap = reflections.texture
           material.envMapRotation.x = Math.PI / 2
-          material.envMapIntensity = 0.72
+          material.envMapIntensity = source.metalness >= 0.55 ? 0.9 : metal ? 0.55 : 0.35
           mesh.material = material
           mesh.userData.sharedGlb = false
         }
       }
+      floorSurfaces.applyFixtureLighting(mesh.material)
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       mesh.receiveShadow = true
       mesh.castShadow = !Array.isArray(mesh.material) && !mesh.material.transparent
@@ -673,14 +722,18 @@ export const createFacilityScene = (
     const ports = mapDocument?.ports ?? emptyPorts
     let plan: ReturnType<typeof planDocumentUpdate>
     try {
+      if (document.floors !== facilityDocument?.floors && document.floors?.some(({ texture }) => texture))
+        await floorSurfaces.prepareTextures(document.floors, readSceneResource)
+      if (generation !== documentGeneration) return
       plan = planDocumentUpdate(document, ports)
       const { changes, sources } = plan
       const loading = changes.filter(({ asset, rebuild }) => rebuild && asset.glb && !sources.has(asset.id))
       if (loading.length) {
         for (const [id, source] of await Promise.all(loading.map(async ({ asset }) =>
-          [asset.id, await glbCache.load(asset.glb!.data)] as const,
+          [asset.id, await glbCache.load(asset.glb!, readSceneResource)] as const,
         ))) sources.set(id, source)
       }
+      validateLoadedFacilityBudget(document, sources)
     } catch (error) {
       if (generation !== documentGeneration) return
       if (!facilityDocument || drawnPorts !== ports) {
@@ -708,6 +761,7 @@ export const createFacilityScene = (
         fixtures.remove(instanceId)
         instanceBindings.delete(instanceId)
         instanceBounds.delete(instanceId)
+        placementRoots.delete(instanceId)
         seeThroughInstances.delete(instanceId)
       }
       batches.delete(id)
@@ -744,9 +798,10 @@ export const createFacilityScene = (
       batch.instances = instances
     }
     drawnPorts = ports
+    setBuildingRoles(document)
     previewed.clear()
     meshes = [...batches.values()].flatMap((batch) => batch.meshes)
-    if (libraryChanged) glbCache.retain(document.assets)
+    if (libraryChanged) glbCache.retain(mountAsset ? [...document.assets, mountAsset] : document.assets)
     floorSurfaces.setFixtureLighting(fixtures.group)
     siteLightingDirty = true
     updateLightingMode()
@@ -769,22 +824,118 @@ export const createFacilityScene = (
     )
   }
 
+  /** 개별 배치의 가시성만 바꿔 동일 모델의 인스턴스 배치를 유지 */
+  const writePlacement = (id: string, root: THREE.Matrix4, partial = true) => {
+    const matrix = new THREE.Matrix4()
+    const hidden = outlinedStructures.has(id)
+    for (const { mesh, index, local } of instanceBindings.get(id) ?? []) {
+      matrix.multiplyMatrices(root, local)
+      if (hidden) matrix.scale(hiddenScale)
+      mesh.setMatrixAt(index, matrix)
+      if (partial) mesh.instanceMatrix.addUpdateRange(index * 16, 16)
+      mesh.instanceMatrix.needsUpdate = true
+      mesh.boundingSphere = null
+      mesh.boundingBox = null
+    }
+  }
+
+  /** 구조물 역할과 천장 부착 계층을 문서 변경 시 계산하여 표시 전환에 재사용 */
+  const setBuildingRoles = (document: FacilityDocument) => {
+    const assets = new Map(document.assets.map((asset) => [asset.id, asset]))
+    const next = new Map<string, BuildingRole>()
+    attachments.clear()
+    openingModels.clear()
+    for (const instance of document.instances) {
+      if (instance.attachedTo) {
+        const children = attachments.get(instance.attachedTo) ?? []
+        children.push(instance)
+        attachments.set(instance.attachedTo, children)
+      }
+      for (const opening of instance.wallDoors ?? []) {
+        if (opening.modelId) openingModels.add(opening.modelId)
+      }
+      const role = facilityCutawayRole(instance, assets.get(instance.assetId))
+      if (role) next.set(instance.id, role)
+    }
+    const ceilings = new Map([...next].filter(([, role]) => role === 'ceiling'))
+    for (const id of ceilings.keys())
+      for (const child of attachments.get(id) ?? [])
+        if (!ceilings.has(child.id)) ceilings.set(child.id, 'ceiling')
+    if (next.size === buildingRoles.size && [...next].every(([id, role]) => buildingRoles.get(id) === role) &&
+        ceilings.size === ceilingStructures.size && [...ceilings.keys()].every((id) => ceilingStructures.has(id))) return
+    buildingRoles = next
+    ceilingStructures = ceilings
+    buildingGuideDirty = true
+  }
+
+  /** 벽은 중심면, 천장은 아래쪽 둘레를 얇은 선으로 표시 */
+  const rebuildBuildingGuide = () => {
+    const bounds = new THREE.Box3()
+    const partBounds = new THREE.Box3()
+    const point = new THREE.Vector3()
+    const positions: number[] = []
+    for (const [id, role] of buildingRoles) {
+      if (!outlinedStructures.has(id)) continue
+      const root = placementRoots.get(id)
+      if (!root) continue
+      bounds.makeEmpty()
+      for (const { mesh, local } of instanceBindings.get(id) ?? []) {
+        const part = mesh.geometry.boundingBox
+        if (part) bounds.union(partBounds.copy(part).applyMatrix4(local))
+      }
+      if (bounds.isEmpty()) continue
+      const { min, max } = bounds
+      const centerX = (min.x + max.x) / 2
+      const centerY = (min.y + max.y) / 2
+      const corners: [number, number, number][] = role === 'ceiling'
+        ? [[min.x, min.y, min.z], [max.x, min.y, min.z], [max.x, max.y, min.z], [min.x, max.y, min.z]]
+        : max.x - min.x >= max.y - min.y
+          ? [[min.x, centerY, min.z], [max.x, centerY, min.z], [max.x, centerY, max.z], [min.x, centerY, max.z]]
+          : [[centerX, min.y, min.z], [centerX, max.y, min.z], [centerX, max.y, max.z], [centerX, min.y, max.z]]
+      for (const index of [0, 1, 1, 2, 2, 3, 3, 0]) {
+        const [x, y, z] = corners[index]!
+        point.set(x, y, z).applyMatrix4(root)
+        positions.push(point.x, point.y, point.z)
+      }
+    }
+    buildingGuide.geometry.dispose()
+    buildingGuide.geometry = new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    buildingGuideDirty = false
+  }
+
+  /** 작업 모드에 맞는 구조물만 가려 선택과 렌더링에 같은 가시성 적용 */
+  const updateBuildingGuide = () => {
+    const enabled = !siteView && models.visible
+    const next = !enabled ? noBuildingRoles : equipmentGuides ? buildingRoles
+      : ceilingGuides ? ceilingStructures : noBuildingRoles
+    if (next !== outlinedStructures) {
+      const before = outlinedStructures
+      outlinedStructures = next
+      for (const [previous, current] of [[before, next], [next, before]] as const) {
+        for (const id of previous.keys()) {
+          if (current.has(id)) continue
+          const root = placementRoots.get(id)
+          if (root) writePlacement(id, root)
+        }
+      }
+      buildingGuideDirty = true
+      selectionGeometryDirty = true
+    }
+    buildingGuide.visible = next.size > 0
+    if (buildingGuide.visible && buildingGuideDirty) rebuildBuildingGuide()
+  }
+
   /** 포트 위치를 합성하고 인스턴스의 렌더링과 경계 및 편집 핸들 위치에 변환 반영 */
   const updateMatrices = (instance: FacilityInstance, partial = true) => {
     instance = resolveFacilityInstance(instance, mapDocument?.ports ?? [])
     const root = placementTransform(instance)
-    const matrix = new THREE.Matrix4()
+    placementRoots.set(instance.id, root)
+    if (buildingRoles.has(instance.id)) buildingGuideDirty = true
     const emitter = batches.get(instance.assetId)?.emitter
     if (emitter) fixtures.update(instance.id, emitter, root)
-    for (const { mesh, index, local } of instanceBindings.get(instance.id) ?? []) {
-      mesh.setMatrixAt(index, matrix.multiplyMatrices(root, local))
-      if (partial) mesh.instanceMatrix.addUpdateRange(index * 16, 16)
-      mesh.instanceMatrix.needsUpdate = true
-      // 이동한 설비가 이전 경계 영역 밖에 배치될 수 있으므로 가시성 경계를 다시 계산하는 캐시 초기화
-      mesh.boundingSphere = null
-      mesh.boundingBox = null
-    }
-    updateInstanceBounds(instance.id)
+    writePlacement(instance.id, root, partial)
+    updateInstanceBounds(instance.id, root)
     const projection = selectionProjections.get(instance.id)
     if (projection) {
       projection.transform.copy(root)
@@ -795,15 +946,15 @@ export const createFacilityScene = (
    * 설비 변환 시 부품의 월드 경계를 합성하여 선택과 라벨 가림에 재사용하는 외곽 캐시 갱신
    * @param id 경계를 갱신할 설비 식별자
    */
-  const updateInstanceBounds = (id: string) => {
+  const updateInstanceBounds = (id: string, root: THREE.Matrix4) => {
     const bounds = instanceBounds.get(id) ?? new THREE.Box3()
     bounds.makeEmpty()
     const matrix = new THREE.Matrix4()
     const partBounds = new THREE.Box3()
-    for (const { mesh, index } of instanceBindings.get(id) ?? []) {
+    for (const { mesh, local } of instanceBindings.get(id) ?? []) {
       if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
       if (!mesh.geometry.boundingBox) continue
-      mesh.getMatrixAt(index, matrix)
+      matrix.multiplyMatrices(root, local)
       bounds.union(partBounds.copy(mesh.geometry.boundingBox).applyMatrix4(matrix))
     }
     if (bounds.isEmpty()) instanceBounds.delete(id)
@@ -817,6 +968,7 @@ export const createFacilityScene = (
     const footprintPoints: number[] = []
     const point = new THREE.Vector3()
     for (const id of selectedIds) {
+      if (outlinedStructures.has(id)) continue
       const bounds = instanceBounds.get(id)
       if (!bounds) continue
       selectionBounds.union(bounds)
@@ -877,7 +1029,21 @@ export const createFacilityScene = (
 
   /** 선택과 직접 편집이 가능한 도구 상태 확인 */
   const canEditDirectly = () =>
-    !!selectedId && models.visible && !siteView && !spacePan.active() && toolMode === 'select'
+    !!selectedId && !openingModels.has(selectedId) && !outlinedStructures.has(selectedId) && models.visible && !siteView && !spacePan.active() && toolMode === 'select'
+
+  /** 저장에 쓰는 상대 변환을 드래그 미리보기에도 적용 */
+  const previewPose = (before: FacilityInstance, after: FacilityInstance, skip?: Set<string>) => {
+    previewed.add(before.id)
+    updateMatrices(after)
+    /** 저장 문서를 변경하지 않고 드래그 중인 선택 객체의 속성 표시 동기화 */
+    if (before.id === selectedId) events.preview(after)
+    for (const child of attachments.get(before.id) ?? []) {
+      if (skip?.has(child.id)) continue
+      previewed.add(child.id)
+      const resolved = resolveFacilityInstance(child, mapDocument?.ports ?? [])
+      updateMatrices({ ...carryAttachedInstance(before, after, resolved), portOffset: undefined })
+    }
+  }
 
   const directTransform = createDirectTransform(host, camera, {
     target: () => {
@@ -890,15 +1056,14 @@ export const createFacilityScene = (
     update: (instance, pose, commit) => {
       if (commit) {
         if (!events.move(instance.id, pose.position, pose.rotation, pose.scale))
-          updateMatrices(instance)
+          previewPose(instance, instance)
       } else {
-        previewed.add(instance.id)
-        updateMatrices({ ...instance, ...pose, portOffset: undefined })
+        previewPose(instance, { ...instance, ...pose, portOffset: undefined })
       }
       requestRender()
     },
     restore: (instance) => {
-      updateMatrices(instance)
+      previewPose(instance, instance)
       requestRender()
     },
   })
@@ -946,10 +1111,14 @@ export const createFacilityScene = (
       measurement.visible = false
     }
     if (tool !== 'wall') wallPointer = undefined
+    if (tool !== 'mount') {
+      mountPointer = undefined
+      mountGhost.visible = mountOutline.visible = false
+    }
     placing = tool === 'place' || tool === 'port' || tool === 'wall'
     renderer.domElement.style.cursor = spacePan.active()
       ? 'grab'
-      : (placing || tool === 'attach' || tool === 'measure') && !siteView
+      : (placing || tool === 'attach' || tool === 'measure' || tool === 'mount') && !siteView
         ? 'crosshair'
         : 'default'
     requestRender()
@@ -993,7 +1162,8 @@ export const createFacilityScene = (
     scene.environment = fixtureLighting ? null : reflections.texture
     scene.environmentIntensity = fixtureLighting ? 0 : siteView ? 0.8 : 0.55
     floorSurfaces.setEnvironmentEnabled(!fixtureLighting)
-    renderer.toneMapping = siteView || fixtureLighting ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.03
     renderer.shadowMap.enabled = light.castShadow = !!siteView && !fixtureLighting
   }
 
@@ -1104,21 +1274,26 @@ export const createFacilityScene = (
    */
   const pointerDown = (e: PointerEvent) => {
     renderer.domElement.focus()
+    if (e.button === 1) {
+      e.preventDefault()
+      clearDrawingHover()
+      return
+    }
     if (siteView) return
     downWasSpace = spacePan.active()
     down = { x: e.clientX, y: e.clientY }
     if (
       e.button !== 0 || !e.isPrimary || downWasSpace || placing ||
-      toolMode === 'measure' || toolMode === 'attach' || e.pointerType === 'touch'
+      toolMode === 'measure' || toolMode === 'attach' || toolMode === 'mount' || e.pointerType === 'touch'
     ) return
-    if (!e.shiftKey && selectedIds.length && models.visible) {
+    if (!e.shiftKey && selectedIds.length && models.visible && !selectedIds.some((id) => outlinedStructures.has(id))) {
       setPointerRay(e)
       const hit = firstModelHit()
       const id = hit?.instanceId === undefined ? undefined : hit.object.userData.ids[hit.instanceId]
-      if (hit && id && selectedIds.includes(id)) {
+      if (hit && id && selectedIds.includes(id) && !openingModels.has(id)) {
         const selectedSet = new Set(selectedIds)
         const instances = (facilityDocument?.instances ?? [])
-          .filter((item) => selectedSet.has(item.id))
+          .filter((item) => selectedSet.has(item.id) && !openingModels.has(item.id))
           .map((item) => resolveFacilityInstance(item, mapDocument?.ports ?? []))
         const reference = instances.find((item) => item.id === id)
         if (!reference) return
@@ -1172,7 +1347,7 @@ export const createFacilityScene = (
     )
     return [...instanceBounds]
       .filter(([id, bounds]) =>
-        frustum.intersectsBox(bounds) &&
+        !outlinedStructures.has(id) && frustum.intersectsBox(bounds) &&
         instanceBindings.get(id)?.some(({ mesh }) =>
           Array.isArray(mesh.material) || mesh.material.opacity > 0,
         ),
@@ -1202,9 +1377,9 @@ export const createFacilityScene = (
       y: (free ? y : snapToStep(y, snapStep)) - position.y,
     }
     if (!preview) return
+    const active = new Set(drag.instances.map(({ id }) => id))
     for (const instance of drag.instances) {
-      previewed.add(instance.id)
-      updateMatrices({ ...instance, position: offsetPosition(instance, drag.offset), portOffset: undefined })
+      previewPose(instance, { ...instance, position: offsetPosition(instance, drag.offset), portOffset: undefined }, active)
     }
     requestRender()
   }
@@ -1217,6 +1392,7 @@ export const createFacilityScene = (
 
   /** 포인터 위치에 맞춰 드래그와 측정 및 영역 선택의 미리보기 갱신 */
   const pointerMove = (e: PointerEvent) => {
+    if (e.buttons & 4) return
     if (e.pointerId === moveDrag?.id) {
       updateMoveDrag(e)
       return
@@ -1227,6 +1403,10 @@ export const createFacilityScene = (
     }
     if (toolMode === 'wall' && wallDraft && !siteView) {
       wallPointer = e.buttons ? undefined : e
+      requestRender()
+    }
+    if (toolMode === 'mount' && !siteView) {
+      mountPointer = e.buttons ? undefined : e
       requestRender()
     }
     if (e.pointerId !== selectionDrag?.id || Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4)
@@ -1241,9 +1421,72 @@ export const createFacilityScene = (
 
   /** 렌더링 중인 모델의 가시 표면 중 포인터에 닿은 첫 교차점 확인 */
   const firstModelHit = () => ray.intersectObjects(meshes).find((item) => {
+    const id = item.instanceId === undefined ? undefined : item.object.userData.ids[item.instanceId]
     const material = (item.object as THREE.InstancedMesh).material
-    return Array.isArray(material) || material.opacity > 0
+    return (!id || !outlinedStructures.has(id)) && (Array.isArray(material) || material.opacity > 0)
   })
+
+  /** 공유 형상으로 부착할 모델을 준비하고 로딩 동안에는 모델 외곽 표시 */
+  const setMountAsset = (asset?: FacilityAsset) => {
+    if (asset === mountAsset) return
+    mountAsset = asset
+    mountGhost.clear()
+    mountGhost.visible = mountOutline.visible = false
+    const activeAssets = requestedDocument?.assets ?? facilityDocument?.assets ?? []
+    glbCache.retain(asset ? [...activeAssets, asset] : activeAssets)
+    if (!asset) {
+      requestRender()
+      return
+    }
+    const bounds = facilityModelBounds(asset)
+    if (bounds.isEmpty()) return
+    const center = bounds.getCenter(new THREE.Vector3()).multiplyScalar(0.001)
+    const size = bounds.getSize(new THREE.Vector3()).multiplyScalar(0.001)
+    const marker = new THREE.Mesh(box, mountMaterial)
+    marker.position.copy(center)
+    marker.scale.copy(size)
+    mountGhost.add(marker)
+    if (asset.glb) {
+      const dimensions = asset.glb.size
+      void glbCache.load(asset.glb, readSceneResource).then((source) => {
+        if (mountAsset !== asset) return
+        source.scale.set(dimensions.x / 1000, dimensions.y / 1000, dimensions.z / 1000)
+        source.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return
+          child.material = mountMaterial
+          child.castShadow = child.receiveShadow = false
+        })
+        mountGhost.clear()
+        mountGhost.add(source)
+        requestRender()
+      }, () => undefined)
+    }
+    requestRender()
+  }
+
+  /** 실제로 보이는 벽에 닿은 점에서 부착 후보를 조회 */
+  const pickWallMount = (event: MountPointer, commit: boolean) => {
+    setPointerRay(event)
+    const hit = firstModelHit()
+    if (hit?.instanceId === undefined) return
+    const id: string | undefined = hit.object.userData.ids[hit.instanceId]
+    if (id) return events.mountWall(id, { x: hit.point.x * 1000, y: hit.point.y * 1000, z: hit.point.z * 1000 }, event.altKey, commit)
+  }
+
+  /** 기존 렌더 요청에서 벽 윤곽과 반투명 배치 형상의 변환만 갱신 */
+  const updateMountPreview = () => {
+    const result = !siteView && !spacePan.active() && mountPointer && mountAsset
+      ? pickWallMount(mountPointer, false)
+      : undefined
+    mountGhost.visible = mountOutline.visible = !!result
+    if (!result) return
+    const { position, rotation, wall } = result
+    mountGhost.position.set(position.x / 1000, position.y / 1000, position.z / 1000)
+    mountGhost.rotation.z = rotation * Math.PI / 180
+    mountOutline.position.set(wall.position.x / 1000, wall.position.y / 1000, wall.position.z / 1000)
+    mountOutline.rotation.z = wall.rotation * Math.PI / 180
+    mountOutline.scale.set(wall.size.x / 1000, wall.size.y / 1000, wall.size.z / 1000)
+  }
 
   /** 캔버스의 포인터를 현재 카메라의 광선으로 변환 */
   const setPointerRay = (event: Pick<MouseEvent, 'clientX' | 'clientY'>) => {
@@ -1317,7 +1560,7 @@ export const createFacilityScene = (
     if (!drag || (event && drag.id !== event.pointerId)) return
     moveDrag = undefined
     if (drag.offset) {
-      for (const instance of drag.instances) updateMatrices(instance)
+      for (const instance of drag.instances) previewPose(instance, instance)
       requestRender()
     }
   }
@@ -1333,7 +1576,11 @@ export const createFacilityScene = (
       wallPointer = { clientX, clientY, shiftKey, altKey: free }
       requestRender()
     }
-    if (transforming || moveDrag) event.preventDefault()
+    if (mountPointer) {
+      mountPointer = { clientX: mountPointer.clientX, clientY: mountPointer.clientY, altKey: free }
+      requestRender()
+    }
+    if (transforming || moveDrag || mountPointer) event.preventDefault()
   }
 
   /** 객체 바깥쪽 여백에서도 가까운 실루엣이나 노출된 꼭짓점 탐색 */
@@ -1425,8 +1672,9 @@ export const createFacilityScene = (
   /** 포인터가 캔버스를 벗어나면 도구별 임시 끝점 제거 */
   const clearDrawingHover = () => {
     clearMeasurementHover()
-    if (!wallPointer) return
+    if (!wallPointer && !mountPointer) return
     wallPointer = undefined
+    mountPointer = undefined
     requestRender()
   }
   /**
@@ -1447,7 +1695,7 @@ export const createFacilityScene = (
       const changed = (offset.x !== 0 || offset.y !== 0) && (instances.length > 1
         ? events.moveSelection(offset.x, offset.y)
         : events.move(reference.id, offsetPosition(reference, offset), reference.rotation, reference.scale ?? { x: 1, y: 1, z: 1 }))
-      if (!changed) for (const instance of instances) updateMatrices(instance)
+      if (!changed) for (const instance of instances) previewPose(instance, instance)
       requestRender()
       return
     }
@@ -1470,6 +1718,10 @@ export const createFacilityScene = (
       measurementPointer = e
       const picked = pickMeasurement(e)
       if (picked) events.measurePoint(picked.point)
+      return
+    }
+    if (toolMode === 'mount') {
+      pickWallMount(e, true)
       return
     }
     setPointerRay(e)
@@ -1498,6 +1750,11 @@ export const createFacilityScene = (
    * 이벤트와 관찰자 및 렌더링 버퍼를 해제하고 생성한 화면 요소를 제거하는 렌더러 자원 정리
    */
   const dispose = () => {
+    mountAsset = undefined
+    mountGhost.clear()
+    mountMaterial.dispose()
+    mountOutline.geometry.dispose()
+    mountOutline.material.dispose()
     spacePan.dispose()
     wallOverlap.dispose()
     selectionOutline.dispose()
@@ -1505,6 +1762,7 @@ export const createFacilityScene = (
     glbCache.dispose()
     batches.clear()
     instanceBounds.clear()
+    placementRoots.clear()
     cancelAnimationFrame(animationFrame)
     observer.disconnect()
     window.removeEventListener('resize', resizeViewport)
@@ -1522,6 +1780,8 @@ export const createFacilityScene = (
     directTransform.dispose()
     marquee.remove()
     firstFloorPoint.remove()
+    buildingGuide.geometry.dispose()
+    buildingGuide.material.dispose()
     batchOutline.geometry.dispose()
     batchOutline.material.dispose()
     floorFootprints.geometry.dispose()
@@ -1564,7 +1824,7 @@ export const createFacilityScene = (
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.domElement.setAttribute(
     'aria-label',
-    '3D 시설 설계: 왼쪽 드래그 영역 선택, Shift 클릭 선택 추가 또는 해제, 오른쪽 드래그 회전, Space와 왼쪽 드래그 화면 이동, 휠 확대',
+    '3D 시설 설계: 왼쪽 드래그 영역 선택, Shift 클릭 선택 추가 또는 해제, 오른쪽 드래그 회전, Space와 왼쪽 드래그 또는 휠 버튼 드래그 화면 이동, 휠 확대',
   )
   renderer.domElement.tabIndex = 0
   host.append(renderer.domElement)
@@ -1590,14 +1850,14 @@ export const createFacilityScene = (
   controls.minPolarAngle = 0
   controls.maxPolarAngle = Math.PI / 2.2
   controls.mouseButtons.LEFT = null
-  controls.mouseButtons.MIDDLE = null
+  controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN
   controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE
   controls.addEventListener('change', requestRender)
   const spacePan = createSpacePan((pressed) => {
     controls.mouseButtons.LEFT = pressed ? THREE.MOUSE.PAN : null
     renderer.domElement.style.cursor = pressed
       ? 'grab'
-      : (placing || toolMode === 'attach' || toolMode === 'measure') && !siteView ? 'crosshair' : 'default'
+      : (placing || toolMode === 'attach' || toolMode === 'measure' || toolMode === 'mount') && !siteView ? 'crosshair' : 'default'
     if (pressed) clearDrawingHover()
     if (pressed) {
       cancelDirectMove()
@@ -1617,6 +1877,7 @@ export const createFacilityScene = (
   scene.add(
     models,
     fixtures.group,
+    buildingGuide,
     batchOutline,
     floorFootprints,
     ground,
@@ -1624,6 +1885,8 @@ export const createFacilityScene = (
     floorSurfaces.group,
     floorOutline,
     wallPreview,
+    mountGhost,
+    mountOutline,
     measurement,
     floorPlan,
     grid,
@@ -1647,6 +1910,14 @@ export const createFacilityScene = (
   resizeViewport()
   return {
     setMap: setMap,
+    setMountAsset,
+    refreshMountPreview: requestRender,
+    /** 카탈로그 모델을 끌어올 때도 클릭 배치와 같은 벽 후보 사용 */
+    moveMountPointer: (event?: MountPointer) => {
+      mountPointer = event
+      requestRender()
+    },
+    commitWallMount: (event: MountPointer) => pickWallMount(event, true),
     /** 지정 중이거나 목록에서 선택한 바닥 경계를 지도 위에 표시 */
     setFloorOutline: (points: FloorPoint[], closed = false, polygonDraft = false) => {
       const outline = closed && points.length ? [...points, points[0]!] : points
@@ -1681,6 +1952,15 @@ export const createFacilityScene = (
       requestRender()
     },
     setSitePreview,
+    setEquipmentGuides: (enabled: boolean) => {
+      equipmentGuides = enabled
+      requestRender()
+    },
+    /** 천장에 가려진 구조물의 선택을 지원하고 모델과 광원 자원 재생성 방지 */
+    setCeilingGuides: (enabled: boolean) => {
+      ceilingGuides = enabled
+      requestRender()
+    },
     /** 배치 기준 간격과 보조 격자를 같은 밀리미터 단위로 변경 */
     setSnapStep: (step: TransformSnapStep) => {
       snapStep = step

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import type { WallDoor } from '@/entities/facility/index.ts'
 import { snapToStep } from '../lib/transformSnap'
 
@@ -13,12 +13,15 @@ const props = defineProps<{
   disabled: boolean
   mountedObjects: { id: string; name: string; x: number; y: number }[]
   pending: string
+  mountDimensions?: { x: number; y: number }
+  mountKind: 'surface' | 'door' | 'window'
 }>()
 const emit = defineEmits<{
   focus: [id: string]
   apply: [doors: WallDoor[], focus: string]
   select: [id: string]
-  place: [point: { x: number; y: number }]
+  place: [point: { x: number; y: number }, free: boolean]
+  'cancel-mount': []
   'drag-over': [event: DragEvent]
   'drop-fixture': [event: DragEvent, point: { x: number; y: number }]
 }>()
@@ -27,6 +30,11 @@ const handles = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'] as const
 type Handle = (typeof handles)[number]
 let gesture: { id: number; startX: number; startY: number; original: WallDoor; handle?: Handle } | undefined
 const preview = shallowRef<WallDoor>()
+const mountCursor = shallowRef<{ x: number; y: number; free: boolean }>()
+watch(() => props.pending, (value) => {
+  mountCursor.value = undefined
+  if (value) board.value?.focus()
+})
 const invalid = computed(() => {
   const door = preview.value
   return !!door && props.doors.some((other) => other.id !== door.id &&
@@ -104,12 +112,36 @@ function cancel() {
 
 function mountPoint(event: MouseEvent) {
   const rect = board.value!.getBoundingClientRect()
-  const snap = (value: number) => event.altKey ? value : snapToStep(value, props.snap)
   return {
-    x: clamp(snap(((event.clientX - rect.left) / rect.width - 0.5) * props.width), -props.width / 2, props.width / 2),
-    y: clamp(snap((1 - (event.clientY - rect.top) / rect.height) * props.height), 0, props.height),
+    x: clamp(((event.clientX - rect.left) / rect.width - 0.5) * props.width, -props.width / 2, props.width / 2),
+    y: clamp((1 - (event.clientY - rect.top) / rect.height) * props.height, 0, props.height),
   }
 }
+
+/** 부착 위치와 조작 키를 기억하여 확정 직전의 면 배치 표시 */
+const movePointer = (event: PointerEvent) => {
+  if (props.pending && !props.disabled && board.value)
+    mountCursor.value = { ...mountPoint(event), free: event.altKey }
+  move(event)
+}
+
+/** 모델 폭과 높이에 맞춘 벽 정면 부착 범위 표시 */
+const mountRectangle = computed(() => {
+  const point = mountCursor.value, model = props.mountDimensions
+  if (!point || !model || !props.pending || props.disabled || model.x > props.width || model.y > props.height) return
+  const snap = (value: number) => point.free ? value : snapToStep(value, props.snap)
+  const limit = (props.width - model.x) / 2
+  const offset = clamp(snap(point.x), -limit, limit)
+  const sill = props.mountKind === 'door' ? 0 : clamp(snap(point.y - model.y / 2), 0, props.height - model.y)
+  const invalid = props.mountKind !== 'surface' && props.doors.some((opening) =>
+    Math.abs(opening.offset - offset) < (opening.width + model.x) / 2)
+  return { invalid, style: {
+    left: `${(offset - model.x / 2 + props.width / 2) * 100 / props.width}%`,
+    bottom: `${sill * 100 / props.height}%`,
+    width: `${model.x * 100 / props.width}%`,
+    height: `${model.y * 100 / props.height}%`,
+  } }
+})
 
 function rectangle(door: WallDoor) {
   const item = current(door)
@@ -123,7 +155,7 @@ function rectangle(door: WallDoor) {
 </script>
 
 <template>
-  <section class="wall-elevation" data-testid="wall-elevation" @keydown.esc.stop="cancel">
+  <section class="wall-elevation" data-testid="wall-elevation" @keydown.esc.stop="cancel(); emit('cancel-mount')">
     <header>
       <strong>{{ name }} · 정면</strong>
       <span>{{ dimensions(width) }} × {{ dimensions(height) }} mm</span>
@@ -135,14 +167,18 @@ function rectangle(door: WallDoor) {
         data-testid="wall-elevation-board"
         :style="{ '--ratio': width / height }"
         :class="{ pending }"
-        @click.self="!disabled && pending && emit('place', mountPoint($event))"
+        tabindex="0"
+        @click.self="!disabled && pending && emit('place', mountPoint($event), $event.altKey)"
         @dragover="emit('drag-over', $event)"
         @drop="emit('drop-fixture', $event, mountPoint($event))"
-        @pointermove="move"
+        @pointermove="movePointer"
+        @pointerleave="mountCursor = undefined"
         @pointerup="end"
         @pointercancel="end"
         @lostpointercapture="end"
       >
+        <div v-if="mountRectangle" class="mounted-preview" :class="{ invalid: mountRectangle.invalid }"
+          :style="mountRectangle.style" data-testid="wall-mount-preview" aria-hidden="true" />
         <div
           v-for="door in doors"
           :key="door.id"
@@ -160,7 +196,7 @@ function rectangle(door: WallDoor) {
             @click="emit('focus', door.id)"
             @pointerdown="begin($event, door)"
           >
-            {{ door.kind === 'window' ? '창문' : '문' }}
+            {{ door.kind === 'window' ? '창문' : '문' }}{{ door.modelId ? ' · GLB' : '' }}
           </button>
           <template v-if="focus === door.id && !disabled">
             <span
@@ -188,7 +224,8 @@ function rectangle(door: WallDoor) {
     </div>
     <footer :class="{ warning: invalid }" aria-live="polite">
       <template v-if="invalid">같은 벽에서 문과 창문의 가로 위치가 겹칩니다.</template>
-      <template v-else-if="pending">{{ pending }} · 벽에 놓을 위치를 클릭하세요.</template>
+      <template v-else-if="mountRectangle?.invalid">기존 개구부와 겹치지 않는 위치를 선택하세요.</template>
+      <template v-else-if="pending">{{ pending }} · 벽에 놓을 위치를 클릭하세요. Alt 자유 배치 · Esc 취소</template>
       <template v-else-if="selected">
         {{ dimensions(selected.width) }} × {{ dimensions(selected.height) }} mm
         <span v-if="selected.kind === 'window'"> · 하단 {{ dimensions(selected.sill ?? 0) }} mm</span>
@@ -199,6 +236,15 @@ function rectangle(door: WallDoor) {
 </template>
 
 <style scoped>
+/** 부착 모델의 벽 정면 외곽과 배치 불가 상태 표시 */
+.mounted-preview {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid #009f8c;
+  background: #00bd9e48;
+}
+.mounted-preview.invalid { border-color: var(--app-danger); background: #ec555649; }
 .wall-elevation { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 16px; gap: 12px; background: var(--surface); }
 header { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 header span, footer { color: var(--text-secondary); font-size: 12px; }

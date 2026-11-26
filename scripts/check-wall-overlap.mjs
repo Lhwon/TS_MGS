@@ -100,6 +100,13 @@ const checkPixels = (THREE, getWallOverlapPass) => {
     const glassBack = pixel()
     glass.visible = false
 
+    /** 완전 투명 벽의 색상과 마스크가 뒤쪽 벽 및 배경을 가리지 않는 픽셀 검증 */
+    near.material.opacity = 0
+    const transparentNear = pixel()
+    far.material.opacity = 0
+    const fullyClear = pixel()
+    near.material.opacity = far.material.opacity = 0.55
+
     renderer.setRenderTarget(target)
     const inset = pixel(26, 23)
     const targetRestored = renderer.getRenderTarget() === target
@@ -120,6 +127,8 @@ const checkPixels = (THREE, getWallOverlapPass) => {
       covered,
       glassFront,
       glassBack,
+      transparentNear,
+      fullyClear,
       inset,
       targetRestored,
       mainAgain,
@@ -188,6 +197,8 @@ try {
   assert.ok(output.farOnly[2] > 20 && output.farOnly[0] === 0)
   assert.ok(output.covered[0] > 240 && output.covered[1] > 240)
   assert.ok(output.glassFront[1] > output.glassBack[1] && output.glassBack[1] > 5)
+  assert.deepEqual(output.transparentNear, output.farOnly)
+  assert.deepEqual(output.fullyClear, [0, 0, 0, 255])
   assert.ok(output.inset[0] > 20 && output.inset[2] === 0 && output.targetRestored)
   assert.deepEqual(output.crossingLeft, output.nearOnly)
   assert.deepEqual(output.crossingRight, output.farOnly)

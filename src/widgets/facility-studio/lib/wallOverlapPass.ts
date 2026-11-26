@@ -94,13 +94,14 @@ const createWallOverlapPass = (renderer: THREE.WebGLRenderer) => {
     })
   }
 
-  /** 현재 장면의 보이는 벽만 카메라별 깊이 검사를 거쳐 식별자 텍스처에 기록 */
+  /** 완전 투명 벽을 제외하고 보이는 벽만 카메라별 식별자 텍스처에 기록 */
   const render = (scene: THREE.Scene, camera: THREE.Camera) => {
     let visible = 0
     for (const [mesh, { proxy, id }] of entries) {
       let parent: THREE.Object3D | null = mesh
       while (parent?.visible && parent !== scene) parent = parent.parent
-      proxy.visible = parent === scene && scene.visible && mesh.layers.test(camera.layers)
+      proxy.visible = parent === scene && scene.visible && mesh.layers.test(camera.layers) &&
+        !Array.isArray(mesh.material) && mesh.material.visible && mesh.material.opacity > 0
       if (!proxy.visible) continue
       mesh.updateWorldMatrix(true, false)
       proxy.matrix.copy(mesh.matrixWorld)

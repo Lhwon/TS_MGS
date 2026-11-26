@@ -5,6 +5,7 @@
  * 작성일자: 2026-11-18
  */
 import type { Ref } from 'vue'
+import { listAppCommands, getAppCommandContracts, executeAppCommand } from '@/shared/lib/input/index.ts'
 import {
   shortestMapPath,
   useEditor,
@@ -56,7 +57,12 @@ export const agentContext = (attachment?: DrawingAttachment) => {
     facility = useFacilityEditor(),
     map = editor.document
   const nodeIds = editor.selectedNodeIds
+  const available = listAppCommands({ limit: 1 })
   return {
+    capabilities: { discovery: 'get_app_commands', execution: 'execute_app_command',
+      commands: getAppCommandContracts().filter((command) => Object.keys(command.parameters.properties).length > 0),
+      ...('categories' in available ? { categories: available.categories, modeSwitch: available.modeSwitch } : {}),
+      note: '현재 화면에 등록된 실제 기능과 가용 상태 및 입력 규격을 조회하여 실행 가능' },
     map: {
       name: editor.sourceName,
       units: map.units,
@@ -120,13 +126,16 @@ const readContext = (args: Record<string, unknown>) => {
     edges: map.edges,
     ports: map.ports,
     objects: map.drawing?.objects ?? [],
-    models: facility.document.assets.map(({ id, name, kind, parts }) => ({
+    models: facility.document.assets.map(({ id, name, kind, parts, glb, light, catalogCategory }) => ({
       id,
       name,
       kind,
       partCount: parts.length,
+      light, catalogCategory,
+      ...(glb ? { sourceName: glb.sourceName, size: glb.size } : {}),
     })),
     instances: facility.document.instances,
+    floors: facility.document.floors ?? [],
     shapes: map.shapes ?? [],
   }
   const rows = tables[String(args.entity)]
@@ -172,6 +181,19 @@ export const executeAgentTool = async (
     }
   }
   request.signal.throwIfAborted()
+  if (name === 'get_app_commands') return listAppCommands(args)
+  if (name === 'execute_app_command') {
+    if (typeof args.id !== 'string') throw new Error('실행할 기능 식별자가 필요합니다.')
+    const value = args.arguments
+    if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value)))
+      throw new Error('기능 입력값을 확인하세요.')
+    options.internal(true)
+    try {
+      return await executeAppCommand(args.id, (value ?? {}) as Record<string, unknown>)
+    } finally {
+      options.internal(false)
+    }
+  }
   for (const key of [
     'widthMm',
     'realWidthMm',
@@ -451,6 +473,7 @@ export const executeAgentTool = async (
     mutate(() => editor.moveNodes(args.nodeIds as number[], Number(args.dx), Number(args.dy)))
     return { moved: args.nodeIds, dx: args.dx, dy: args.dy }
   }
+  if (name === 'rename_equipment') return renameEquipment(args, mutate)
   if (name === 'edit_equipment') return editEquipment(args, mutate)
   if (name === 'place_equipment') {
     if (map.units !== 'mm')
@@ -529,6 +552,57 @@ export const executeAgentTool = async (
       tiles: [4, 12, 32].includes(Number(args.tiles)) ? Number(args.tiles) : options.settings.tiles,
     },
   })
+}
+
+/** 모델과 배치의 이름만 검증하여 한 번의 편집 이력으로 일괄 변경 */
+const renameEquipment = (args: Record<string, unknown>, mutate: (change: () => void) => void) => {
+  const facility = useFacilityEditor()
+  if (!['models', 'instances'].includes(String(args.target))) throw new Error('이름을 변경할 대상 종류를 확인하세요.')
+  const rows = args.target === 'models' ? facility.document.assets : facility.document.instances
+  const names = new Map<string, string>()
+  if (args.mode === 'model_names' && args.target === 'instances') {
+    if (!['all', 'ids'].includes(String(args.scope))) throw new Error('이름 변경 범위를 지정하세요.')
+    const ids = args.scope === 'all' ? facility.document.instances.map((item) => item.id) : args.ids
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string'))
+      throw new Error('이름을 변경할 배치 식별자가 필요합니다.')
+    if (new Set(ids).size !== ids.length) throw new Error('중복된 배치 식별자가 있습니다.')
+    const selected = new Set(ids)
+    if (facility.document.instances.filter((item) => selected.has(item.id)).length !== ids.length)
+      throw new Error('이름을 변경할 배치를 찾을 수 없습니다.')
+    const counts = new Map<string, number>()
+    const index = new Map<string, number>()
+    const assets = new Map(facility.document.assets.map((asset) => [asset.id, asset]))
+    for (const item of facility.document.instances)
+      if (selected.has(item.id)) counts.set(item.assetId, (counts.get(item.assetId) ?? 0) + 1)
+    for (const item of facility.document.instances) {
+      if (!selected.has(item.id)) continue
+      const asset = assets.get(item.assetId)
+      if (!asset) throw new Error('배치의 원본 모델을 찾을 수 없습니다.')
+      const number = (index.get(item.assetId) ?? 0) + 1
+      index.set(item.assetId, number)
+      const suffix = counts.get(item.assetId)! > 1 ? ` ${number}` : ''
+      names.set(item.id, asset.name.slice(0, 300 - suffix.length) + suffix)
+    }
+  } else if (args.mode === 'explicit') {
+    if (!Array.isArray(args.changes) || !args.changes.length || args.changes.length > 200)
+      throw new Error('이름 변경 목록은 한 번에 이백 개까지 지정하세요.')
+    for (const change of args.changes) {
+      if (!change || typeof change.id !== 'string' || typeof change.name !== 'string' ||
+        !change.name.trim() || change.name.trim().length > 300 || /[\r\n\t]/.test(change.name))
+        throw new Error('식별자와 새 이름을 확인하세요.')
+      if (names.has(change.id)) throw new Error('중복된 이름 변경 대상이 있습니다.')
+      names.set(change.id, change.name.trim())
+    }
+  } else throw new Error('지원하는 이름 변경 방식을 선택하세요.')
+  const existing = new Set(rows.map((item) => item.id))
+  if ([...names.keys()].some((id) => !existing.has(id))) throw new Error('이름을 변경할 객체를 찾을 수 없습니다.')
+  const changed = rows.filter((item) => names.has(item.id) && names.get(item.id) !== item.name)
+    .map((item) => ({ id: item.id, before: item.name, name: names.get(item.id)! }))
+  if (changed.length) mutate(() => facility.commit((document) => {
+    const items = args.target === 'models' ? document.assets : document.instances
+    for (const item of items) if (names.has(item.id)) item.name = names.get(item.id)!
+  }))
+  return { target: args.target, changed: changed.length, rows: changed.slice(0, 20), hasMore: changed.length > 20 }
 }
 
 /** 부품으로 수정 가능한 모델의 제작과 삭제를 연결하는 설비 도구 */

@@ -1,9 +1,11 @@
 /**
  * 파일명: index.ts
- * 설명: 입력 필드의 공백 입력을 보존하며 두 렌더러의 스페이스 이동 상태를 관리하는 공통 입력 처리
+ * 설명: 공통 입력 수명과 화면 기능의 가용 상태 및 실행 계약 제공
  * 작성자: 이희원
  * 작성일자: 2026-11-16
  */
+export { registerAppCommands, listAppCommands, getAppCommandContracts, executeAppCommand } from './commands'
+export type { AppCommand, CommandParameter } from './commands'
 
 /**
  * 키 해제와 창 포커스 이탈을 포함하여 스페이스 이동 상태를 관리하는 입력 수명주기 구성

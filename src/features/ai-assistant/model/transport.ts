@@ -84,6 +84,10 @@ export const requestProposal = async (
 
   try {
     return await window.desktop.aiPropose(payload)
+  } catch (cause) {
+    /** Electron 호출 접두어를 제거하고 실제 서비스 오류 내용만 전달 */
+    const message = cause instanceof Error ? cause.message : String(cause)
+    throw new Error(message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, ''))
   } finally {
     signal.removeEventListener('abort', cancel)
   }

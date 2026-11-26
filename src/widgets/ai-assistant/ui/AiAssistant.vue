@@ -394,6 +394,8 @@ const requireDrawing = async () => {
 const toolLabel = (name: string) =>
   ({
     ask_user: '사용자 확인',
+    get_app_commands: '사용 가능한 기능 확인',
+    execute_app_command: '화면 기능 실행',
     search_mgs_training: 'MGS 교육 자료 검색',
     port_approach: '포트 진입 경로 확인 및 설정',
     audit_port_references: '포트 참조 점검',
@@ -416,6 +418,7 @@ const toolLabel = (name: string) =>
     place_equipment: '설비 배치',
     edit_map: '지도 객체 편집',
     edit_equipment: '설비 제작',
+    rename_equipment: '모델 및 배치 이름 변경',
     history: '편집 이력',
     focus_map: '화면 이동',
   })[name] ?? name

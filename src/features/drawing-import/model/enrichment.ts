@@ -14,7 +14,7 @@ import {
 import {
   designRack,
   mapGeometryKey,
-  parseFacilityDocument,
+  validateFacilityDraft,
   type FacilityAsset,
   type FacilityDocument,
 } from '@/entities/facility/index.ts'
@@ -454,7 +454,7 @@ export const roundDrawingPaths = (input: MapDocument, radiusMm = 0) => {
 }
 
 /**
- * 인식 설비마다 수정 가능한 부품 모델과 포트 기준 배치를 생성하는 삼차원 동기화
+ * 외부 모델 참조를 보존하며 인식 설비의 부품과 포트 기준 배치를 갱신하는 삼차원 동기화
  * @param map 축척 보정한 도면 지도
  * @param previous 기존 수동 설계를 보존할 설비 문서
  * @returns 도면 설비만 갱신한 밀리미터 설계 문서
@@ -474,7 +474,7 @@ export const drawingFacility = (
   scene.assets = scene.assets.filter(
     (item) => !item.id.startsWith(prefix) || manualAssetIds.has(item.id),
   )
-  if (map.units !== 'mm' || !map.drawing) return parseFacilityDocument(JSON.stringify(scene))
+  if (map.units !== 'mm' || !map.drawing) return validateFacilityDraft(scene)
   for (const object of map.drawing.objects ?? []) {
     if (
       object.status === 'rejected' ||
@@ -581,7 +581,7 @@ export const drawingFacility = (
     })
   }
   scene.mapRef = { name: map.name, geometryKey: mapGeometryKey(map.nodes) }
-  return parseFacilityDocument(JSON.stringify(scene))
+  return validateFacilityDraft(scene)
 }
 
 export interface DrawingFinding {

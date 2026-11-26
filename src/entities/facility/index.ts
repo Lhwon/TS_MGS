@@ -14,7 +14,13 @@ export {
   facilityPartMatrix,
 } from './facilityDimensions'
 
-import { parseEquipmentLibrary } from '@bem/map3d'
+import { parseEquipmentLibrary, type SceneResourceReader } from '@bem/map3d'
+
+/** 편집기에서 등록하거나 연 설계의 외부 리소스 읽기 */
+export const readSceneResource: SceneResourceReader = (reference) => {
+  if (window.desktop?.readSceneResource) return window.desktop.readSceneResource(reference)
+  return Promise.reject(new Error('외부 리소스가 포함된 설계는 데스크톱 앱에서 열어 주세요.'))
+}
 
 /** 도면 기반 개략 설비 라이브러리의 지연 로딩과 계약 검증 */
 export const loadDefaultCatalog = async () =>

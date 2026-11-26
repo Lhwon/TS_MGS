@@ -5,13 +5,14 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
 const { pathToFileURL } = require('node:url')
-const { saveSceneFiles } = require('../electron/scene-files.cjs')
+const { createHash } = require('node:crypto')
+const { loadSource } = require('./load-source.cjs')
+const { openNamedMapScene, createSceneAccess } = require('../packages/map3d/localFiles.cjs')
+const { parseFacilityDocument, parseFacilitySceneFile } = loadSource('packages/map3d/index.ts')
 
 /** 실제 파일과 격리된 데스크톱 통신을 사용하는 프로젝트별 저장 검증 */
 const main = async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ts-mgs-scene-'))
-  const created = []
-  const directories = []
   const handlers = new Map()
   const mainFile = path.resolve(__dirname, '../electron/main.cjs')
   const localRequire = createRequire(mainFile)
@@ -58,105 +59,130 @@ const main = async () => {
   vm.runInNewContext(await fs.readFile(mainFile, 'utf8'), context, { filename: mainFile })
   await ready()
   const event = { sender: webContents, senderFrame: frame }
-  const scene = JSON.stringify({
-    format: 'bem-map3d',
-    version: 1,
-    units: 'mm',
-    coordinates: 'mgs-xy-z-up',
+  const geometry = Buffer.from(JSON.stringify({ asset: { version: '2.0' } }).padEnd(28, ' '))
+  const model = Buffer.alloc(20 + geometry.length)
+  model.writeUInt32LE(0x46546c67, 0)
+  model.writeUInt32LE(2, 4)
+  model.writeUInt32LE(model.length, 8)
+  model.writeUInt32LE(geometry.length, 12)
+  model.writeUInt32LE(0x4e4f534a, 16)
+  geometry.copy(model, 20)
+  const hash = createHash('sha256').update(model).digest('hex')
+  const makeAsset = (id) => ({
+    id, name: id, kind: 'equipment', parts: [],
+    glb: { data: model.toString('base64'), size: { x: 1, y: 1, z: 1 }, sourceName: 'same.glb' },
   })
+  const placed = (id, assetId, x) => ({ id, assetId, name: id, position: { x, y: 10, z: 2 }, rotation: 45 })
+  const document = {
+    format: 'bem-map3d', version: 1, units: 'mm', coordinates: 'mgs-xy-z-up',
+    mapRef: { name: '20261027_120000.jmapx', geometryKey: 'test' },
+    assets: ['rack-A', 'rack-B', 'Unplaced'].map(makeAsset),
+    instances: [placed('a', 'rack-A', 0), placed('b', 'rack-B', 3), placed('c', 'rack-A', 5)],
+    floors: [{
+      id: 'floor', name: 'Showroom', material: 'showroom-epoxy', color: '#cccccc', repeatMm: 4800, rotation: 0,
+      points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }],
+    }],
+  }
+  const legacyContent = JSON.stringify(document)
+  const operator = createSceneAccess()
   try {
-    for (const project of ['site-a', 'site-b']) {
-      const folder = path.join(temporary, project, 'MAP')
+    for (const company of ['site-a', 'site-b']) {
+      const folder = path.join(temporary, '!BEM_SOFT', company, 'RCS', 'Line A', 'MAP')
       await fs.mkdir(folder, { recursive: true })
-      directories.push(path.join(temporary, project), folder)
-      const file = path.join(folder, '20261027_120000.jmapx')
-      await fs.writeFile(file, 'Ver.25\n')
-      created.push(file)
-      dialogs.push({ canceled: false, filePaths: [file] })
+      const map = path.join(folder, document.mapRef.name)
+      await fs.writeFile(map, 'Ver.25\\n')
+      dialogs.push({ canceled: false, filePaths: [map] })
       const opened = await handlers.get('map:open')(event)
-      assert.equal(await handlers.get('scene:read-project')(event, opened.token), null)
-      const name = await handlers.get('scene:save')(
-        event,
-        scene,
-        'Untitled.map3d.json',
-        opened.token,
-      )
-      assert.equal(name, 'project.map3d.json')
-      const output = path.join(folder, '3D', name)
-      directories.push(path.join(folder, '3D'))
-      created.push(output)
-      assert.equal(await fs.readFile(output, 'utf8'), scene)
-      assert.equal((await handlers.get('scene:read-project')(event, opened.token)).content, scene)
-      const layout = JSON.stringify({
-        format: 'bem-map3d-layout',
-        version: 1,
-        libraryRef: { fileName: 'equipment.json' },
-      })
-      const library = JSON.stringify({ format: 'bem-equipment-library', version: 1 })
-      assert.equal(
-        await handlers.get('scene:export')(event, layout, library, opened.token),
-        path.join(folder, '3D'),
-      )
-      created.push(path.join(folder, '3D', 'map3d.json'), path.join(folder, '3D', 'equipment.json'))
-      assert.equal(await fs.readFile(path.join(folder, '3D', 'map3d.json'), 'utf8'), layout)
-      await fs.unlink(output)
-      const split = await handlers.get('scene:read-project')(event, opened.token)
-      assert.equal(split.content, layout)
-      assert.equal(split.library, library)
-      await fs.writeFile(output, scene)
+      const read = () => handlers.get('scene:read-project')(event, opened.token)
+      const save = (content) => handlers.get('scene:save')(event, content, 'Untitled.map3d.json', opened.token)
+      assert.equal(await read(), null)
+      const root = path.join(folder, '3D')
+      await fs.mkdir(root)
+      const manifest = path.join(root, 'project.map3d.json')
+      await fs.writeFile(manifest, legacyContent)
+      assert.equal((await read()).content, legacyContent)
+      assert.deepEqual(await fs.readdir(root), ['project.map3d.json'])
+
+      const saved = await save(legacyContent)
+      const v2 = parseFacilityDocument(saved.content)
+      assert.equal(v2.version, 2)
+      assert.equal(JSON.parse(saved.content).mapRef, undefined)
+      assert.equal(saved.name, 'project.map3d.json')
+      assert.deepEqual(v2.instances, document.instances)
+      assert.deepEqual(v2.assets.map(({ id }) => id), ['rack-A', 'rack-B'])
+      assert.deepEqual(v2.assets.map(({ glb }) => glb.hash), [hash, hash])
+      assert.equal(v2.assets[0].glb.uri, v2.assets[1].glb.uri)
+      assert.ok(v2.assets.every(({ glb }) => !('data' in glb)))
+      assert.deepEqual(parseFacilitySceneFile(await read()).assets.map(({ id }) => id), ['rack-A', 'rack-B', 'Unplaced'])
+      const backup = (await fs.readdir(root)).find((name) => name.endsWith('.bak'))
+      assert.equal(await fs.readFile(path.join(root, backup), 'utf8'), legacyContent)
+      const texture = v2.floors[0].texture
+      assert.ok(texture.uri.startsWith('textures/'))
+      const modelPath = path.join(root, v2.assets[0].glb.uri)
+      assert.deepEqual(await fs.readdir(path.dirname(modelPath)), [path.basename(modelPath)])
+      const stat = await fs.stat(modelPath)
+      const changed = parseFacilitySceneFile(saved)
+      changed.instances[0].position.x = 50
+      const changedResult = await save(JSON.stringify(changed))
+      assert.equal(parseFacilityDocument(changedResult.content).instances[0].position.x, 50)
+      assert.equal((await fs.stat(modelPath)).mtimeMs, stat.mtimeMs)
+      assert.deepEqual(await fs.readFile(modelPath), model)
+
+      /** 고객사와 공정 이름이 달라진 배포본의 운영 리소스 조회 */
+      const copiedRoot = path.join(temporary, '!BEM_SOFT', company + '-copy', 'RCS', 'Line B', 'MAP')
+      await fs.cp(folder, copiedRoot, { recursive: true })
+      const copied = operator.register(await openNamedMapScene(temporary, company + '-copy', 'Line B'))
+      assert(!copied.catalog)
+      const ref = v2.assets[0].glb
+      assert.deepEqual(await operator.read(ref, copied.grant), model)
+      assert.ok((await operator.read(texture, copied.grant, true)).length > 12)
+      for (const uri of ['../outside.glb', 'C:/outside.glb', 'https://outside.test/a.glb', 'models/CON.glb'])
+        assert.throws(() => operator.read({ uri, hash }, copied.grant), /상대경로/)
+      const copiedModel = path.join(copiedRoot, '3D', ref.uri)
+      await fs.writeFile(copiedModel, Buffer.alloc(model.length))
+      await assert.rejects(() => operator.read(ref, copied.grant), /해시/)
+      await fs.unlink(copiedModel)
+      await assert.rejects(() => operator.read(ref, copied.grant), /찾을 수/)
+      const copiedModels = path.dirname(copiedModel)
+      await fs.rmdir(copiedModels)
+      await fs.symlink(path.dirname(modelPath), copiedModels, process.platform === 'win32' ? 'junction' : 'dir')
+      await assert.rejects(() => operator.read(ref, copied.grant), /링크|정션/)
+
+      const damaged = parseFacilitySceneFile(changedResult)
+      damaged.assets[0].glb = { ...document.assets[0].glb, data: 'AAAA' }
+      await assert.rejects(() => save(JSON.stringify(damaged)), /헤더|길이/)
+      const missingParent = parseFacilitySceneFile(changedResult)
+      missingParent.instances[0].attachedTo = 'missing-parent'
+      await assert.rejects(() => save(JSON.stringify(missingParent)), /부모 객체/)
+      missingParent.instances[0].attachedTo = missingParent.instances[1].id
+      missingParent.instances[1].attachedTo = missingParent.instances[0].id
+      await assert.rejects(() => save(JSON.stringify(missingParent)), /순환/)
+      const invalidPosition = parseFacilitySceneFile(changedResult)
+      invalidPosition.instances[0].position.x = null
+      await assert.rejects(() => save(JSON.stringify(invalidPosition)), /좌표/)
+      assert.equal((await read()).content, changedResult.content)
+      assert.ok((await fs.readdir(root)).every((name) => !name.endsWith('.tmp')))
+      assert.equal(await fs.readFile(map, 'utf8'), 'Ver.25\\n')
+
+      assert.equal(await handlers.get('scene:export')(event, JSON.stringify(changed), opened.token), root)
+      const output = await fs.readFile(path.join(root, 'map3d.json'), 'utf8')
+      assert.equal(parseFacilityDocument(output).version, 2)
+      assert.equal(JSON.parse(output).editorCatalog, undefined)
+      await fs.rename(manifest, manifest + '.inactive')
+      assert.equal((await read()).content, output)
     }
-    const jsonMap = path.join(temporary, 'site-b', 'MAP', 'edited.tsmgs.json')
-    dialogs.push({ canceled: false, filePath: jsonMap })
-    const savedMap = await handlers.get('map:save')(
-      event,
-      JSON.stringify({ format: 'ts-mgs', version: 1 }),
-      'edited.tsmgs.json',
-    )
-    created.push(jsonMap)
-    assert.ok(savedMap.token)
-    const sceneName = await handlers.get('scene:save')(
-      event,
-      scene,
-      'edited.map3d.json',
-      savedMap.token,
-    )
-    const jsonScene = path.join(temporary, 'site-b', 'MAP', '3D', sceneName)
-    created.push(jsonScene)
-    assert.equal(await fs.readFile(jsonScene, 'utf8'), scene)
     await assert.rejects(
-      () => handlers.get('scene:save')(event, scene, 'project.map3d.json', 'invalid-token'),
+      () => handlers.get('scene:save')(event, legacyContent, 'project.map3d.json', 'invalid-token'),
       /프로젝트/,
     )
     await assert.rejects(
       () => handlers.get('scene:read-project')(event, 'invalid-token'),
       /프로젝트/,
     )
-    const mapDirectory = path.join(temporary, 'site-a', 'MAP')
-    const blocker = path.join(mapDirectory, '3D', 'blocked.json')
-    await fs.mkdir(blocker)
-    directories.push(blocker)
-    await assert.rejects(
-      () =>
-        saveSceneFiles(mapDirectory, [
-          ['project.map3d.json', '{"replacement":true}'],
-          ['blocked.json', '{}'],
-        ]),
-      /일반 파일/,
-    )
-    assert.equal(
-      await fs.readFile(path.join(mapDirectory, '3D', 'project.map3d.json'), 'utf8'),
-      scene,
-    )
-    assert.ok(
-      (await fs.readdir(path.join(mapDirectory, '3D'))).every((name) => !/\.(tmp|bak)$/.test(name)),
-    )
-    console.log(
-      'Scene project storage: dynamic map tokens, automatic 3D directory, paired export, invalid token and rollback passed',
-    )
+    await assert.rejects(() => openNamedMapScene(temporary, '../site-a', 'Line A'), /이름/)
+    console.log('Scene project storage: Version 1 backup, Version 2, dedup, textures, renamed deployment, integrity, junction, rollback and tokens passed')
   } finally {
-    for (const file of created) await fs.unlink(file).catch(() => {})
-    for (const directory of directories.reverse()) await fs.rmdir(directory).catch(() => {})
-    await fs.rmdir(temporary)
+    await fs.rm(temporary, { recursive: true, force: true })
   }
 }
 main().catch((error) => {

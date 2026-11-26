@@ -10,9 +10,17 @@ export const decodeEmbeddedGlb = (data: string): ArrayBuffer => {
     throw new Error('GLB 데이터 형식 또는 파일 크기를 확인하세요.')
   const raw = atob(data)
   const bytes = Uint8Array.from(raw, (character) => character.charCodeAt(0))
+  validateGlbBytes(bytes.buffer)
+  return bytes.buffer
+}
+
+/** 바이너리 모델의 파일 헤더와 내장 리소스 및 지원 확장 검증 */
+export const validateGlbBytes = (buffer: ArrayBuffer) => {
+  const bytes = new Uint8Array(buffer)
   const header = new DataView(bytes.buffer)
   if (
     bytes.length < 20 ||
+    bytes.length > MAX_GLB_BYTES ||
     header.getUint32(0, true) !== 0x46546c67 ||
     header.getUint32(4, true) !== 2 ||
     header.getUint32(8, true) !== bytes.length ||
@@ -21,6 +29,11 @@ export const decodeEmbeddedGlb = (data: string): ArrayBuffer => {
     throw new Error('GLB 이진 형식 파일이 필요합니다.')
   const length = header.getUint32(12, true)
   if (20 + length > bytes.length) throw new Error('GLB 파일이 손상되었습니다.')
+  for (let offset = 12; offset < bytes.length;) {
+    if (offset + 8 > bytes.length) throw new Error('GLB 청크 헤더가 손상되었습니다.')
+    offset += header.getUint32(offset, true) + 8
+    if (offset > bytes.length) throw new Error('GLB 청크 길이가 손상되었습니다.')
+  }
   const json = JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + length))) as Record<
     string,
     unknown
@@ -48,7 +61,6 @@ export const decodeEmbeddedGlb = (data: string): ArrayBuffer => {
     )
   )
     throw new Error('압축 확장 없는 표준 GLB로 내보내세요.')
-  return bytes.buffer
 }
 
 /** 모델 노드별 도형 수를 이용한 배치 버퍼 예산 산정 */

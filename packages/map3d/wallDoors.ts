@@ -4,7 +4,7 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-20
  */
-import type { FacilityAsset, FacilityInstance, FacilityPart } from './index'
+import type { FacilityAsset, FacilityInstance, FacilityPart, Point3 } from './index'
 
 export interface WallDoor {
   id: string
@@ -13,6 +13,8 @@ export interface WallDoor {
   height: number
   kind?: 'window'
   sill?: number
+  /** 벽을 비우고 기존 채움 형상 대신 표시할 배치 식별자 */
+  modelId?: string
 }
 
 /** 문과 창문의 치수와 위치를 보존할 수 있는 벽의 최소 가로와 높이 */
@@ -38,6 +40,66 @@ export const wallBody = (asset?: FacilityAsset) => {
     : undefined
 }
 
+/** 직선 벽의 로컬 좌표에서 실제 중심과 폭 및 높이 계산 */
+export const wallMountFrame = (instance: FacilityInstance, asset?: FacilityAsset) => {
+  const body = wallBody(asset)
+  if (!body) return
+  const { x, y, z } = instance.scale ?? { x: 1, y: 1, z: 1 }
+  return {
+    instance,
+    width: body.size.x * x,
+    depth: body.size.y * y,
+    height: body.size.z * z,
+    center: { x: body.position.x * x, y: body.position.y * y, z: (body.position.z - body.size.z / 2) * z },
+  }
+}
+
+/** 벽의 로컬 좌표를 지도 좌표로 변환 */
+export const wallWorldPoint = (wall: FacilityInstance, point: Point3): Point3 => {
+  const angle = wall.rotation * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  return {
+    x: wall.position.x + point.x * cos - point.y * sin,
+    y: wall.position.y + point.x * sin + point.y * cos,
+    z: wall.position.z + point.z,
+  }
+}
+
+/** 지도 좌표를 벽의 로컬 좌표로 변환 */
+export const wallLocalPoint = (wall: FacilityInstance, point: Point3): Point3 => {
+  const angle = wall.rotation * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const x = point.x - wall.position.x
+  const y = point.y - wall.position.y
+  return { x: x * cos + y * sin, y: y * cos - x * sin, z: point.z - wall.position.z }
+}
+
+/** 부모의 이동과 회전에서 부착 모델의 상대 변환 유지 */
+export const carryAttachedInstance = (before: FacilityInstance, after: FacilityInstance, instance: FacilityInstance) => ({
+  ...instance,
+  position: wallWorldPoint(after, wallLocalPoint(before, instance.position)),
+  rotation: ((instance.rotation + after.rotation - before.rotation) % 360 + 360) % 360,
+})
+
+/** 정규화된 GLB의 폭과 높이를 개구부에 맞추는 배치 변환 반환 */
+export const wallOpeningPose = (
+  frame: NonNullable<ReturnType<typeof wallMountFrame>>,
+  opening: WallDoor,
+  size: Point3,
+  rear: boolean,
+  depthScale = 1,
+) => ({
+  position: wallWorldPoint(frame.instance, {
+    x: frame.center.x + opening.offset,
+    y: frame.center.y,
+    z: frame.center.z + (opening.sill ?? 0),
+  }),
+  rotation: (frame.instance.rotation + (rear ? 180 : 0)) % 360,
+  scale: { x: opening.width / size.x, y: depthScale, z: opening.height / size.z },
+})
+
 /** 마감까지 포함한 실제 폭과 높이 및 벽 중심으로부터의 거리 검증 */
 export const parseWallDoors = (
   input: unknown,
@@ -60,6 +122,7 @@ export const parseWallDoors = (
         !item.id ||
         item.id.length > 300 ||
         ids.has(item.id) ||
+        (item.modelId !== undefined && (typeof item.modelId !== 'string' || !item.modelId || item.modelId.length > 300)) ||
         !Number.isFinite(item.offset) ||
         !Number.isFinite(item.width) ||
         !Number.isFinite(item.height) ||
@@ -77,6 +140,7 @@ export const parseWallDoors = (
       return {
         id: item.id, offset: item.offset, width: item.width, height: item.height,
         ...(item.kind === 'window' ? { kind: item.kind, sill } : {}),
+        ...(item.modelId ? { modelId: item.modelId } : {}),
       }
     })
     .sort((a, b) => a.offset - a.width / 2 - (b.offset - b.width / 2))
@@ -138,7 +202,11 @@ export const instanceParts = (asset: FacilityAsset, instance: FacilityInstance):
     box('상부 벽체', x1, x2, z, top, body.color, true)
     if (window) {
       box('하부 벽체', x1, x2, bottom, base, body.color, true)
-      box('하부 창틀', x1 + jamb, x2 - jamb, base, base + header, trim, false, body.size.y, { surface: 'paintedSteel' })
+      if (!door.modelId) box('하부 창틀', x1 + jamb, x2 - jamb, base, base + header, trim, false, body.size.y, { surface: 'paintedSteel' })
+    }
+    if (door.modelId) {
+      previous = x2
+      continue
     }
     const frame = window ? '창틀' : '문틀'
     const finish = { surface: 'paintedSteel' } as const

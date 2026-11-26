@@ -1,10 +1,11 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import type { FacilityAsset, Point3 } from './index'
-import { decodeEmbeddedGlb } from './glbData'
+import { MAX_PART_INSTANCES, type FacilityAsset, type FacilityDocument, type FacilityGlb, type Point3 } from './index'
+import { wallOpeningPartBudget } from './wallDoors'
+import type { SceneResourceReader } from './sceneResources'
+import { decodeEmbeddedGlb, embeddedGlbPartCount, validateGlbBytes } from './glbData'
 export { createFacilityLights, prepareFacilityEmitter, facilityEmitterMaterial, type FacilityEmitter } from './glbLights'
-export { selectFacilityLights } from './facilityLightBudget'
 
 /** 캐시 소유 모델의 공유 형상과 재질 및 텍스처 해제 */
 const disposeSource = (source: THREE.Object3D) => {
@@ -29,8 +30,11 @@ const disposeSource = (source: THREE.Object3D) => {
 }
 
 /** 원본 형상을 보존하며 중심 바닥 기준의 단위 크기로 정규화하는 모델 로딩 */
-const parseSource = async (data: string) => {
-  const gltf = await new GLTFLoader().parseAsync(decodeEmbeddedGlb(data), '')
+const parseSource = async (bytes: ArrayBuffer) => {
+  validateGlbBytes(bytes)
+  const partCount = embeddedGlbPartCount(bytes)
+  if (partCount > 2048) throw new Error('GLB 도형은 모델당 2048개 이하여야 합니다.')
+  const gltf = await new GLTFLoader().parseAsync(bytes, '')
   const source = gltf.scene
   source.updateMatrixWorld(true)
   const bounds = new THREE.Box3().setFromObject(source)
@@ -47,8 +51,18 @@ const parseSource = async (data: string) => {
   let vertices = 0
   let deformable = false
   let nestedInstances = false
+  const filteredTextures = new Set<THREE.Texture>()
   source.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
+    /** 공유 표면 맵을 한 번만 보정하여 비스듬한 시점의 질감 선명도 적용 */
+    for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) continue
+      for (const texture of [material.map, material.normalMap, material.roughnessMap]) {
+        if (!texture || filteredTextures.has(texture)) continue
+        filteredTextures.add(texture)
+        texture.anisotropy = 4
+      }
+    }
     if (child instanceof THREE.InstancedMesh) nestedInstances = true
     vertices += child.geometry.getAttribute('position')?.count ?? 0
     if (
@@ -83,7 +97,20 @@ const parseSource = async (data: string) => {
   const root = new THREE.Group()
   root.add(normalized)
   root.userData.nativeSize = { x: size.x, y: size.z, z: size.y } satisfies Point3
+  root.userData.partCount = partCount
   return root
+}
+
+/** 외부 모델 해석 후 기존 전체 배치 부품 수 제한 검증 */
+export const validateLoadedFacilityBudget = (document: FacilityDocument, sources: Map<string, THREE.Group>) => {
+  const assets = new Map(document.assets.map((asset) => [asset.id, asset]))
+  let count = 0
+  for (const instance of document.instances) {
+    const asset = assets.get(instance.assetId)!
+    count += asset.glb ? Number(sources.get(asset.id)?.userData.partCount ?? 1)
+      : instance.wallDoors ? wallOpeningPartBudget(instance.wallDoors) : asset.parts.length
+    if (count > MAX_PART_INSTANCES) throw new Error('배치 부품은 총 100,000개 이하여야 합니다.')
+  }
 }
 
 /** 로드한 모델의 원본 치수를 지정한 단위에 맞는 밀리미터 값으로 환산 */
@@ -99,12 +126,30 @@ export const glbModelSize = (model: THREE.Group, units: 'm' | 'mm' = 'm'): Point
 
 /** 같은 GLB의 형상과 재질을 재사용하는 모델 캐시 */
 export class GlbModelCache {
-  private sources = new Map<string, Promise<THREE.Group>>()
+  private sources = new Map<string | ArrayBuffer, Promise<THREE.Group>>()
   private closed = false
+  private active = 0
+  private waiting: Array<() => void> = []
+
+  /** 동시 바이너리 해석 수를 제한하고 종료된 요청의 작업 방지 */
+  private parse = async (read: () => Promise<ArrayBuffer> | ArrayBuffer) => {
+    if (this.active >= 4) await new Promise<void>((resolve) => this.waiting.push(resolve))
+    else this.active++
+    try {
+      if (this.closed) throw new Error('종료된 모델 캐시입니다.')
+      return await parseSource(await read())
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.active--
+    }
+  }
 
   /** 문서에서 제거된 모델의 캐시 자원 정리 */
   retain = (assets: FacilityAsset[]) => {
-    const used = new Set(assets.flatMap((asset) => (asset.glb ? [asset.glb.data] : [])))
+    const used = new Set<string | ArrayBuffer | undefined>(
+      assets.flatMap((asset) => asset.glb ? [asset.glb.hash ?? asset.glb.data] : []),
+    )
     this.sources.forEach((source, key) => {
       if (used.has(key)) return
       this.sources.delete(key)
@@ -113,15 +158,23 @@ export class GlbModelCache {
   }
 
   /** 공유 원본과 독립 골격을 가진 배치용 모델 복제 */
-  load = async (data: string) => {
+  load = async (data: string | ArrayBuffer | FacilityGlb, reader?: SceneResourceReader) => {
     if (this.closed) throw new Error('종료된 모델 캐시입니다.')
-    let source = this.sources.get(data)
+    const input = typeof data === 'string' || data instanceof ArrayBuffer ? data : data.data ?? data
+    const key = typeof input === 'string' || input instanceof ArrayBuffer ? input : input.hash!
+    let source = this.sources.get(key)
     if (!source) {
-      source = parseSource(data).catch((error: unknown) => {
-        this.sources.delete(data)
+      const pending = this.parse(() => {
+        if (typeof input === 'string') return decodeEmbeddedGlb(input)
+        if (input instanceof ArrayBuffer) return input
+        if (!reader || !input.uri || !input.hash) throw new Error('외부 모델이 포함된 프로젝트 폴더를 열어 주세요.')
+        return reader({ uri: input.uri, hash: input.hash })
+      }).catch((error: unknown) => {
+        if (this.sources.get(key) === pending) this.sources.delete(key)
         throw error
       })
-      this.sources.set(data, source)
+      this.sources.set(key, pending)
+      source = pending
     }
     return clone(await source) as THREE.Group
   }

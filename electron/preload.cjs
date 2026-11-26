@@ -45,14 +45,8 @@ const readProjectScene = (token) => ipcRenderer.invoke('scene:read-project', tok
  * @returns 저장한 파일명 또는 취소 결과
  */
 const saveScene = (content, name, token) => ipcRenderer.invoke('scene:save', content, name, token)
-/**
- * 모델 라이브러리와 포트 배치를 분리하여 내보내는 요청
- * @param layout 기준 맵과 모델 참조를 포함하는 배치 문자열
- * @param library 부품 형상을 포함하는 모델 라이브러리 문자열
- * @returns 두 실행 파일을 기록한 출력 폴더 또는 취소 결과
- */
-const exportScene = (layout, library, token) =>
-  ipcRenderer.invoke('scene:export', layout, library, token)
+/** 외부 리소스를 참조하는 운영용 설계 추출 요청 */
+const exportScene = (content, token) => ipcRenderer.invoke('scene:export', content, token)
 /**
  * 저장하지 않은 문서의 존재 여부를 메인 창에 전달하는 상태 알림
  * @param dirty 종료 시 변경 폐기 확인이 필요한 문서 상태
@@ -88,5 +82,8 @@ contextBridge.exposeInMainWorld('desktop', {
   readProjectScene,
   saveScene,
   exportScene,
+  /** 설계에서 확인한 리소스 읽기와 신규 모델 등록 연결 */
+  readSceneResource: (reference) => ipcRenderer.invoke('scene:read-resource', reference),
+  stageSceneModel: (bytes) => ipcRenderer.invoke('scene:stage-model', bytes),
   setDirty,
 })

@@ -15,19 +15,31 @@ import {
   fillLegacyStainlessPipe,
   type FacilityPort,
   parseEquipmentLibrary,
-  parseFacilityDocument,
+  parseFacilitySceneFile,
+  validateFacilityDraft,
   resolveFacilityInstance,
   validateFacilityPlacements,
+  carryAttachedInstance,
+  wallMountFrame,
+  wallOpeningPose,
+  type WallDoor,
 } from '@/entities/facility/index.ts'
 import type { FacilityAsset, FacilityDocument, FacilityInstance } from '@/entities/facility/index.ts'
 import { downloadJson, pickMapFile } from '@/shared/lib/files/index.ts'
+
+/** 개별 설비 배치의 변형과 부착 관계를 전달하는 입력 옵션 정의 */
+type PlacementOptions = Partial<Pick<FacilityInstance, 'rotation' | 'scale' | 'attachedTo' | 'cutawayRole'>> & { z?: number }
+
+/** 파일 처리의 완료와 취소 및 다운로드 요청을 구분하는 공통 결과 정의 */
+interface SceneFileResult {
+  status: 'completed' | 'cancelled' | 'download_requested' | 'error'
+  message?: string
+}
 
 /**
  * 설비 모델과 개별 배치 및 독립 저장 이력을 제공하는 설비 편집 저장소 생성
  * @returns 설비 모델과 배치 및 파일 명령을 제공하는 상태 저장소
  */
-type PlacementOptions = Partial<Pick<FacilityInstance, 'rotation' | 'scale' | 'attachedTo' | 'cutawayRole'>> & { z?: number }
-
 export const useFacilityEditor = defineStore('facility-editor', () => {
   const document = shallowRef(emptyFacilityDocument())
   const saved = shallowRef(document.value)
@@ -71,7 +83,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const commit = (change: (doc: FacilityDocument) => void) => {
     const next = structuredClone(document.value)
     change(next)
-    publish(parseFacilityDocument(JSON.stringify(next)))
+    publish(validateFacilityDraft(next))
   }
 
   /** 라이브러리와 도면 자료를 복사하지 않고 개별 배치 갱신 */
@@ -169,11 +181,30 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param patch 식별자를 유지하면서 교체할 대상 속성
    */
   const updateInstance = (id: string, patch: Partial<FacilityInstance>) => {
-    if (!document.value.instances.some((instance) => instance.id === id)) return
-
-    commitPlacements(document.value.instances.map((instance) =>
-      instance.id === id ? { ...instance, ...patch, id } : instance,
-    ))
+    const before = document.value.instances.find((instance) => instance.id === id)
+    if (!before) return
+    const after = { ...before, ...patch, id }
+    const moved = before.rotation !== after.rotation ||
+      before.position.x !== after.position.x || before.position.y !== after.position.y || before.position.z !== after.position.z
+    const openingsChanged = moved || 'wallDoors' in patch || 'scale' in patch
+    const editedFrame = openingsChanged && after.wallDoors?.some((opening) => opening.modelId)
+      ? wallMountFrame(after, document.value.assets.find((asset) => asset.id === after.assetId))
+      : undefined
+    const removed = new Set('wallDoors' in patch
+      ? before.wallDoors?.flatMap(({ modelId }) => modelId && !after.wallDoors?.some((opening) => opening.modelId === modelId) ? [modelId] : [])
+      : [])
+    commitPlacements(document.value.instances.flatMap((instance) => {
+      if (instance.id === id) return [after]
+      if (removed.has(instance.id)) return []
+      if (instance.attachedTo !== id) return [instance]
+      const opening = editedFrame && after.wallDoors?.find(({ modelId }) => modelId === instance.id)
+      const size = opening && document.value.assets.find((asset) => asset.id === instance.assetId)?.glb?.size
+      if (editedFrame && opening && size) {
+        const rear = Math.cos((instance.rotation - before.rotation) * Math.PI / 180) < 0
+        return [{ ...instance, ...wallOpeningPose(editedFrame, opening, size, rear, instance.scale?.y) }]
+      }
+      return [moved ? carryAttachedInstance(before, after, instance) : instance]
+    }))
   }
 
   const attachInstances = (ids: string[], attachedTo: string | undefined) => {
@@ -181,6 +212,31 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     commitPlacements(document.value.instances.map((instance) =>
       selected.has(instance.id) ? { ...instance, attachedTo } : instance,
     ))
+  }
+
+  /** 개구부와 대응 GLB 배치를 한 편집 이력에서 추가 */
+  const placeWallOpening = (
+    asset: FacilityAsset,
+    mapRef: FacilityDocument['mapRef'],
+    wallId: string,
+    opening: WallDoor,
+    pose: ReturnType<typeof wallOpeningPose>,
+  ) => {
+    const id = crypto.randomUUID()
+    const placement: FacilityInstance = {
+      id, assetId: asset.id, name: asset.name, cutawayRole: 'independent', attachedTo: wallId, ...pose,
+    }
+    const instances = document.value.instances.map((instance) => instance.id === wallId
+      ? { ...instance, wallDoors: [...(instance.wallDoors ?? []), { ...opening, modelId: id }] }
+      : instance)
+    if (document.value.assets.some((item) => item.id === asset.id)) commitPlacements([...instances, placement])
+    else commit((doc) => {
+      if (!doc.mapRef.geometryKey) doc.mapRef = mapRef
+      doc.assets.push(asset)
+      doc.instances = [...instances, placement]
+    })
+    selectedAssetId.value = asset.id
+    selectedId.value = id
   }
 
   /**
@@ -197,6 +253,9 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   ) => {
     const previous = document.value.instances.find((instance) => instance.id === id)
     if (!previous) return
+    if (previous.attachedTo && (!('attachedTo' in patch) || patch.attachedTo === previous.attachedTo) &&
+        document.value.instances.find((item) => item.id === previous.attachedTo)?.wallDoors?.some((opening) => opening.modelId === id))
+      throw new Error('연결된 문과 창문은 벽 정면에서 위치와 크기를 편집하세요.')
     const portId = 'portId' in patch ? patch.portId : previous.portId
     const port = ports.find((item) => item.id === portId)
     if (portId && !port) throw new Error('연결 포트를 찾을 수 없습니다.')
@@ -221,7 +280,11 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     if (selectedIds.value.length < 2 || (x === 0 && y === 0)) return
     const ids = new Set(selectedIds.value)
     commitPlacements(document.value.instances.map((instance) => {
-        if (!ids.has(instance.id)) return instance
+        const hostMoves = !!instance.attachedTo && ids.has(instance.attachedTo)
+        if (!ids.has(instance.id) && !hostMoves) return instance
+        if (!hostMoves && instance.attachedTo && document.value.instances
+          .find((item) => item.id === instance.attachedTo)?.wallDoors?.some((opening) => opening.modelId === instance.id))
+          return instance
         const { position } = resolveFacilityInstance(instance, ports)
         return {
           ...instance,
@@ -376,8 +439,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param content 파일에서 읽은 원본 문자열
    * @param name 파일 또는 모델을 구분하는 표시 이름
    */
-  const load = (content: string, name: string) => {
-    const doc = parseFacilityDocument(content)
+  const loadDocument = (doc: FacilityDocument, name: string) => {
     doc.assets = doc.assets.map(fillLegacyStainlessPipe)
     for (const asset of doc.assets)
       if (asset.id.startsWith('ceram-mp5-'))
@@ -401,7 +463,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   const resetForMap = (mapRef: FacilityDocument['mapRef']) => {
     const next = emptyFacilityDocument()
     next.mapRef = mapRef
-    load(JSON.stringify(next), 'Untitled.map3d.json')
+    loadDocument(next, 'Untitled.map3d.json')
     message.value = '새 맵에 연결했습니다. 포트에 설비를 배치하세요.'
   }
 
@@ -418,25 +480,31 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
       return
     const next = emptyFacilityDocument()
     next.mapRef = mapRef
-    load(JSON.stringify(next), 'Untitled.map3d.json')
+    loadDocument(next, 'Untitled.map3d.json')
     message.value = '새 3D 설계를 만들었습니다. 기준 2D 맵은 유지됩니다.'
   }
 
   /**
    * 저장하지 않은 설계의 교체 여부를 확인하고 단일 설계 프로젝트를 여는 비동기 파일 작업
+   * @returns 파일 로딩 완료 또는 사용자 취소와 오류 결과
    */
-  const open = async () => {
+  const open = async (): Promise<SceneFileResult> => {
     if (
       busy.value ||
       (dirty.value && !window.confirm('저장하지 않은 3D 설계를 버리고 여시겠습니까?'))
     )
-      return
+      return { status: 'cancelled' }
     busy.value = true
     try {
       const file = window.desktop ? await window.desktop.openScene() : await pickMapFile()
-      if (file) load(file.content, file.name)
+      if (file) {
+        loadDocument(parseFacilitySceneFile(file), file.name)
+        return { status: 'completed', message: file.name }
+      }
+      return { status: 'cancelled' }
     } catch (error) {
       message.value = error instanceof Error ? error.message : String(error)
+      return { status: 'error', message: message.value }
     } finally {
       busy.value = false
     }
@@ -444,41 +512,51 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
 
   /**
    * 공유 계약을 재검증한 설계 스냅샷을 저장하고 저장 기준을 갱신하는 프로젝트 저장
+   * @returns 실제 저장 완료 또는 다운로드 요청과 취소 및 오류 결과
    */
-  const save = async (projectToken?: string) => {
-    if (busy.value) return
+  const save = async (projectToken?: string): Promise<SceneFileResult> => {
+    if (busy.value) return { status: 'cancelled' }
     busy.value = true
     const snapshot = document.value
     try {
-      const checked = parseFacilityDocument(JSON.stringify(snapshot))
+      const checked = validateFacilityDraft(snapshot)
       const content = JSON.stringify(checked, null, 2)
-      document.value = checked
       if (window.desktop) {
-        const name = await window.desktop.saveScene(content, filename.value, projectToken)
-        if (name) {
-          saved.value = checked
+        const result = await window.desktop.saveScene(content, filename.value, projectToken)
+        if (result) {
+          const persisted = typeof result === 'string' ? checked : parseFacilitySceneFile(result)
+          const name = typeof result === 'string' ? result : result.name
+          saved.value = persisted
+          if (document.value === snapshot) document.value = persisted
           filename.value = name
-          message.value = `현재 프로젝트 3D 폴더에 저장 완료: ${name}`
+          message.value = '현재 프로젝트에 저장했습니다. ' + name
+          return { status: 'completed', message: message.value }
         }
       } else {
+        if (checked.version === 2 || checked.assets.some(({ glb }) => glb?.uri))
+          throw new Error('외부 리소스가 포함된 설계는 데스크톱 앱에서 저장해 주세요.')
         downloadJson(content, filename.value)
-        message.value = '3D JSON 다운로드를 요청했습니다.'
+        message.value = '호환용 내장 형식의 설계 파일을 다운로드합니다.'
+        return { status: 'download_requested', message: message.value }
       }
+      return { status: 'cancelled' }
     } catch (error) {
       message.value = error instanceof Error ? error.message : String(error)
+      return { status: 'error', message: message.value }
     } finally {
       busy.value = false
     }
   }
 
   /**
-   * 모델 라이브러리와 포트 연결 배치를 분리된 파일로 추출하는 실행 데이터 내보내기
+   * 현재 실행 환경에 맞는 모델 리소스와 포트 연결 배치의 운영용 추출
    * 현재 포트 좌표로 절대 위치 캐시를 갱신하고 기존 연결 메타데이터를 상대 오프셋으로 전환하는 배치 정규화
    *
    * @param ports 현재 기준 맵의 포트 식별자와 위치 목록
+   * @returns 실제 추출 완료 또는 다운로드 요청과 취소 및 오류 결과
    */
-  const exportRuntime = async (ports: FacilityPort[], projectToken?: string) => {
-    if (busy.value) return
+  const exportRuntime = async (ports: FacilityPort[], projectToken?: string): Promise<SceneFileResult> => {
+    if (busy.value) return { status: 'cancelled' }
     busy.value = true
     try {
       const snapshot = structuredClone(document.value)
@@ -486,7 +564,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
         // 기존 포트 메타데이터를 현재 절대 위치와 포트 좌표의 차이로 변환하는 실제 포트 연결
         if (instance.portId && !instance.portOffset) {
           const port = ports.find((p) => p.id === instance.portId)
-          if (!port) throw new Error(`포트가 없습니다: ${instance.portId}`)
+          if (!port) return instance
           instance.portOffset = {
             x: instance.position.x - port.x,
             y: instance.position.y - port.y,
@@ -495,20 +573,28 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
         }
         return resolveFacilityInstance(instance, ports)
       })
-      const { library, layout } = exportFacilityFiles(snapshot)
-      const libraryJson = JSON.stringify(library, null, 2),
-        layoutJson = JSON.stringify(layout, null, 2)
       if (window.desktop) {
-        const folder = await window.desktop.exportScene(layoutJson, libraryJson, projectToken)
-        if (folder) message.value = `3D 데이터 추출 완료: ${folder} (equipment.json + map3d.json)`
+        const folder = await window.desktop.exportScene(JSON.stringify(validateFacilityDraft(snapshot)), projectToken)
+        if (folder) {
+          message.value = '삼차원 운영 파일을 추출했습니다. ' + folder
+          return { status: 'completed', message: message.value }
+        }
       } else {
+        if (snapshot.version === 2 || snapshot.assets.some(({ glb }) => glb?.uri))
+          throw new Error('외부 리소스가 포함된 설계는 데스크톱 앱에서 추출해 주세요.')
+        const { library, layout } = exportFacilityFiles(snapshot)
+        const libraryJson = JSON.stringify(library, null, 2)
+        const layoutJson = JSON.stringify(layout, null, 2)
         downloadJson(libraryJson, 'equipment.json')
         downloadJson(layoutJson, 'map3d.json')
         message.value =
           'equipment.json과 map3d.json 다운로드를 요청했습니다. 두 파일을 함께 보관하세요.'
+        return { status: 'download_requested', message: message.value }
       }
+      return { status: 'cancelled' }
     } catch (error) {
       message.value = error instanceof Error ? error.message : String(error)
+      return { status: 'error', message: message.value }
     } finally {
       busy.value = false
     }
@@ -525,7 +611,10 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     try {
       const file = window.desktop ? await window.desktop.openScene() : await pickMapFile()
       if (!file) return
-      const library = parseEquipmentLibrary(file.content)
+      const format = JSON.parse(file.content.replace(/^\uFEFF/, '')).format
+      const library = format === 'bem-equipment-library'
+        ? parseEquipmentLibrary(file.content)
+        : parseFacilitySceneFile(file)
       commit((doc) => {
         if (!doc.mapRef.geometryKey) doc.mapRef = mapRef
         for (const asset of library.assets.map(fillLegacyStainlessPipe)) {
@@ -576,8 +665,6 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
   ) => {
     commit((doc) => {
       if (!doc.mapRef.geometryKey) doc.mapRef = mapRef
-      if (doc.mapRef.geometryKey !== mapRef.geometryKey)
-        throw new Error('현재 지도와 설계의 기준 맵이 다릅니다.')
       if (!doc.assets.some((item) => item.id === asset.id)) doc.assets.push(asset)
       const ids = new Set(doc.instances.map((instance) => instance.id))
       for (const instance of instances)
@@ -636,6 +723,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     placeInstances,
     updateInstance,
     attachInstances,
+    placeWallOpening,
     applyPlacementPose,
     removeAsset,
     removeAssets,
@@ -647,7 +735,9 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
     bindMap,
     undo,
     redo,
-    load,
+    loadDocument,
+    /** 기존 입력 진입점의 설계 문서 검증과 적재 */
+    load: (content: string, name: string) => loadDocument(parseFacilitySceneFile({ content, name }), name),
     newScene,
     resetForMap,
     open,

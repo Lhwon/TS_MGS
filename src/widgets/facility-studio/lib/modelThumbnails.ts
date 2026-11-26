@@ -4,16 +4,29 @@
  * 작성자: 이희원
  * 작성일자: 2026-11-20
  */
+import { readSceneResource } from '@/entities/facility/index.ts'
 import * as THREE from 'three'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { GlbModelCache } from '@bem/map3d/glb'
 import { facilityPartMatrix, surfaceForPart, surfaceMaterials, type FacilityAsset } from '@/entities/facility/index.ts'
 
 /** 하나의 렌더러에서 GLB와 조합 모델의 카탈로그 이미지를 순서대로 캡처 */
 export const createModelThumbnails = () => {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.03
+  renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.setSize(240, 144, false)
   renderer.setClearColor('#e3ebf1')
   const scene = new THREE.Scene()
+  /** 카탈로그에서도 금속과 반광택 재질의 실내 반사 표현 구성 */
+  const generator = new THREE.PMREMGenerator(renderer)
+  const room = new RoomEnvironment()
+  const environment = generator.fromScene(room, 0.06)
+  room.dispose()
+  generator.dispose()
+  scene.environment = environment.texture
+  scene.environmentIntensity = 0.55
   const light = new THREE.DirectionalLight('#ffffff', 2.1)
   light.position.set(2, -3, 4)
   scene.add(light, new THREE.HemisphereLight('#eff6ff', '#637180', 2.2))
@@ -29,7 +42,7 @@ export const createModelThumbnails = () => {
     const root = new THREE.Group()
     const materials: THREE.Material[] = []
     if (asset.glb) {
-      const model = (await cache.load(asset.glb.data)).clone()
+      const model = (await cache.load(asset.glb, readSceneResource)).clone()
       if (disposed) return
       model.scale.set(asset.glb.size.x / 1000, asset.glb.size.y / 1000, asset.glb.size.z / 1000)
       root.add(model)
@@ -75,6 +88,7 @@ export const createModelThumbnails = () => {
   const dispose = () => {
     disposed = true
     cache.dispose()
+    environment.dispose()
     box.dispose()
     cylinder.dispose()
     renderer.dispose()

@@ -60,17 +60,13 @@ interface Window {
         backup?: boolean
       },
     ): Promise<{ name: string; token?: string; warning?: string } | null>
-    openScene(): Promise<{
-      name: string
-      content: string
-    } | null>
-    readProjectScene?(token: string): Promise<{
-      name: string
-      content: string
-      library?: string
-    } | null>
-    saveScene(content: string, name: string, token?: string): Promise<string | null>
-    exportScene(layout: string, library: string, token?: string): Promise<string | null>
+    openScene(): Promise<import('@bem/map3d').SceneFile | null>
+    readProjectScene?(token: string): Promise<import('@bem/map3d').SceneFile | null>
+    /** 외부 바이너리 저장과 설계 파일 읽기 작업의 브리지 정의 */
+    saveScene(content: string, name: string, token?: string): Promise<import('@bem/map3d').SceneFile | string | null>
+    exportScene(content: string, token?: string): Promise<string | null>
+    readSceneResource?(reference: import('@bem/map3d').SceneResource): Promise<ArrayBuffer>
+    stageSceneModel?(bytes: ArrayBuffer): Promise<import('@bem/map3d').SceneResource>
     setDirty(dirty: boolean): void
   }
 }

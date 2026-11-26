@@ -64,7 +64,7 @@ const cards = computed(() => {
       const { x, y, z } = facilityModelSize(asset)
       const longest = Math.max(x, y, z)
       const tier = longest < 1000 ? 'small' : longest < 3000 ? 'medium' : 'large'
-      const previewKey = asset.id + ':' + (asset.glb?.data.length ?? JSON.stringify(asset.parts))
+      const previewKey = asset.id + ':' + (asset.glb?.hash ?? asset.glb?.data?.length ?? JSON.stringify(asset.parts))
 
       return {
         asset,

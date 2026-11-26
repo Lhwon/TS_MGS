@@ -42,9 +42,12 @@ const setMaterial = (event: Event) => {
   Object.assign(form, { material, color, repeatMm })
 }
 
-/** 선택한 바닥의 기존 경계를 보존하면서 화면 속성 적용 */
+/** 기존 경계를 보존하고 재질이 바뀌면 이전 이미지 참조 해제 */
 const apply = () => {
-  if (props.selected) emit('apply', { ...props.selected, ...form })
+  if (!props.selected) return
+  const area = { ...props.selected, ...form }
+  if (area.material !== props.selected.material) delete area.texture
+  emit('apply', area)
 }
 </script>
 

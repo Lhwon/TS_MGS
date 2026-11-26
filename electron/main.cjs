@@ -11,7 +11,9 @@ const { pathToFileURL } = require('node:url')
 const { randomUUID } = require('node:crypto')
 const { readMapFile, openMapFolder, readProjectBayFilter, saveProjectBayFilter, readProjectBlockData } = require('./map-files.cjs')
 const { saveMapVersion, backupMapVersion } = require('./save-map.cjs')
-const { saveSceneFiles, readSceneProject } = require('./scene-files.cjs')
+const { openSceneFile, openMapScene, saveMapScene, createSceneAccess } = require('../packages/map3d/localFiles.cjs')
+const sceneAccess = createSceneAccess()
+const builtInTexture = path.join(__dirname, '../packages/map3d/showroom-epoxy.webp')
 const { aiStatus, aiPropose, cancelAi, aiAnalyzeDrawing } = require('./ai-service.cjs')
 const mapLocations = new Map()
 const MAX_BYTES = 32 * 1024 * 1024
@@ -250,13 +252,13 @@ ipcMain.handle('scene:open', async (event) => {
     properties: ['openFile'],
     filters: [{ name: 'BEM 3D JSON', extensions: ['json'] }],
   })
-  return result.canceled ? null : readMapFile(result.filePaths[0])
+  return result.canceled ? null : sceneAccess.register(await openSceneFile(result.filePaths[0], true))
 })
 ipcMain.handle('scene:read-project', async (event, token) => {
   trusted(event)
   const directory = typeof token === 'string' ? mapLocations.get(token) : undefined
   if (!directory) throw new Error('프로젝트 지도를 다시 열어 삼차원 저장 위치를 연결하세요.')
-  return readSceneProject(directory)
+  return sceneAccess.register(await openMapScene(directory, true))
 })
 /** 현재 지도 위치 식별자 또는 프로젝트 선택에 따른 삼차원 저장 기준 조회 */
 const resolveSceneProject = async (token) => {
@@ -273,56 +275,38 @@ const resolveSceneProject = async (token) => {
   const directory = result.filePaths[0]
   return path.basename(directory).toLowerCase() === 'map' ? directory : path.join(directory, 'MAP')
 }
-ipcMain.handle('scene:save', async (event, content, name, token) => {
+/** 선택한 설계의 GLB 바이너리와 재질에 대한 로컬 읽기 */
+ipcMain.handle('scene:read-resource', async (event, reference) => {
   trusted(event)
-  if (typeof content !== 'string' || Buffer.byteLength(content) > MAX_BYTES)
-    throw new Error('3D 데이터 크기가 유효하지 않습니다.')
-  const doc = JSON.parse(content)
-  if (
-    doc.format !== 'bem-map3d' ||
-    doc.version !== 1 ||
-    doc.units !== 'mm' ||
-    doc.coordinates !== 'mgs-xy-z-up'
-  )
-    throw new Error('BEM 3D JSON v1 형식이 필요합니다.')
+  const bytes = await sceneAccess.readEditor(reference, reference?.uri?.startsWith('textures/') === true)
+  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    ? bytes.buffer
+    : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+})
+/** 파일 선택으로 등록된 원본 모델을 저장까지 임시 보관 */
+ipcMain.handle('scene:stage-model', (event, bytes) => {
+  trusted(event)
+  return sceneAccess.stage(bytes)
+})
+/** 프로젝트 폴더에서 운영 구성과 편집 자료의 파일 저장 처리 */
+ipcMain.handle('scene:save', async (event, content, _name, token) => {
+  trusted(event)
   const directory = await resolveSceneProject(token)
   if (!directory) return null
-  const filename =
-    typeof name === 'string' && name !== 'Untitled.map3d.json'
-      ? path
-          .basename(name)
-          .replace(/[^\p{L}\p{N}_. -]/gu, '_')
-          .slice(0, 120)
-      : 'project.map3d.json'
-  if (!filename.endsWith('.json')) throw new Error('저장 확장자는 .json이어야 합니다.')
-  if (['equipment.json', 'map3d.json'].includes(filename.toLowerCase()))
-    throw new Error('실행 파일과 구분되는 설계 파일명을 사용하세요.')
-  await saveSceneFiles(directory, [[filename, content]])
-  return filename
+  await mkdir(directory, { recursive: true })
+  const { scene } = await saveMapScene(directory, 'project.map3d.json', content, sceneAccess.readEditor, { builtInTexture })
+  return sceneAccess.register(scene)
 })
-ipcMain.handle('scene:export', async (event, layoutContent, libraryContent, token) => {
+/** 현재 설계와 구분되는 운영용 배치 추출 처리 */
+ipcMain.handle('scene:export', async (event, content, token) => {
   trusted(event)
-  for (const content of [layoutContent, libraryContent])
-    if (typeof content !== 'string' || Buffer.byteLength(content) > MAX_BYTES)
-      throw new Error('3D 데이터 크기가 유효하지 않습니다.')
-  const layout = JSON.parse(layoutContent),
-    library = JSON.parse(libraryContent)
-  if (
-    layout.format !== 'bem-map3d-layout' ||
-    library.format !== 'bem-equipment-library' ||
-    layout.version !== 1 ||
-    library.version !== 1 ||
-    layout.libraryRef?.fileName !== 'equipment.json'
-  )
-    throw new Error('3D 추출 형식이 잘못되었습니다.')
   const directory = await resolveSceneProject(token)
-  return directory
-    ? saveSceneFiles(directory, [
-        ['equipment.json', libraryContent],
-        ['map3d.json', layoutContent],
-      ])
-    : null
+  if (!directory) return null
+  await mkdir(directory, { recursive: true })
+  const { scene } = await saveMapScene(directory, 'map3d.json', content, sceneAccess.readEditor, { builtInTexture, deployment: true })
+  return scene.root
 })
+app.on('will-quit', () => { void sceneAccess.dispose().catch(console.error) })
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
   window = new BrowserWindow({

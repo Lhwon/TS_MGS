@@ -22,6 +22,38 @@ const library = contract.parseEquipmentLibrary(
   fs.readFileSync('src/entities/facility/ceram-mp5.equipment.json', 'utf8'),
 )
 assert.equal(library.assets.length, 23)
+/** 표면 보강 전후 형상과 원본 텍스처 보존 및 반복 변환 무변경 검증 */
+const { enhanceGlb } = require('./enhance-glb-materials.cjs')
+for (const asset of library.assets) {
+  if (!asset.glb?.data) continue
+  const before = Buffer.from(asset.glb.data, 'base64')
+  const after = enhanceGlb(before)
+  const read = (bytes) => JSON.parse(bytes.toString('utf8', 20, 20 + bytes.readUInt32LE(12)))
+  const original = read(before)
+  const improved = read(after)
+  assert.deepEqual(improved.nodes, original.nodes)
+  assert.deepEqual(improved.scenes, original.scenes)
+  const sourceOffset = 28 + before.readUInt32LE(12)
+  const targetOffset = 28 + after.readUInt32LE(12)
+  assert.deepEqual(after.subarray(targetOffset, targetOffset + original.buffers[0].byteLength),
+    before.subarray(sourceOffset, sourceOffset + original.buffers[0].byteLength))
+  original.meshes.forEach((mesh, meshIndex) => mesh.primitives.forEach((primitive, index) => {
+    const next = improved.meshes[meshIndex].primitives[index]
+    assert.equal(next.indices, primitive.indices)
+    assert.equal(next.attributes.POSITION, primitive.attributes.POSITION)
+    assert.equal(next.attributes.NORMAL, primitive.attributes.NORMAL)
+    if (improved.materials?.[next.material]?.normalTexture)
+      assert.notEqual(next.attributes.TEXCOORD_0, undefined)
+  }))
+  original.materials?.forEach((material, index) => {
+    assert.deepEqual(improved.materials[index].pbrMetallicRoughness?.baseColorTexture,
+      material.pbrMetallicRoughness?.baseColorTexture)
+    assert.deepEqual(improved.materials[index].pbrMetallicRoughness?.baseColorFactor,
+      material.pbrMetallicRoughness?.baseColorFactor)
+    if (material.normalTexture) assert.deepEqual(improved.materials[index], material)
+  })
+  assert.deepEqual(enhanceGlb(after), after)
+}
 assert.ok(library.assets.every((asset) => !/\b(?:ceram|mp[45])\b/i.test(asset.name)))
 for (const tier of [1, 2, 3, 4]) {
   const rack = library.assets.find((asset) => asset.name === `보관 랙 · ${tier}단`)
@@ -63,6 +95,14 @@ const roundtrip = contract.importFacilityFiles(
   JSON.stringify(files.layout),
   JSON.stringify(files.library),
 )
+/** 지도 참조 없이 읽기와 다른 지도의 포트 누락에 대한 저장 좌표 보존 검증 */
+const independent = JSON.parse(JSON.stringify(document))
+delete independent.mapRef
+assert.equal(contract.parseFacilityDocument(JSON.stringify(independent)).instances.length, 1)
+const anchored = { ...independent.instances[0], portId: 'other-port', portOffset: { x: 10, y: 20, z: 30 } }
+assert.deepEqual(contract.resolveFacilityInstance(anchored, []).position, anchored.position)
+assert.deepEqual(contract.resolveFacilityInstance(anchored, [{ id: 'other-port', x: 1000, y: 2000 }]).position,
+  { x: 1010, y: 2020, z: 30 })
 assert.deepEqual(roundtrip.instances, document.instances)
 assert.equal(roundtrip.assets[0].glb.data, library.assets[0].glb.data)
 const ceiling = load('src/entities/facility/interiorModels.ts').createInteriorModel('ceiling')

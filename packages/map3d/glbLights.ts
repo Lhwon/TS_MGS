@@ -7,7 +7,6 @@
 import * as THREE from 'three'
 import { facilityLight, type FacilityAsset, type FacilityLight } from './index'
 import { facilityLightColor } from './facilityLights'
-import { invalidateFacilityLightSelection } from './facilityLightBudget'
 
 export interface FacilityEmitter {
   fixture: FacilityLight
@@ -78,7 +77,8 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
         light = new THREE.RectAreaLight(color, 145)
       }
       light.userData.temperature = fixture.temperature
-      light.visible = false
+      // Keep fixtures as bake sources without adding per-pixel live lights.
+      light.layers.disableAll()
       lights.set(id, light)
       group.add(light)
     }
@@ -94,7 +94,6 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
       light.height = Math.max(0.002 * localUnitsPerMeter, size.y * scale.y) * parentScale
       light.quaternion.setFromRotationMatrix(rotation.extractRotation(transform))
     }
-    invalidateFacilityLightSelection(group)
   }
 
   const remove = (id: string) => {
@@ -102,13 +101,11 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
     if (!light) return
     light.removeFromParent()
     lights.delete(id)
-    invalidateFacilityLightSelection(group)
   }
 
   const clear = () => {
     group.clear()
     lights.clear()
-    invalidateFacilityLightSelection(group)
   }
 
   return { group, update, remove, clear }

@@ -8,6 +8,8 @@ import * as THREE from 'three'
 import { MAX_FLOOR_AREAS, type FloorArea, type FloorMaterial } from './floorAreas'
 import showroomEpoxyUrl from './showroom-epoxy.webp'
 import { bakeFacilityFloorLightMap } from './facilityFloorLightMap'
+import { createFacilityObjectLighting } from './facilityObjectLighting'
+import type { SceneResourceReader } from './sceneResources'
 
 /** 면적과 관계없이 일정한 간격으로 반복할 기본 재질 텍스처 생성 */
 const createProceduralTexture = (material: FloorMaterial) => {
@@ -71,6 +73,9 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
   const group = new THREE.Group()
   group.name = 'facility-floor-surfaces'
   const textures = new Map<FloorMaterial, THREE.Texture>()
+  const externalTextures = new Map<string, { pending: Promise<THREE.Texture>; texture?: THREE.Texture }>()
+  let disposed = false
+  const objectLighting = createFacilityObjectLighting()
   let meshes: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshStandardMaterial>[] = []
   let current: FloorArea[] | undefined
   let lightMap: THREE.Texture | undefined
@@ -78,6 +83,7 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
 
   /** 기존 면의 버퍼와 재질을 해제하며 공용 반복 텍스처는 유지 */
   const clear = () => {
+    objectLighting.setLighting()
     lightMap?.dispose()
     lightMap = undefined
     lightMapKey = ''
@@ -96,10 +102,11 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
     ].join(',')).join(';') ?? ''
     if (key === lightMapKey) return
     lightMapKey = key
-    const baked = current?.length && fixtures?.children.length
-      ? bakeFacilityFloorLightMap(current, fixtures, unit) : undefined
+    const baked = fixtures?.children.length
+      ? bakeFacilityFloorLightMap(current ?? [], fixtures, unit) : undefined
     const previous = lightMap
     lightMap = baked?.texture
+    objectLighting.setLighting(baked, fixtures, unit)
     for (const { geometry, material, position } of meshes) {
       if (baked) {
         const points = geometry.getAttribute('position')
@@ -117,11 +124,47 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
     previous?.dispose()
   }
 
+  /** 프로젝트 이미지의 중복 읽기와 해석 방지 */
+  const prepareTextures = async (areas: FloorArea[] | undefined, reader?: SceneResourceReader) => {
+    await Promise.all((areas ?? []).flatMap(({ material, texture: reference }) => {
+      if (!reference) return []
+      if (!reader) throw new Error('바닥 이미지를 읽으려면 프로젝트 폴더를 열어 주세요.')
+      const key = material + ':' + reference.hash
+      let entry = externalTextures.get(key)
+      if (!entry) {
+        const pending = reader(reference).then(async (bytes) => {
+          const url = URL.createObjectURL(new Blob([bytes]))
+          try {
+            const texture = await new THREE.TextureLoader().loadAsync(url)
+            if (disposed) texture.dispose()
+            else entry!.texture = texture
+            return texture
+          } finally {
+            URL.revokeObjectURL(url)
+          }
+        }).catch((error: unknown) => {
+          externalTextures.delete(key)
+          throw error
+        })
+        entry = { pending }
+        externalTextures.set(key, entry)
+      }
+      return [entry.pending]
+    }))
+  }
+
   /** 바닥 경계의 길이와 설정한 패턴 간격으로 반복 좌표를 구성 */
   const setAreas = (areas?: FloorArea[]) => {
     if (areas === current) return
     current = areas
     clear()
+    const requested = new Set((areas ?? []).flatMap(({ material, texture }) =>
+      texture ? [material + ':' + texture.hash] : []))
+    for (const [key, entry] of externalTextures)
+      if (!requested.has(key) && entry.texture) {
+        entry.texture.dispose()
+        externalTextures.delete(key)
+      }
     for (const [index, area] of (areas ?? []).entries()) {
       const origin = area.points[0]!
       const showroomEpoxy = area.material === 'showroom-epoxy'
@@ -142,19 +185,21 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
         const y = positions.getY(i) + patternY
         uv.setXY(i, (x * cos + y * sin) / area.repeatMm, (-x * sin + y * cos) / area.repeatMm)
       }
-      let texture = textures.get(area.material)
+      const reference = area.texture
+      const external = reference && externalTextures.get(area.material + ':' + reference.hash)?.texture
+      let texture = external || textures.get(area.material)
       if (!texture) {
         texture = showroomEpoxy
           ? new THREE.TextureLoader().load(showroomEpoxyUrl, (loaded) => {
               if (textures.get(area.material) === loaded) onTextureReady()
             })
           : createProceduralTexture(area.material)
-        texture.colorSpace = THREE.SRGBColorSpace
-        // 맞닿는 쪽의 색 차이를 줄이기 위한 사진 기반 텍스처의 반전 반복
-        texture.wrapS = texture.wrapT = showroomEpoxy ? THREE.MirroredRepeatWrapping : THREE.RepeatWrapping
-        texture.anisotropy = 4
         textures.set(area.material, texture)
       }
+      texture.colorSpace = THREE.SRGBColorSpace
+      // 맞닿는 쪽의 색 차이를 줄이기 위한 사진 기반 텍스처의 반전 반복
+      texture.wrapS = texture.wrapT = showroomEpoxy ? THREE.MirroredRepeatWrapping : THREE.RepeatWrapping
+      texture.anisotropy = 4
       const { roughness, reliefMm } = floorFinish[area.material]
       const parameters: THREE.MeshStandardMaterialParameters = {
         color: area.color,
@@ -192,7 +237,9 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
 
   /** 장면이 닫힐 때 바닥의 형상과 캐시한 재질 자원을 함께 해제 */
   const dispose = () => {
+    disposed = true
     setAreas()
+    externalTextures.clear()
     for (const texture of textures.values()) texture.dispose()
     textures.clear()
   }
@@ -207,5 +254,5 @@ export const createFloorSurfaces = (unit: number, environment: THREE.Texture | n
     }
   }
 
-  return { group, setAreas, setFixtureLighting, setEnvironmentEnabled, dispose }
+  return { group, setAreas, prepareTextures, setFixtureLighting, applyFixtureLighting: objectLighting.apply, setEnvironmentEnabled, dispose }
 }

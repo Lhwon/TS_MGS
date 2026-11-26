@@ -12,6 +12,9 @@ import type { Point3 } from '@/entities/facility/index.ts'
 /** 팝업 크기에 맞춰 GLB의 실제 비율과 표면 재질을 렌더링하는 독립 뷰 생성 */
 export const createGlbImportPreview = (host: HTMLElement, model: THREE.Group, dark: boolean) => {
   const renderer = new THREE.WebGLRenderer({ antialias: true })
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.03
+  renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
   renderer.domElement.setAttribute('aria-label', 'GLB 미리보기 · 드래그 회전 · 휠 확대')
   renderer.domElement.dataset.testid = 'glb-preview-canvas'

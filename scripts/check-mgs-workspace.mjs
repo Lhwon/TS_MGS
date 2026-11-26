@@ -118,7 +118,6 @@ try {
     'Data',
     'Vehicle',
     'Shape',
-    'Setting',
     'GRID',
     'Expert / Developer',
   ])

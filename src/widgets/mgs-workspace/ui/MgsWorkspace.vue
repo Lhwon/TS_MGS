@@ -7,7 +7,8 @@
  */
 -->
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { VTab, VTabs } from 'vuetify/components'
 import { DrawingLayout } from '@/features/drawing-import/index.ts'
 import type { MapLayout } from '@/entities/map/index.ts'
 import {
@@ -25,6 +26,7 @@ import type { Layers } from '@/entities/map/index.ts'
 import { AppIcon, TextAction } from '@/shared/ui/index.ts'
 import { downloadJson } from '@/shared/lib/files/index.ts'
 import { MGS_RIBBON } from '@/widgets/mgs-workspace/model/ribbon.ts'
+import { registerAppCommands, type AppCommand } from '@/shared/lib/input/index.ts'
 import MgsSummary from '@/widgets/mgs-workspace/ui/MgsSummary.vue'
 import PathPlanTest from '@/widgets/mgs-workspace/ui/PathPlanTest.vue'
 import BlockReview from '@/widgets/mgs-workspace/ui/BlockReview.vue'
@@ -343,11 +345,6 @@ const shapeTypes: Record<string, number> = {
   text: 6,
 }
 
-/** 원본 밝은 리본 테마 명령의 공통 적용 */
-const selectLightTheme = () => {
-  if (editor.colorMode !== 'light') editor.toggleColorMode()
-}
-
 const commands: Record<string, () => void> = {
   TBT_auto_reverse_orthogonal: () => {
     editor.drawingOptions.autoReverseOrthogonal = !editor.drawingOptions.autoReverseOrthogonal
@@ -494,12 +491,6 @@ const commands: Record<string, () => void> = {
   BT_open_project_folder: () => emit('showFolder'),
   BT_init_project: () => emit('create'),
   BT_show_report: () => verify(),
-  BT_set_theme_Office2010Black: () => {
-    if (editor.colorMode !== 'dark') editor.toggleColorMode()
-  },
-  BT_set_theme_Office2010Blue: selectLightTheme,
-  BT_set_theme_Office2010Silver: selectLightTheme,
-  BT_select_theme: () => editor.toggleColorMode(),
   BT_clear_property: () => {
     editor.commit((map) => {
       for (const node of map.nodes)
@@ -513,8 +504,7 @@ const commands: Record<string, () => void> = {
  * 표시 레이어와 도형 도구를 우선 판정하고 나머지 원본 명령을 등록된 동작으로 전달
  * @param id 원본 XAML 명령 식별자
  */
-const handleRibbonCommand = (id: string) => {
-  try {
+const executeRibbonCommand = (id: string) => {
     const layer = viewCommands[id]
     if (layer) {
       emit('layer', layer, !props.layers[layer])
@@ -526,7 +516,14 @@ const handleRibbonCommand = (id: string) => {
       editor.message = '지도에서 왼쪽 드래그로 도형의 범위를 지정하세요. Escape로 종료합니다.'
       return
     }
-    commands[id]?.()
+    if (!commands[id]) throw new Error('지원하지 않는 리본 기능입니다.')
+    commands[id]()
+}
+
+/** 공통 실행 경로의 오류를 기존 리본 상태 메시지로 표시 */
+const handleRibbonCommand = (id: string) => {
+  try {
+    executeRibbonCommand(id)
   } catch (cause) {
     editor.message = cause instanceof Error ? cause.message : String(cause)
   }
@@ -539,6 +536,31 @@ const handleRibbonCommand = (id: string) => {
  */
 const isRibbonCommandSupported = (id: string) =>
   !!commands[id] || !!viewCommands[id] || id.startsWith(shapeCommandPrefix)
+
+/** 실제 리본 정의와 실행 함수를 활용하여 활성 이차원 기능을 공통 등록 */
+const unregisterCommands = registerAppCommands(() => MGS_RIBBON.flatMap((menu) =>
+  menu.groups.flatMap((group) => group.buttons.filter((button) => isRibbonCommandSupported(button.id)).map((button): AppCommand => {
+    const dialog = ['BT_open_file', 'BT_save_file', 'TS_save_as', 'BT_save_jmapx', 'BT_select_project',
+      'BT_init_project', 'BT_make_grid', 'BT_area', 'BT_bay_offset', 'BT_limit_ports', 'BT_apply_xlsx',
+      'BT_control_map_data', 'BT_node_ban_setting', 'BT_check_closer_node', 'BT_verify_aes_data_quick',
+      'BT_illegal_port', 'BT_set_real_id_in_area', 'BT_path_distance', 'BT_setting_curve', 'BT_load_layout'].includes(button.id)
+    const view = !!viewCommands[button.id] || button.id in drawingChecks.value ||
+      ['BT_show_report', 'BT_search_illegal_node', 'BT_show_ic_jc', 'BT_open_project_folder'].includes(button.id)
+    const interactive = button.id.startsWith(shapeCommandPrefix)
+    const effect = dialog ? 'dialog' : interactive ? 'interactive' : view ? 'view' : 'edit'
+    return { id: 'map.ribbon.' + button.id, label: button.label, category: '2D/' + menu.name,
+      description: `${group.name} ${button.label} ${dialog ? '입력창 열기이며 작업 완료가 아님' : interactive ? '지도 드래그 입력 필요' : '기존 리본과 같은 동작 실행'}`,
+      effect, available: !props.busy && (effect !== 'edit' || !editor.readOnly),
+      unavailableReason: props.busy ? '파일 작업 진행 중' : '읽기 전용 지도',
+      run: () => {
+        executeRibbonCommand(button.id)
+        return button.id === 'BT_show_report' || button.id === 'BT_search_illegal_node'
+          ? { report: report.value } : { message: editor.message }
+      },
+    }
+  }))),
+)
+onBeforeUnmount(unregisterCommands)
 </script>
 
 <template>
@@ -553,23 +575,26 @@ const isRibbonCommandSupported = (id: string) =>
       data-testid="mgs-ribbon"
     >
       <div class="ribbon-header">
-        <div
-          class="ribbon-tabs d-flex align-center"
-          role="tablist"
+        <VTabs
+          v-model="tab"
+          class="ribbon-tabs"
           aria-label="MGS 작업 메뉴"
+          height="32"
+          show-arrows="never"
+          slider-transition="fade"
+          slider-transition-duration="140"
         >
-          <TextAction
+          <VTab
             v-for="item in MGS_RIBBON"
             :key="item.name"
-            role="tab"
-            :aria-selected="tab === item.name"
-            :active="tab === item.name"
+            :value="item.name"
             :data-tab="item.name"
-            @activate="tab = item.name"
+            aria-controls="mgs-ribbon-commands"
+            :ripple="false"
           >
             {{ item.name }}
-          </TextAction>
-        </div>
+          </VTab>
+        </VTabs>
         <div class="ribbon-view d-flex align-center ga-1">
           <TextAction
             data-testid="open-ai"
@@ -577,18 +602,12 @@ const isRibbonCommandSupported = (id: string) =>
           >
             AI Agent
           </TextAction>
-          <TextAction
-            active
-            data-testid="mode-map"
-          >
-            2D
-          </TextAction>
-          <TextAction
-            data-testid="mode-facility"
-            @activate="emit('facility')"
-          >
-            3D
-          </TextAction>
+          <div class="mode-segments d-flex ga-1" role="group" aria-label="맵 표시 모드">
+            <TextAction active data-testid="mode-map">2D</TextAction>
+            <TextAction :active="false" data-testid="mode-facility" @activate="emit('facility')">
+              3D
+            </TextAction>
+          </div>
           <TextAction
             data-testid="theme-toggle"
             @activate="editor.toggleColorMode()"
@@ -598,9 +617,10 @@ const isRibbonCommandSupported = (id: string) =>
         </div>
       </div>
       <div
+        id="mgs-ribbon-commands"
         class="ribbon-content"
         :key="tab"
-        role="region"
+        role="tabpanel"
         :aria-label="`${tab} 명령`"
         tabindex="0"
       >
@@ -1088,30 +1108,6 @@ const isRibbonCommandSupported = (id: string) =>
   border-bottom: 1px solid var(--mgs-border);
 }
 
-.ribbon-tabs {
-  flex: 1;
-  gap: 2px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.ribbon-tabs :deep(.text-action) {
-  height: 32px;
-  padding-inline: 11px;
-  border-radius: 7px;
-  font-weight: 600;
-}
-
-.ribbon-tabs :deep(.text-action:hover) {
-  background: var(--surface-muted);
-}
-
-.ribbon-tabs :deep(.text-action.active) {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
 .ribbon-view {
   flex-shrink: 0;
   padding-inline-start: 8px;
@@ -1133,7 +1129,7 @@ const isRibbonCommandSupported = (id: string) =>
 }
 
 .ribbon-content:focus-visible,
-.ribbon-tabs :deep(.text-action:focus-visible),
+.ribbon-tabs :deep(.v-tab:focus-visible),
 .ribbon-group :deep(.v-btn:focus-visible) {
   outline-offset: -2px;
 }
@@ -1194,10 +1190,6 @@ const isRibbonCommandSupported = (id: string) =>
   width: 112px;
   min-height: 32px;
   padding: 4px 7px;
-  background: var(--input-bg);
-  color: var(--text);
-  border: 1px solid var(--mgs-border);
-  border-radius: 6px;
 }
 .ribbon-group :deep(.v-btn),
 .selected-actions :deep(.v-btn) {
@@ -1206,11 +1198,8 @@ const isRibbonCommandSupported = (id: string) =>
   height: auto;
   min-height: 34px;
   padding: 4px 7px;
-  border: 1px solid var(--mgs-border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: none;
+  --button-inner-edge: 0px;
+  border: 1px solid var(--button-edge);
   font-size: 12px;
   font-weight: 550;
   line-height: 1.22;
@@ -1228,7 +1217,6 @@ const isRibbonCommandSupported = (id: string) =>
 .ribbon-group :deep(.large-button) {
   min-height: 68px;
   padding: 6px 8px;
-  background: var(--surface-muted);
 }
 
 .stacked-buttons :deep(.v-btn) {
@@ -1256,26 +1244,6 @@ const isRibbonCommandSupported = (id: string) =>
   flex-shrink: 0;
 }
 
-.ribbon-group :deep(.v-btn:not(.v-btn--disabled):hover),
-.selected-actions :deep(.v-btn:not(.v-btn--disabled):hover) {
-  border-color: var(--app-border);
-  background: var(--hover);
-}
-
-.ribbon-group :deep(.v-btn.checked) {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.ribbon-group :deep(.v-btn--disabled),
-.selected-actions :deep(.v-btn--disabled) {
-  opacity: 1;
-  background: var(--surface-muted);
-  color: var(--text-muted);
-  border-color: transparent;
-}
-
 .mgs-summary {
   grid-column: 1;
   grid-row: 2 / 4;
@@ -1290,19 +1258,13 @@ const isRibbonCommandSupported = (id: string) =>
   scrollbar-color: var(--app-border) transparent;
 }
 .mgs-quick :deep(.v-btn) {
-  border-radius: 6px;
   height: 27px;
   min-width: 30px;
   padding: 0 5px;
-  border: 1px solid var(--mgs-border);
+  --button-inner-edge: 0px;
+  border: 1px solid var(--button-edge);
   font-size: 12px;
   flex-shrink: 0;
-  box-shadow: none;
-}
-.mgs-quick .port-mode-active,
-.mgs-quick .checked {
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 .mgs-map {
   grid-column: 2;

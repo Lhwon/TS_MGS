@@ -360,10 +360,6 @@ defineExpose({ capture })
   min-width: 0;
   height: 30px;
   padding: 3px 7px;
-  border: 1px solid var(--mgs-border);
-  border-radius: 7px;
-  color: inherit;
-  background: var(--input-bg);
 }
 
 .bay-panel {

@@ -21,8 +21,11 @@ import {
   VAlert,
   VCheckbox,
 } from 'vuetify/components'
+import { aliases } from 'vuetify/iconsets/mdi-svg'
 
+/** 공통 스타일과 팔레트를 사용하는 Vuetify 기본 구성 정의 */
 export const vuetify = createVuetify({
+  icons: { aliases },
   components: {
     VApp,
     VBtn,
@@ -39,7 +42,8 @@ export const vuetify = createVuetify({
     VCheckbox,
   },
   defaults: {
-    VBtn: { variant: 'text', size: 'small', minWidth: 0, rounded: 'lg' },
+    VBtn: { variant: 'text', size: 'small', minWidth: 0 },
+    VCheckbox: { color: 'primary' },
     VSelect: { variant: 'outlined', density: 'compact', hideDetails: true, color: 'primary' },
     VCard: { elevation: 0 },
     VTextField: { variant: 'outlined', density: 'compact', hideDetails: true, color: 'primary' },

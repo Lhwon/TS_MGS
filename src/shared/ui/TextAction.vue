@@ -27,7 +27,7 @@ const emit = defineEmits<{ activate: [] }>()
 </template>
 
 <style scoped lang="scss">
-// 버튼 장식 없이 텍스트와 포커스로 구분하는 상단 메뉴 표현
+/** 헤더 텍스트 버튼의 평면 스타일과 조작 상태 정의 */
 .text-action {
   display: inline-flex;
   align-items: center;
@@ -35,14 +35,20 @@ const emit = defineEmits<{ activate: [] }>()
   flex-shrink: 0;
   height: 28px;
   padding: 0 10px;
+  border-radius: var(--control-radius);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+  transition: background-color var(--control-duration) ease, color var(--control-duration) ease;
 }
-.text-action:hover,
+
+.text-action:hover {
+  background-color: var(--hover);
+}
+
 .text-action.active {
   color: var(--accent);
 }

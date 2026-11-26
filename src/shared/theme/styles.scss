@@ -39,13 +39,35 @@
   --notice-bg: color-mix(in srgb, var(--app-warning) 12%, var(--surface));
   --notice-text: var(--app-warning);
   --notice-border: color-mix(in srgb, var(--app-warning) 40%, var(--border));
-  --shadow: 0 12px 36px #00092d24;
+  --shadow: 0 8px 20px #10223824;
+  /**
+   * 공용 조작 요소의 색상과 테두리 및 입체감 기준 정의
+   */
+  --control-radius: 5px;
+  --control-duration: 140ms;
+  --control-face: color-mix(in srgb, var(--surface) 76%, var(--surface-muted));
+  --control-edge: color-mix(in srgb, var(--app-border) 92%, var(--text));
+  --control-selected: color-mix(in srgb, var(--surface) 82%, var(--accent-fill));
+  --control-disabled: color-mix(in srgb, var(--surface-muted) 90%, var(--text-muted));
+  --control-glint: rgb(255 255 255 / 58%);
+  --control-drop: rgb(18 40 60 / 16%);
+  --control-recess: rgb(18 40 60 / 14%);
+  --control-raised-shadow:
+    inset 0 1px 0 var(--control-glint), 0 2px 4px var(--control-drop);
+  --control-pressed-shadow:
+    inset 0 2px 4px var(--control-recess), inset 0 -1px 0 var(--control-glint);
+  --field-face: color-mix(in srgb, var(--input-bg) 90%, var(--surface-muted));
+  --field-readonly: color-mix(in srgb, var(--surface-muted) 72%, var(--surface));
+  --field-inset: inset 0 2px 4px var(--control-recess), inset 0 -1px 0 var(--control-glint);
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
   --canvas: #00092d;
-  --shadow: 0 12px 36px #00000050;
+  --shadow: 0 8px 20px #00000050;
+  --control-glint: rgb(226 237 255 / 16%);
+  --control-drop: rgb(2 7 20 / 42%);
+  --control-recess: rgb(2 7 20 / 46%);
 }
 
 html,
@@ -60,22 +82,181 @@ body,
   font-size: 13px;
   line-height: 1.5;
 }
+/** 실행 버튼과 선택 및 비활성 상태 선택자 정의 */
+$buttons: '.v-btn:not(:where(.v-tab))';
+$selected-buttons: ':is(.active, .checked, .port-mode-active, .v-btn--active, [aria-pressed="true"], [aria-selected="true"])';
+$disabled-buttons: ':is(:disabled, .v-btn--disabled, [aria-disabled="true"])';
 
-.v-btn {
+/**
+ * 공통 버튼의 돌출 표면과 주요 실행 버튼 강조 적용
+ */
+:root #{$buttons} {
+  --button-face: var(--control-face);
+  --button-edge: var(--control-edge);
+  --button-stroke: var(--button-inner-edge, 1px);
+  --button-tint: var(--button-face);
+  --button-sheen: 6%;
+  --button-shade: 4%;
+  border-color: var(--button-edge);
+  border-radius: var(--control-radius);
+  background-color: var(--button-tint);
+  color: var(--text);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--button-tint), white var(--button-sheen)),
+    color-mix(in srgb, var(--button-tint), black var(--button-shade))
+  );
+  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-raised-shadow);
+  transition:
+    background-color var(--control-duration) ease,
+    border-color var(--control-duration) ease,
+    box-shadow var(--control-duration) ease,
+    color var(--control-duration) ease;
+}
+
+:root .v-btn {
   text-transform: none;
   letter-spacing: normal;
   line-height: 1.4;
-  border-radius: 8px;
-  transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
 }
 
-.v-btn:not(.v-btn--disabled):hover {
+:root .v-btn > .v-btn__overlay {
+  opacity: 0;
+}
+
+:root #{$buttons}:is(.bg-primary, .facility-primary, .save-button) {
+  --button-face: var(--accent-fill);
+  --button-edge: color-mix(in srgb, var(--accent-fill), black 19%);
+  color: var(--on-accent);
+}
+
+/**
+ * 호버와 순간 누름 및 지속 선택의 개별 상태 적용
+ */
+:root #{$buttons}:not(#{$disabled-buttons}):hover {
+  --button-tint: color-mix(in srgb, var(--button-face), white 9%);
+}
+
+:root #{$buttons}#{$selected-buttons}:not(#{$disabled-buttons}) {
+  --button-face: var(--control-selected);
+  --button-edge: var(--accent);
+  --button-sheen: 0%;
+  --button-shade: 0%;
+  color: var(--accent);
+  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-pressed-shadow);
+}
+
+:root #{$buttons}:not(#{$disabled-buttons}):active {
+  --button-tint: color-mix(in srgb, var(--button-face), black 9%);
+  --button-sheen: 0%;
+  --button-shade: 0%;
+  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-pressed-shadow);
+}
+
+:root #{$buttons}#{$disabled-buttons} {
+  --button-tint: var(--control-disabled);
+  --button-edge: var(--border);
+  --button-sheen: 0%;
+  --button-shade: 0%;
+  color: var(--text-muted);
+  opacity: 1;
+  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge);
+}
+
+/**
+ * 버튼 그룹 간격을 유지하는 접합부 모서리 적용
+ */
+:root .v-btn-toggle > .v-btn:not(:first-child) {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+
+:root .v-btn-toggle > .v-btn:not(:last-child) {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+/** 상단 메뉴의 평면 탭과 선택 인디케이터 및 스크롤 영역 구성 */
+.ribbon-tabs {
+  flex: 1;
+  height: auto;
+  min-width: 0;
+}
+
+.ribbon-tabs .v-slide-group__container {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border) transparent;
+}
+
+.ribbon-tabs .v-slide-group__content {
+  gap: 2px;
+}
+
+.ribbon-tabs .v-tab {
+  min-width: 0;
+  margin-inline: 0;
+  padding-inline: 11px;
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color var(--control-duration) ease, color var(--control-duration) ease;
+}
+
+.ribbon-tabs .v-tab:hover {
   background-color: var(--hover);
 }
 
-// 밝은 화면의 텍스트 버튼에 적용하는 읽기 가능한 강조 글자색
+.ribbon-tabs .v-tab[aria-selected='true'] {
+  color: var(--accent);
+}
+
+/** 설계 리본의 아이콘과 명령 이름을 쌓는 공용 버튼 구성 */
+.design-ribbon-commands {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.design-ribbon-commands .v-btn {
+  width: 80px;
+  min-width: 80px;
+  height: 68px;
+  padding: 4px 7px;
+  font-size: 12px;
+  line-height: 1.22;
+}
+
+.design-ribbon-commands .v-btn__content {
+  flex-direction: column;
+  text-align: center;
+  word-break: keep-all;
+}
+
+.design-ribbon-commands .v-btn__content svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.design-ribbon-commands .v-btn--disabled .v-btn__content svg,
+.design-ribbon-commands .facility-primary:not([aria-pressed="true"]) .v-btn__content svg {
+  color: inherit;
+}
+
+/** 지도 표시 모드의 공통 바탕과 선택 구간 강조 적용 */
+.mode-segments {
+  border-radius: var(--control-radius);
+  background-color: var(--surface-muted);
+}
+
+.mode-segments > [aria-pressed='true'] {
+  background-color: var(--control-selected);
+}
+
+/**
+ * 라이트 테마 텍스트 강조 버튼의 대비 확보
+ */
 :root[data-theme='light'] .v-btn--variant-text.text-primary {
   color: var(--accent) !important;
 }
@@ -88,12 +269,10 @@ input[type='checkbox'] {
 .v-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: var(--shadow);
 }
 
-.v-field {
-  border-radius: 7px;
-  background: var(--input-bg);
+.v-dialog > .v-overlay__content > .v-card {
+  box-shadow: var(--shadow);
 }
 
 .v-btn .v-btn__content {
@@ -115,10 +294,71 @@ input[type='checkbox'] {
   padding-top: 7px;
   padding-bottom: 7px;
 }
+/** Vuetify 내부 입력을 제외한 브라우저 필드 선택자 정의 */
+$native-fields: ':is(input:not([type]), input:is([type="text"], [type="search"], [type="number"], [type="password"], [type="email"], [type="url"], [type="tel"], [type="date"], [type="time"]), select, textarea):not(:where(.v-field *, .v-selection-control *))';
 
-.v-field {
+/**
+ * 브라우저와 Vuetify 입력 요소의 공통 함몰 표면 적용
+ */
+:root :is(.v-field, #{$native-fields}) {
+  --field-border: var(--app-border);
+  --field-state-face: var(--field-face);
+  border-radius: var(--control-radius);
+  background-color: var(--field-state-face);
+  box-shadow: var(--field-inset);
+  transition:
+    background-color var(--control-duration) ease,
+    border-color var(--control-duration) ease,
+    box-shadow var(--control-duration) ease;
+}
+
+:root #{$native-fields} {
+  border: 1px solid var(--field-border);
+  color: var(--text);
+}
+
+:root .v-field {
   --v-field-padding-start: 10px;
   --v-field-padding-end: 10px;
+  --v-field-border-opacity: 1;
+}
+
+:root .v-field__outline {
+  color: var(--field-border);
+}
+
+/** 펼침 선택 필드의 떠 있는 라벨과 테두리 색상 구분 */
+:root .v-field__outline .v-field-label {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+:root :is(.v-field--focused, .v-field--error) .v-field__outline .v-field-label,
+:root .v-input--error .v-field__outline .v-field-label {
+  color: var(--field-border);
+}
+
+:root :is(.v-field--focused, #{$native-fields}:focus) {
+  --field-border: var(--accent);
+}
+
+/**
+ * 읽기 전용과 비활성 및 오류 필드의 상태 표현 적용
+ */
+:root :is(.v-field:has(:is(input, textarea)[readonly]), #{$native-fields}:is([readonly], [aria-readonly='true'])) {
+  --field-state-face: var(--field-readonly);
+  --field-inset: inset 0 1px 2px var(--control-recess);
+}
+
+:root :is(.v-field--disabled, .v-input--disabled .v-field, #{$native-fields}:disabled) {
+  --field-state-face: var(--control-disabled);
+  --field-inset: none;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+:root :is(.v-input--error .v-field, .v-field--error, #{$native-fields}:is([aria-invalid='true'], :user-invalid)) {
+  --field-border: var(--app-danger);
 }
 
 :focus-visible {
@@ -126,11 +366,55 @@ input[type='checkbox'] {
   outline-offset: 3px;
 }
 
-// Vuetify 필드의 기본 포커스 윤곽선에만 강조색 적용
+/**
+ * 키보드 포커스와 오류 필드의 윤곽선 중복 방지
+ */
 .v-field :is(input, textarea):focus-visible {
   outline: none;
 }
-.v-field--focused .v-field__outline {
+
+:root .v-selection-control--focus-visible .v-selection-control__input {
+  border-radius: var(--control-radius);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+:root #{$native-fields}:is([aria-invalid='true'], :user-invalid):focus-visible {
+  outline-color: var(--app-danger);
+}
+
+/**
+ * 드롭다운과 팝업 목록의 선택 및 키보드 상태 동기화
+ */
+:root .v-menu > .v-overlay__content.v-select__content,
+:root .v-menu .v-overlay__content > .v-list {
+  border: 1px solid var(--app-border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+:root .v-select__content > .v-sheet,
+:root .v-select__content .v-list {
+  background-color: var(--surface);
+}
+
+.v-menu .v-list-item:is(.v-list-item--active, [aria-selected='true']) {
+  background-color: var(--control-selected);
+  color: var(--accent);
+}
+
+.v-menu .v-list-item:focus-visible {
+  outline-offset: -3px;
+}
+
+select option {
+  background-color: var(--surface);
+  color: var(--text);
+}
+
+select option:checked {
+  background-color: var(--control-selected);
   color: var(--accent);
 }
 
@@ -170,21 +454,8 @@ textarea::placeholder {
   color: var(--text-muted);
   opacity: 1;
 }
-input:disabled,
-select:disabled,
-textarea:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.v-btn--disabled {
-  opacity: 0.42;
-}
 .v-btn--variant-flat {
-  box-shadow: none;
   font-weight: 650;
-}
-.v-btn--variant-flat.bg-primary:hover {
-  background-color: color-mix(in srgb, var(--accent-fill) 85%, var(--surface)) !important;
 }
 .v-list,
 .v-table {

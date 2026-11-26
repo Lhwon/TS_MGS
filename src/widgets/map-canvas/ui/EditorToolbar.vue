@@ -120,25 +120,22 @@ kbd {
 .tool-group button {
   height: 34px;
   padding: 0 9px;
-  color: #7e929e;
+  color: var(--text-secondary);
   gap: 7px;
   font-size: 11px;
 }
 .tool-group button.active {
-  background: var(--surface-muted);
-  color: var(--accent);
-  border-color: var(--border);
   font-weight: 600;
 }
 .tool-group kbd {
   border: 0;
   background: none;
   padding: 0;
-  color: #b0bec6;
+  color: var(--text-muted);
   font-size: 8px;
 }
 .tool-group button.active kbd {
-  color: #79a995;
+  color: var(--accent);
 }
 .toolbar-divider {
   height: 21px;
@@ -165,16 +162,12 @@ kbd {
 }
 .view-switch button {
   font-size: 10px;
-  color: #8b9da7;
+  color: var(--text-secondary);
   height: 25px;
   padding: 0 9px;
   gap: 4px;
-  border-radius: 4px;
 }
 .view-switch button.active {
-  background: var(--surface);
-  box-shadow: 0 1px 4px #28455312;
-  color: #426575;
   font-weight: 600;
 }
 @media (max-width: 1330px) {

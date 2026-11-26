@@ -26,13 +26,11 @@ import { useEditor, useMapFiles, MapSaveDialog } from '@/features/map-editor/ind
 import type { Tool, NativeSaveOptions } from '@/features/map-editor/index.ts'
 import type { Layers } from '@/entities/map/index.ts'
 import { DEFAULT_LAYERS } from '@/entities/map/index.ts'
+import { registerAppCommands, type AppCommand } from '@/shared/lib/input/index.ts'
 import { AppIcon, TextAction } from '@/shared/ui/index.ts'
 import { useFacilityEditor } from '@/features/facility-editor/index.ts'
 import {
-  mapGeometryKey,
-  parseFacilityDocument,
-  importFacilityFiles,
-  resolveFacilityInstance,
+  parseFacilitySceneFile,
 } from '@/entities/facility/index.ts'
 const FacilityStudio = defineAsyncComponent(() =>
   import('@/widgets/facility-studio/index.ts').then((module) => module.FacilityStudio),
@@ -72,23 +70,13 @@ const showGeneratedMap = async () => {
   canvas.value?.fit()
 }
 const modelDraftDirty = ref(false)
-const mapReference = computed(() => ({
-  name: editor.sourceName,
-  geometryKey: mapGeometryKey(editor.document.nodes),
-}))
 watch(
   () => editor.dirty || facility.dirty || modelDraftDirty.value,
   (dirty) => window.desktop?.setDirty(dirty),
   { immediate: true },
 )
-const files = useMapFiles(
-  () =>
-    !facility.busy &&
-    (!(facility.dirty || modelDraftDirty.value) ||
-      window.confirm(
-        '맵을 교체하면 현재 3D 설계가 초기화됩니다. 저장하지 않은 변경을 버리시겠습니까?',
-      )),
-)
+/** 이차원 지도 교체 중에도 독립 삼차원 설계와 편집 상태 유지 */
+const files = useMapFiles(() => !facility.busy)
 const saveDialogOpen = ref(false),
   saveToNewProject = ref(false),
   saveProjectToken = ref<string>()
@@ -126,13 +114,8 @@ const saveWithOptions = async (options: NativeSaveOptions) => {
   if (await files.save(saveToNewProject.value, false, options, saveProjectToken.value))
     saveDialogOpen.value = false
 }
-watch(
-  () => editor.mapRevision,
-  () => facility.resetForMap(mapReference.value),
-  { flush: 'sync' },
-)
-/** 프로젝트 위치와 기준 좌표를 확인한 빈 편집 화면의 삼차원 설계 자동 로딩 */
-const loadProjectScene = async () => {
+/** 현재 프로젝트 폴더에서 빈 편집 화면의 독립 삼차원 설계 자동 로딩 */
+const readProjectScene = async () => {
   const token = editor.projectToken
   if (
     mode.value !== 'facility' ||
@@ -148,7 +131,6 @@ const loadProjectScene = async () => {
     return
   const snapshot = facility.document
   const revision = editor.mapRevision
-  const reference = mapReference.value
   facility.busy = true
   facility.message = '현재 프로젝트의 3D 설계를 불러오는 중입니다.'
   try {
@@ -165,14 +147,8 @@ const loadProjectScene = async () => {
       facility.message = '현재 프로젝트의 MAP/3D 폴더에 3D 설계 파일이 없습니다.'
       return
     }
-    const document = file.library
-      ? importFacilityFiles(file.content, file.library)
-      : parseFacilityDocument(file.content)
-    if (document.mapRef.geometryKey !== reference.geometryKey)
-      throw new Error('프로젝트 3D 설계의 기준 좌표와 현재 2D 맵이 다릅니다.')
-    for (const instance of document.instances)
-      resolveFacilityInstance(instance, editor.document.ports)
-    facility.load(JSON.stringify(document), file.name)
+    const document = parseFacilitySceneFile(file)
+    facility.loadDocument(document, file.name)
     facility.message = `프로젝트 3D 설계 자동 로딩 완료: ${file.name}`
   } catch (error) {
     if (editor.mapRevision === revision && editor.projectToken === token)
@@ -181,28 +157,17 @@ const loadProjectScene = async () => {
     facility.busy = false
   }
 }
+/** 사용자 화면 전환과 에이전트 전환이 동일한 프로젝트 로딩 완료를 대기하도록 공유 */
+let projectSceneLoading: Promise<void> | undefined
+const loadProjectScene = () => {
+  if (!projectSceneLoading) projectSceneLoading = readProjectScene().finally(() => { projectSceneLoading = undefined })
+  return projectSceneLoading
+}
 watch(() => [mode.value, editor.projectToken, editor.mapRevision], loadProjectScene)
-// 시간 기반 지도 저장으로 파일명이 바뀌어도 같은 지도에 연결한 설비를 유지하는 참조 동기화
-watch(
-  () => editor.sourceName,
-  () => {
-    const reference = mapReference.value
-    if (
-      editor.dirty ||
-      facility.document.mapRef.name === reference.name ||
-      facility.document.mapRef.geometryKey !== reference.geometryKey
-    )
-      return
-    if (facility.document.assets.length || facility.document.instances.length || facility.document.floors?.length)
-      facility.bindMap(reference)
-    else facility.resetForMap(reference)
-  },
-)
 const canvas = ref<InstanceType<typeof MapViewport>>()
 const help = ref<HTMLDialogElement>()
 const layers = reactive<Layers>({ ...DEFAULT_LAYERS })
 const cursor = reactive({ x: 0, y: 0 })
-const desktop = !!window.desktop
 const mapZoom = ref(1)
 const objectOpen = computed({
   get: () => editor.objectEditor !== null,
@@ -220,7 +185,7 @@ const mapShortcuts = [
   ['Ctrl + Z', '실행 취소'],
   ['Ctrl + Shift + Z / Ctrl + Y', '다시 실행'],
   ['마우스 휠', '커서 위치를 중심으로 확대·축소'],
-  ['Space + 왼쪽 드래그', '화면 이동'],
+  ['Space + 왼쪽 드래그 / 휠 버튼 드래그', '화면 이동'],
   ['오른쪽 클릭', '노드 편집 메뉴'],
   ['왼쪽 더블클릭', '클릭 위치로 이동·배율 60%'],
   ['왼쪽 드래그 → / ←', '영역 선택 추가 / 영역 선택 해제'],
@@ -229,7 +194,8 @@ const shortcuts = computed(() =>
   mode.value === 'map'
     ? mapShortcuts
     : [
-        ['오른쪽 드래그 / Space + 왼쪽 드래그', '3D 시점 회전 / 화면 이동'],
+        ['오른쪽 드래그', '3D 시점 회전'],
+        ['Space + 왼쪽 드래그 / 휠 버튼 드래그', '화면 이동'],
         ['휠', '확대·축소'],
         ['이동 / 회전 도구', '선택 시설에 핸들 표시 (10mm / 15° 스냅)'],
         ['Ctrl+O / Ctrl+S', '지도 열기 / 3D 설계 저장'],
@@ -251,9 +217,7 @@ const keyboard = (event: KeyboardEvent) => {
   if (mode.value === 'facility') {
     if (mod && key === 's') {
       event.preventDefault()
-      if (facility.document.mapRef.geometryKey !== mapGeometryKey(editor.document.nodes))
-        facility.message = '기준 2D 맵 연결을 먼저 확인하세요.'
-      else void facility.save(editor.projectToken)
+      void facility.save(editor.projectToken)
       return
     }
     if (mod && key === 'o') {
@@ -357,6 +321,38 @@ const beforeUnload = (event: BeforeUnloadEvent) => {
     event.returnValue = ''
   }
 }
+/** 화면 전환과 공통 표시 및 파일 진입점을 기존 사용자 동작에 연결 */
+const unregisterCommands = registerAppCommands((): AppCommand[] => [
+  { id: 'workspace.mode', label: '2D 및 3D 화면 전환', category: 'Workspace', description: '문서를 보존하며 작업 화면 전환. map은 노드 경로 포트 도면 편집. facility는 GLB 설비와 조명 설정 및 벽 바닥 천장 설계. 기본 벽 바닥 천장 생성은 카탈로그 Asset ID 없이 치수로 작성 가능', effect: 'view',
+    parameters: { mode: { type: 'string', enum: ['map', 'facility'] } }, required: ['mode'],
+    run: async ({ mode: value }) => {
+      if (value === 'facility') {
+        await import('@/widgets/facility-studio/index.ts')
+        openFacility()
+        if (mode.value !== 'facility') throw new Error(editor.message)
+      } else mode.value = 'map'
+      await nextTick()
+      if (mode.value === 'facility') await loadProjectScene()
+      return { mode: mode.value }
+    } },
+  { id: 'workspace.theme', label: '밝은 테마와 어두운 테마 전환', category: 'Workspace', description: '기존 테마 전환 동작 실행', effect: 'view',
+    parameters: { mode: { type: 'string', enum: ['light', 'dark'] } }, required: ['mode'],
+    run: ({ mode: value }) => { if (editor.colorMode !== value) editor.toggleColorMode(); return { mode: editor.colorMode } } },
+  { id: 'workspace.layer', label: '맵 표시 레이어 설정', category: 'Workspace', description: '격자 grid 및 노드 nodes 경로 edges 포트 ports 와 라벨 등 기존 레이어 표시 설정', effect: 'view',
+    parameters: { layer: { type: 'string', enum: Object.keys(DEFAULT_LAYERS) }, visible: { type: 'boolean' } }, required: ['layer', 'visible'],
+    run: ({ layer, visible }) => { layers[layer as keyof Layers] = visible as boolean; return { layer, visible } } },
+  { id: 'map.fit', label: '2D 전체 지도 보기', category: '2D/View', description: '현재 이차원 뷰포트의 기존 전체 보기 실행', effect: 'view', available: mode.value === 'map',
+    run: () => canvas.value?.fit() },
+  { id: 'map.tool', label: '2D 선택 및 노드 추가와 경로 연결 도구', category: '2D/Drawing', description: '마우스 입력을 받을 편집 도구 활성화이며 도형 생성 완료가 아님', effect: 'interactive',
+    available: mode.value === 'map' && !editor.readOnly,
+    parameters: { tool: { type: 'string', enum: ['select', 'add', 'connect'] } }, required: ['tool'],
+    run: ({ tool }) => { editor.tool = tool as Tool; return { tool } } },
+  { id: 'file.open', label: '지도 열기', category: 'File', description: '기존 확인 및 운영체제 파일 선택 절차 실행', effect: 'dialog', available: !files.busy.value,
+    run: () => files.open() },
+  { id: 'file.save-options', label: '지도 저장 설정', category: 'File', description: '기존 지도 저장과 저장 옵션 창을 실행하며 실제 저장 여부는 사용자 입력 결과 확인 필요', effect: 'dialog',
+    available: !files.busy.value && !editor.readOnly, run: () => requestSave() },
+])
+onBeforeUnmount(unregisterCommands)
 onMounted(() => {
   window.addEventListener('keydown', keyboard)
   window.addEventListener('beforeunload', beforeUnload)
@@ -370,69 +366,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="studio-shell d-flex flex-column overflow-hidden"
-    :class="{ 'facility-shell': mode === 'facility' }"
   >
-    <WorkspaceHeader
-      v-if="mode === 'facility'"
-      :busy="files.busy.value || facility.busy"
-      @create="files.create()"
-      @open="files.open()"
-      @save="requestSave()"
-      @save-as="requestSave(true)"
-      @folder="files.openFolder"
-      @help="help?.showModal()"
-    />
-    <div
-      v-if="mode === 'facility'"
-      class="workspace-titlebar d-flex align-center justify-space-between flex-shrink-0"
-    >
-      <div class="workspace-breadcrumb d-flex align-center">
-        <AppIcon
-          name="layers"
-          :size="17"
-        />
-        <span>프로젝트</span>
-        <AppIcon
-          name="chevron"
-          :size="12"
-        />
-        <strong>{{ editor.document.name }}</strong>
-      </div>
-      <div class="workspace-mode d-flex align-center">
-        <div
-          class="d-flex ga-1"
-          aria-label="맵 표시 모드"
-        >
-          <TextAction
-            data-testid="mode-map"
-            @activate="mode = 'map'"
-          >
-            2D
-          </TextAction>
-          <TextAction
-            data-testid="mode-facility"
-            :active="mode === 'facility'"
-            @activate="openFacility"
-          >
-            3D
-          </TextAction>
-        </div>
-        <TextAction
-          data-testid="theme-toggle"
-          @activate="editor.toggleColorMode"
-        >
-          {{ editor.colorMode === 'dark' ? 'Light' : 'Dark' }}
-        </TextAction>
-        <TextAction
-          data-testid="open-ai"
-          :active="assistantOpen"
-          @activate="assistantOpen = !assistantOpen"
-        >
-          AI 에이전트
-        </TextAction>
-        <span class="workspace-version">v0.6.0</span>
-      </div>
-    </div>
     <div class="workspace-content d-flex flex-grow-1 overflow-hidden">
       <main class="workspace-main d-flex flex-column">
         <MgsWorkspace
@@ -472,31 +406,33 @@ onBeforeUnmount(() => {
           :layers="layers"
           @draft-dirty="modelDraftDirty = $event"
           @layer="(key, value) => (layers[key] = value)"
-        />
-        <footer
-          v-if="mode === 'facility'"
-          class="status-bar d-flex align-center flex-shrink-0"
         >
-          <span class="status-ready d-flex align-center">
-            <span class="state-dot flex-shrink-0"></span>
-            {{
-              mode === 'facility'
-                ? '3D EDIT'
-                : editor.readOnly
-                  ? 'READ ONLY'
-                  : files.busy.value
-                    ? 'WORKING'
-                    : 'READY'
-            }}
-          </span>
-          <span
-            class="status-message overflow-hidden"
-            role="status"
-          >
-            {{ mode === 'facility' ? facility.message : editor.message }}
-          </span>
-          <span class="status-platform">{{ desktop ? 'DESKTOP' : 'WEB' }}</span>
-        </footer>
+          <template #header-actions>
+            <div class="workspace-mode d-flex align-center">
+              <TextAction data-testid="open-ai" :active="assistantOpen" @activate="assistantOpen = !assistantOpen">
+                AI Agent
+              </TextAction>
+              <div class="mode-segments d-flex ga-1" role="group" aria-label="맵 표시 모드">
+                <TextAction data-testid="mode-map" :active="false" @activate="mode = 'map'">2D</TextAction>
+                <TextAction data-testid="mode-facility" active @activate="openFacility">3D</TextAction>
+              </div>
+              <TextAction data-testid="theme-toggle" @activate="editor.toggleColorMode">
+                {{ editor.colorMode === 'dark' ? 'Light' : 'Dark' }}
+              </TextAction>
+            </div>
+          </template>
+          <template #file-actions>
+            <WorkspaceHeader
+              :busy="files.busy.value || facility.busy"
+              @create="files.create()"
+              @open="files.open()"
+              @save="requestSave()"
+              @save-as="requestSave(true)"
+              @folder="files.openFolder"
+              @help="help?.showModal()"
+            />
+          </template>
+        </FacilityStudio>
       </main>
       <AiAssistant
         v-model="assistantOpen"
@@ -597,38 +533,8 @@ kbd {
   height: 100dvh;
   min-width: 0;
 }
-.facility-shell {
-  min-height: 650px;
-  min-width: 1100px;
-}
-.workspace-titlebar {
-  height: 49px;
-  padding: 0 23px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-.workspace-breadcrumb {
-  gap: 11px;
-  font-size: 11px;
-  color: var(--text-muted);
-  min-width: 0;
-}
-.workspace-breadcrumb > svg:first-child {
-  color: var(--accent);
-}
-.workspace-breadcrumb strong {
-  color: var(--text-secondary);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .workspace-mode {
   gap: 13px;
-}
-.workspace-version {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
 }
 .studio-workspace {
   flex: 1;
@@ -646,47 +552,6 @@ kbd {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-}
-.status-bar {
-  gap: 15px;
-  height: 30px;
-  padding: 0 18px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  font-size: 10px;
-}
-.status-ready {
-  gap: 6px;
-  color: var(--app-success);
-  font: 9px var(--font-mono);
-}
-.status-message {
-  color: var(--text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-.status-position {
-  color: var(--text-secondary);
-  font: 10px var(--font-mono);
-}
-.status-position > b {
-  font-size: 9px;
-  font-weight: 400;
-  color: var(--text-secondary);
-  margin-left: 8px;
-}
-.status-position small {
-  font-size: 9px;
-  color: var(--text-secondary);
-  margin-left: 3px;
-}
-.status-platform {
-  border-left: 1px solid var(--border);
-  padding-left: 13px;
-  color: var(--text-secondary);
-  font: 8px var(--font-mono);
-  letter-spacing: 1px;
 }
 .shortcut-dialog {
   width: 540px;
@@ -752,11 +617,6 @@ kbd {
 @media (max-width: 1330px) {
   .studio-workspace {
     grid-template-columns: 225px minmax(400px, 1fr) 260px;
-  }
-}
-@media (max-height: 800px) {
-  .workspace-titlebar {
-    height: 40px;
   }
 }
 </style>

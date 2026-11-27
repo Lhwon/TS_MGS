@@ -15,7 +15,7 @@
     "start": "electron .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:map3d": "node scripts/test-map3d.cjs && node scripts/test-wip-racks.cjs && node scripts/test-scene-project.cjs && node scripts/test-handling-models.cjs && node scripts/test-cargo-standard.cjs",
+    "test:map3d": "node scripts/test-map3d.cjs && node scripts/test-wip-racks.cjs && node scripts/test-scene-project.cjs && node scripts/test-handling-models.cjs && node scripts/test-cargo-standard.cjs && node scripts/test-light-angles.cjs",
     "test:handling": "node scripts/test-handling-workflow.mjs",
     "generate:field": "node scripts/generate-field-map.cjs",
     "test:glb": "node scripts/test-glb-workflow.mjs"

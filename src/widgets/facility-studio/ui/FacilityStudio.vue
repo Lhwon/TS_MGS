@@ -22,6 +22,9 @@ import {
   facilityCutawayRole,
   facilityScaleLimits,
   facilityLight,
+  defaultFacilityLightAngles,
+  parseFacilityLightAngles,
+  resolveFacilityLightAngles,
   legacyFacilityLight,
   minLightTemperature,
   maxLightTemperature,
@@ -88,10 +91,14 @@ const glbCategory = ref<NonNullable<FacilityAsset['catalogCategory']>>('equipmen
 const lightEditId = ref('')
 const lightKind = ref<FacilityLight['kind']>('spot')
 const lightTemperature = ref('4000')
+/** 카탈로그에 저장할 조명 모델의 기본 방향과 배광 설정 관리 */
+const lightAngles = ref({ ...defaultFacilityLightAngles })
 const lightSettings = computed<FacilityLight>(() => ({
   kind: lightKind.value, temperature: Number(lightTemperature.value),
+  ...lightAngles.value,
 }))
 const lightError = computed(() => {
+  try { parseFacilityLightAngles(lightAngles.value) } catch (error) { return (error as Error).message }
   const { temperature } = lightSettings.value
   return Number.isInteger(temperature) && temperature >= minLightTemperature && temperature <= maxLightTemperature
     ? '' : `색온도는 ${minLightTemperature}~${maxLightTemperature} K의 정수로 입력하세요.`
@@ -415,6 +422,7 @@ const pose = reactive({
   y: 0,
   z: 0,
   rotation: 0,
+  light: { ...defaultFacilityLightAngles },
   carrierRotation: '' as string | number,
   size: { x: 0, y: 0, z: 0 },
   portId: '',
@@ -556,6 +564,8 @@ const openDesigner = (asset: FacilityAsset | null = null) => {
 /** 확정 배치와 드래그 미리보기의 위치 및 실측 치수를 같은 입력 필드에 동기화 */
 const syncPose = (instance?: FacilityInstance) => {
   const size = baseSize.value
+  const asset = instance && studio.document.assets.find(({ id }) => id === instance.assetId)
+  const light = asset && facilityLight(asset)
   if (instance)
     attempt(() =>
       Object.assign(pose, {
@@ -564,6 +574,7 @@ const syncPose = (instance?: FacilityInstance) => {
         attachedTo: instance.attachedTo ?? '',
         ...resolveFacilityInstance(instance, map.document.ports).position,
         rotation: instance.rotation,
+        light: light ? resolveFacilityLightAngles(light, instance.light) : { ...defaultFacilityLightAngles },
         carrierRotation: instance.carrierRotation ?? '',
         size: {
           x: displaySize((size?.x ?? 0) * (instance.scale?.x ?? 1)),
@@ -834,14 +845,22 @@ const placeAtPort = (id: string) => {
   })
 }
 
-/**
- * 노드와 포트 참조를 확인하고 속성 입력값을 배치 문서에 반영하는 설비 속성 적용
- */
+/** 각도를 수정하지 않은 배치는 모델 기본값 상속 상태를 유지하는 조명 속성 반환 */
+const placementLightPatch = () => {
+  const light = selectedLight.value
+  if (!light) return
+  const angles = parseFacilityLightAngles(pose.light)
+  const current = resolveFacilityLightAngles(light, studio.selected?.light)
+  return Object.entries(current).every(([key, value]) => angles[key as keyof typeof angles] === value)
+    ? studio.selected?.light : angles
+}
+
+/** 선택 객체의 편집 초안과 변경된 조명 각도를 기존 배치 저장 경로에 적용 */
 const applyPose = () => {
   if (!studio.selected) return
   attempt(() => {
     if (linkedWallOpening.value) {
-      studio.updateInstance(studio.selectedId!, { name: pose.name })
+      studio.updateInstance(studio.selectedId!, { name: pose.name, ...(selectedLight.value ? { light: placementLightPatch() } : {}) })
       return
     }
     if (pose.nodeId !== '' && !map.document.nodes.some((n) => n.id === Number(pose.nodeId)))
@@ -856,6 +875,7 @@ const applyPose = () => {
         attachedTo: selectedStructure.value ? undefined : pose.attachedTo || undefined,
         position: { x: Number(pose.x), y: Number(pose.y), z: Number(pose.z) },
         rotation: Number(pose.rotation),
+        ...(selectedLight.value ? { light: placementLightPatch() } : {}),
         carrierRotation: pose.carrierRotation === '' ? undefined : Number(pose.carrierRotation),
         scale: scaleFromSize(),
         portId: pose.portId || undefined,
@@ -894,6 +914,7 @@ const openGlbImport = () => {
   glbCategory.value = catalogCategory.value
   lightKind.value = 'spot'
   lightTemperature.value = '4000'
+  lightAngles.value = { ...defaultFacilityLightAngles }
   glbImportOpen.value = true
 }
 
@@ -921,6 +942,7 @@ const selectGlbFile = (file: File) => {
     glbCategory.value = 'lighting'
     lightKind.value = preset.kind
     lightTemperature.value = String(preset.temperature)
+    lightAngles.value = resolveFacilityLightAngles(preset)
   }
   if (!glbName.value.trim() || glbName.value === previousFileName)
     glbName.value = file.name.replace(/\.glb$/i, '')
@@ -1038,11 +1060,13 @@ const registerGlb = async () => {
   }
 }
 
+/** 카탈로그 모델의 조명 기본값 편집 상태 초기화 */
 const openLightSettings = (asset: FacilityAsset) => {
   const light = facilityLight(asset)
   if (!light) return
   lightKind.value = light.kind
   lightTemperature.value = String(light.temperature)
+  lightAngles.value = resolveFacilityLightAngles(light)
   lightEditId.value = asset.id
 }
 
@@ -2090,6 +2114,17 @@ const unregisterCommands = registerAppCommands(() => {
       run: () => runWorkspaceAction(placeCenter) },
     { id: 'scene.preview', label: '현장 미리보기 전환', category: '3D/ViewTools', description: '기존 현장 미리보기 전환 실행', effect: 'view', available: !!scene,
       parameters: { enabled: { type: 'boolean' } }, required: ['enabled'], run: ({ enabled }) => { if (sitePreview.value !== enabled) toggleSitePreview(); return { enabled: sitePreview.value } } },
+    /** 사용자 속성 편집과 같은 저장 및 실행 취소 경로를 사용하는 개별 조명 도구 구성 */
+    { id: 'scene.light-angles', label: '배치 조명 각도 설정', category: '3D/Lighting', description: '같은 모델의 다른 조명은 유지하면서 배치 식별자에 빛의 방향과 기울기 및 전체 배광각과 경계 부드러움 적용', effect: 'edit', available: editable,
+      parameters: { instanceId: { type: 'string' }, direction: { type: 'number', minimum: 0, maximum: 360 }, tilt: { type: 'number', minimum: 0, maximum: 90 }, beamAngle: { type: 'number', minimum: 1, maximum: 160 }, penumbra: { type: 'number', minimum: 0, maximum: 1 } }, required: ['instanceId'],
+      run: ({ instanceId, ...angles }) => {
+        const instance = studio.document.instances.find(({ id }) => id === instanceId)
+        const asset = instance && studio.document.assets.find(({ id }) => id === instance.assetId)
+        if (!instance || !asset || !facilityLight(asset)) throw new Error('배치된 조명을 찾을 수 없습니다.')
+        const light = { ...instance.light, ...parseFacilityLightAngles(angles) }
+        studio.updateInstance(instance.id, { light })
+        return { instanceId: instance.id, light }
+      } },
     { id: 'scene.light-settings', label: '조명 색온도 및 유형 설정', category: '3D/Lighting', description: '조회한 조명 모델 식별자의 기존 조명 설정 적용 함수를 사용하며 Kelvin 단위 입력', effect: 'edit', available: editable,
       parameters: { assetId: { type: 'string' }, temperature: { type: 'number', minimum: minLightTemperature, maximum: maxLightTemperature }, kind: { type: 'string', enum: ['spot', 'line'] } }, required: ['assetId', 'temperature'],
       run: async ({ assetId, temperature, kind }) => {
@@ -2648,8 +2683,17 @@ onBeforeUnmount(() => {
               <span v-if="selectedModel"> · {{ selectedModel.name }}</span>
             </p>
             <v-btn v-if="selectedLight && selectedModel" type="button" :disabled="studio.busy" @click="openLightSettings(selectedModel)">
-              조명 설정 · {{ selectedLight.temperature }} K
+              모델 기본 조명 설정 · {{ selectedLight.temperature }} K
             </v-btn>
+            <!-- 선택 조명에 적용하는 개별 배광 설정 구성 -->
+            <template v-if="selectedLight">
+              <h3 class="text-subtitle-2">이 조명의 빛 방향</h3>
+              <GlbLightFields :kind="selectedLight.kind" :temperature="String(selectedLight.temperature)"
+                v-model:angles="pose.light" angles-only error="" />
+              <p class="text-caption mb-0" style="word-break: keep-all">수평 방향은 객체 회전을 기준으로 적용</p>
+              <v-btn type="submit" color="primary" data-testid="light-angle-apply">조명 각도 적용</v-btn>
+              <v-btn type="button" size="small" @click="pose.light = resolveFacilityLightAngles(selectedLight)">모델 기본 각도 불러오기</v-btn>
+            </template>
             <label>
               이름
               <v-text-field
@@ -2983,6 +3027,7 @@ onBeforeUnmount(() => {
               </div>
               <GlbLightFields
                 v-if="glbCategory === 'lighting'"
+                v-model:angles="lightAngles"
                 v-model:kind="lightKind"
                 v-model:temperature="lightTemperature"
                 :error="lightError"
@@ -3010,7 +3055,7 @@ onBeforeUnmount(() => {
       <v-card v-if="editingLight" :title="editingLight.name">
         <form @submit.prevent="saveLightSettings">
           <v-card-text class="d-flex flex-column ga-3">
-            <GlbLightFields v-model:kind="lightKind" v-model:temperature="lightTemperature" :error="lightError" />
+            <GlbLightFields v-model:kind="lightKind" v-model:temperature="lightTemperature" v-model:angles="lightAngles" :error="lightError" />
             <p class="text-caption">이 모델의 모든 배치에 적용됩니다.</p>
           </v-card-text>
           <v-card-actions>

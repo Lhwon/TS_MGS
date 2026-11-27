@@ -86,12 +86,14 @@ export const createFloorSurfaces = (
   let meshes: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshStandardMaterial>[] = []
   let current: FloorArea[] | undefined
   let lightMap: THREE.Texture | undefined
+  let bakedLighting: ReturnType<typeof bakeFacilityFloorLightMap>
   let lightMapKey = ''
 
   /** 기존 면의 버퍼와 재질을 해제하며 공용 반복 텍스처는 유지 */
   const clear = () => {
     objectLighting.setLighting()
-    lightMap?.dispose()
+    bakedLighting?.dispose()
+    bakedLighting = undefined
     lightMap = undefined
     lightMapKey = ''
     for (const mesh of meshes) {
@@ -102,6 +104,7 @@ export const createFloorSurfaces = (
     group.clear()
   }
 
+  /** 배치와 조명 설정이 같으면 기존 조명 텍스처를 유지하는 캐시 갱신 */
   const setFixtureLighting = (fixtures?: THREE.Group) => {
     const key =
       fixtures?.children
@@ -112,6 +115,8 @@ export const createFloorSurfaces = (
             light.position.z,
             light.rotation.z,
             light.userData.temperature,
+            JSON.stringify(light.userData.fixtureAngles),
+            JSON.stringify(light.userData.fixtureDirection),
             light instanceof THREE.RectAreaLight ? light.width / fixtures.scale.x : 0,
           ].join(','),
         )
@@ -121,7 +126,8 @@ export const createFloorSurfaces = (
     const baked = fixtures?.children.length
       ? bakeFacilityFloorLightMap(current ?? [], fixtures, unit)
       : undefined
-    const previous = lightMap
+    const previous = bakedLighting
+    bakedLighting = baked
     lightMap = baked?.texture
     objectLighting.setLighting(baked, fixtures, unit)
     for (const { geometry, material, position } of meshes) {

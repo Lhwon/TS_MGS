@@ -294,6 +294,17 @@ export const createFacilityScene = (
     emitter?: FacilityEmitter
   }>()
   const previewed = new Set<string>()
+  /** 선택 조명의 방향과 배광 범위를 고정 버퍼로 표시하는 안내선 구성 */
+  const lightGuidePositions = new Float32Array(222)
+  const lightGuide = new THREE.LineSegments(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(lightGuidePositions, 3)),
+    new THREE.LineBasicMaterial({ color: 0xffa928, depthTest: false, depthWrite: false, transparent: true, opacity: 0.8 }),
+  )
+  lightGuide.name = 'facility-light-direction-guide'
+  lightGuide.frustumCulled = false
+  lightGuide.visible = false
+  lightGuide.renderOrder = 12
+  scene.add(lightGuide)
   let instanceBindings = new Map<
     string,
     {
@@ -791,6 +802,10 @@ export const createFacilityScene = (
         if (rebuild || !before || previewed.has(instance.id) ||
             (drawnPorts !== ports && instance.portOffset) ||
             before.rotation !== instance.rotation ||
+            before.light?.direction !== instance.light?.direction ||
+            before.light?.tilt !== instance.light?.tilt ||
+            before.light?.beamAngle !== instance.light?.beamAngle ||
+            before.light?.penumbra !== instance.light?.penumbra ||
             before.portId !== instance.portId ||
             !samePoint(before.position, instance.position) ||
             !samePoint(before.scale, instance.scale) ||
@@ -935,7 +950,8 @@ export const createFacilityScene = (
     placementRoots.set(instance.id, root)
     if (buildingRoles.has(instance.id)) buildingGuideDirty = true
     const emitter = batches.get(instance.assetId)?.emitter
-    if (emitter) fixtures.update(instance.id, emitter, root)
+    if (emitter) fixtures.update(instance.id, emitter, root, 1, instance.light)
+    if (instance.id === selectedId) updateLightGuide()
     writePlacement(instance.id, root, partial)
     updateInstanceBounds(instance.id, root)
     const projection = selectionProjections.get(instance.id)
@@ -1074,6 +1090,35 @@ export const createFacilityScene = (
    *
    * @param ids 선택된 설비 식별자 목록
    */
+  /** 선택 또는 조명 속성 변경 시 방향과 배광 안내선 버퍼 갱신 */
+  const updateLightGuide = () => {
+    const fixture = selectedId ? fixtures.get(selectedId) : undefined
+    lightGuide.visible = !!fixture && !siteView && models.visible
+    if (!fixture || !lightGuide.visible) return
+    const origin = fixture.position, direction = new THREE.Vector3().fromArray(fixture.userData.fixtureDirection)
+    const u = new THREE.Vector3(0, 0, 1).cross(direction)
+    if (u.lengthSq() < 0.0001) u.set(1, 0, 0)
+    u.normalize()
+    const v = direction.clone().cross(u).normalize()
+    const tangent = Math.tan(THREE.MathUtils.degToRad(fixture.userData.fixtureAngles.beamAngle / 2))
+    const length = Math.min(0.9, 0.8 / tangent), radius = length * tangent
+    const center = origin.clone().addScaledVector(direction, length)
+    const ring = Array.from({ length: 32 }, (_, index) => center.clone()
+      .addScaledVector(u, Math.cos(index * Math.PI / 16) * radius)
+      .addScaledVector(v, Math.sin(index * Math.PI / 16) * radius))
+    let at = 0
+    const line = (a: THREE.Vector3, b: THREE.Vector3) => {
+      for (const point of [a, b]) { lightGuidePositions[at++] = point.x; lightGuidePositions[at++] = point.y; lightGuidePositions[at++] = point.z }
+    }
+    line(origin, center)
+    for (let i = 0; i < ring.length; i++) {
+      line(ring[i]!, ring[(i + 1) % ring.length]!)
+      if (i % 8 === 0) line(origin, ring[i]!)
+    }
+    lightGuide.geometry.setDrawRange(0, at / 3)
+    lightGuide.geometry.attributes.position!.needsUpdate = true
+  }
+
   const setSelected = (ids: string[]) => {
     if (ids.length !== selectedIds.length || ids.some((id, index) => id !== selectedIds[index])) {
       cancelDirectMove()
@@ -1081,6 +1126,7 @@ export const createFacilityScene = (
     }
     selectedIds = ids
     selectedId = ids.length === 1 ? ids[0]! : null
+    updateLightGuide()
     selectionProjections.clear()
     const selectedSet = new Set(ids)
     for (const instance of facilityDocument?.instances ?? []) {
@@ -1760,6 +1806,8 @@ export const createFacilityScene = (
     spacePan.dispose()
     wallOverlap.dispose()
     selectionOutline.dispose()
+    lightGuide.geometry.dispose()
+    lightGuide.material.dispose()
     documentGeneration++
     glbCache.dispose()
     batches.clear()

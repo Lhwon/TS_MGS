@@ -6,7 +6,11 @@
  */
 import * as THREE from 'three'
 import { facilityLight, type FacilityAsset, type FacilityLight } from './index'
-import { facilityLightColor } from './facilityLights'
+import {
+  facilityLightColor,
+  resolveFacilityLightAngles,
+  type FacilityLightAngles,
+} from './facilityLights'
 
 export interface FacilityEmitter {
   fixture: FacilityLight
@@ -65,14 +69,23 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
   const scale = new THREE.Vector3()
   const rotation = new THREE.Matrix4()
   const transform = new THREE.Matrix4()
+  const aim = new THREE.Matrix4()
+  const direction = new THREE.Vector3()
 
+  /** 배치 좌표와 개별 각도에 맞춰 조명 계산용 광원 갱신 */
   const update = (
     id: string,
     { fixture, color, bounds }: FacilityEmitter,
     placement: Pick<THREE.Matrix4, 'elements'>,
     parentScale = 1,
+    override?: FacilityLightAngles,
   ) => {
     let light = lights.get(id)
+    if (light && light instanceof THREE.SpotLight !== (fixture.kind === 'spot')) {
+      light.removeFromParent()
+      lights.delete(id)
+      light = undefined
+    }
     if (!light) {
       if (fixture.kind === 'spot') {
         const worldUnitsPerMeter = localUnitsPerMeter * parentScale
@@ -90,12 +103,28 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
         light = new THREE.RectAreaLight(color, 145)
       }
       light.userData.temperature = fixture.temperature
-      // Keep fixtures as bake sources without adding per-pixel live lights.
+      /** 실시간 광원 비용 없이 캐시된 조명 계산에만 사용하는 광원 구성 */
       light.layers.disableAll()
       lights.set(id, light)
       group.add(light)
     }
     transform.fromArray(placement.elements)
+    const angles = resolveFacilityLightAngles(fixture, override)
+    aim
+      .makeRotationZ(THREE.MathUtils.degToRad(angles.direction))
+      .multiply(new THREE.Matrix4().makeRotationY(-THREE.MathUtils.degToRad(angles.tilt)))
+    rotation.extractRotation(transform).multiply(aim)
+    direction.set(0, 0, -1).transformDirection(rotation)
+    light.userData.fixtureDirection = direction.toArray()
+    light.userData.fixtureAngles = angles
+    light.userData.directional =
+      !!override ||
+      fixture.direction !== undefined ||
+      fixture.tilt !== undefined ||
+      fixture.beamAngle !== undefined ||
+      fixture.penumbra !== undefined
+    light.userData.temperature = fixture.temperature
+    light.color.setHex(color)
     bounds.getCenter(point)
     point.z = bounds.min.z
     light.position.copy(point.applyMatrix4(transform))
@@ -105,7 +134,11 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
       scale.setFromMatrixScale(transform)
       light.width = Math.max(0.002 * localUnitsPerMeter, size.x * scale.x) * parentScale
       light.height = Math.max(0.002 * localUnitsPerMeter, size.y * scale.y) * parentScale
-      light.quaternion.setFromRotationMatrix(rotation.extractRotation(transform))
+      light.quaternion.setFromRotationMatrix(rotation)
+    } else {
+      light.angle = THREE.MathUtils.degToRad(angles.beamAngle / 2)
+      light.penumbra = angles.penumbra
+      light.target.position.copy(direction)
     }
   }
 
@@ -121,5 +154,5 @@ export const createFacilityLights = (localUnitsPerMeter = 1) => {
     lights.clear()
   }
 
-  return { group, update, remove, clear }
+  return { group, update, remove, clear, get: (id: string) => lights.get(id) }
 }

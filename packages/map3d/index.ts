@@ -5,6 +5,8 @@ import {
   legacyFacilityLight,
   minLightTemperature,
   maxLightTemperature,
+  parseFacilityLightAngles,
+  type FacilityLightAngles,
   type FacilityLight,
 } from './facilityLights'
 import { parseWallDoors, wallOpeningPartBudget, type WallDoor } from './wallDoors'
@@ -77,6 +79,8 @@ export interface FacilityInstance {
   name: string
   position: Point3
   rotation: number
+  /** 모델 기본값을 유지하면서 적용하는 배치별 조명 각도 정의 */
+  light?: FacilityLightAngles
   scale?: Point3
   cutawayRole?: FacilityCutawayRole
   attachedTo?: string
@@ -433,6 +437,7 @@ const validateFacilityDocument = (
         asset.light = {
           kind: light.kind,
           temperature: integer(light.temperature, minLightTemperature, maxLightTemperature),
+          ...parseFacilityLightAngles(light),
         }
       }
       if (a.design !== undefined) {
@@ -462,6 +467,10 @@ const validateFacilityDocument = (
     }
     const asset = assets.get(instance.assetId)
     if (!asset) throw new Error('배치된 시설의 모델이 없습니다.')
+    if (i.light !== undefined) {
+      if (!facilityLight(asset)) throw new Error('조명 모델에만 개별 각도를 설정할 수 있습니다.')
+      instance.light = parseFacilityLightAngles(i.light)
+    }
     if (i.scale !== undefined) {
       const scale = record(i.scale)
       const { minimum, maximum } = facilityScaleLimits(asset.glb?.size)

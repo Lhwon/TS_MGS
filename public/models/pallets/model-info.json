@@ -1,0 +1,33 @@
+{
+  "units": "mm",
+  "upAxis": "Y",
+  "dimensionSource": "사진 표기 기준 추정 치수",
+  "models": [
+    {
+      "filename": "plastic-pallet-blue.glb",
+      "bytes": 10563316,
+      "meshes": 2,
+      "vertices": 217796,
+      "triangles": 253520,
+      "dimensionsMm": [
+        1100,
+        150,
+        1100
+      ],
+      "quantity": 1
+    },
+    {
+      "filename": "plastic-pallet-yellow.glb",
+      "bytes": 10563292,
+      "meshes": 2,
+      "vertices": 217796,
+      "triangles": 253520,
+      "dimensionsMm": [
+        1100,
+        150,
+        1100
+      ],
+      "quantity": 1
+    }
+  ]
+}

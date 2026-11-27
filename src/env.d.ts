@@ -67,6 +67,7 @@ interface Window {
     exportScene(content: string, token?: string): Promise<string | null>
     readSceneResource?(reference: import('@bem/map3d').SceneResource): Promise<ArrayBuffer>
     stageSceneModel?(bytes: ArrayBuffer): Promise<import('@bem/map3d').SceneResource>
+    stageSceneTexture?(bytes: ArrayBuffer): Promise<import('@bem/map3d').SceneResource>
     setDirty(dirty: boolean): void
   }
 }

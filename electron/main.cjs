@@ -288,6 +288,11 @@ ipcMain.handle('scene:stage-model', (event, bytes) => {
   trusted(event)
   return sceneAccess.stage(bytes)
 })
+/** 검증된 바닥 이미지를 프로젝트 저장 전까지 해시별로 임시 등록 */
+ipcMain.handle('scene:stage-texture', (event, bytes) => {
+  trusted(event)
+  return sceneAccess.stage(bytes, true)
+})
 /** 프로젝트 폴더에서 운영 구성과 편집 자료의 파일 저장 처리 */
 ipcMain.handle('scene:save', async (event, content, _name, token) => {
   trusted(event)

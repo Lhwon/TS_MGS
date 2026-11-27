@@ -279,19 +279,20 @@ const createSceneAccess = () => {
     files.set(grant, { root: scene.root, refs: scene.refs })
     return { ...scene.payload, grant }
   }
-  /** IPC에서 복사된 바이너리를 해시 주소로 보관하여 저장 시 재사용 */
-  const stage = async (input) => {
-    if (!(input instanceof ArrayBuffer)) throw new Error('이진 GLB 파일이 필요합니다.')
+  /** 등록 모델과 바닥 이미지를 해시 주소로 보관하여 저장 시 재사용 */
+  const stage = async (input, image = false) => {
+    if (!(input instanceof ArrayBuffer)) throw new Error('등록할 이진 파일이 필요합니다.')
     const bytes = Buffer.from(input)
-    checkBytes(bytes, 'model.glb')
+    const extension = image ? '.webp' : '.glb'
+    checkBytes(bytes, 'resource' + extension)
     const hash = backupHash(bytes)
-    const filename = hash + '.glb'
+    const filename = hash + extension
     staging ??= fs.mkdtemp(path.join(tmpdir(), 'bem-map3d-'))
     const folder = await staging
     await writeImmutable(path.join(folder, filename), bytes, hash, resourceLimit, (data) =>
       checkBytes(data, filename),
     )
-    return { uri: 'models/' + filename, hash }
+    return { uri: (image ? 'textures/' : 'models/') + filename, hash }
   }
   /** 주어진 세션에 등록된 정확한 상대경로와 해시만 읽기 */
   const read = (reference, grant, image = false) => {
@@ -301,16 +302,17 @@ const createSceneAccess = () => {
     if (allowed?.hash !== ref.hash) throw new Error('선택한 프로젝트의 리소스가 아닙니다.')
     return readResource(scene.root, allowed, image, true)
   }
-  /** 저장 원본은 등록한 모델 또는 선택한 설계의 리소스에서만 조회 */
+  /** 저장 원본은 등록한 모델과 이미지 또는 선택한 설계에서만 조회 */
   const readEditor = async (reference, image = false) => {
     const ref = checkReference(reference, image, true)
-    if (!image && staging) {
+    if (staging) {
       const folder = await staging
       try {
-        const file = path.join(folder, ref.hash + '.glb')
+        const file = path.join(folder, ref.hash + path.extname(ref.uri))
         const bytes = await readRegular(file, resourceLimit)
         if (backupHash(bytes) !== ref.hash)
-          throw new Error('등록된 모델의 해시가 일치하지 않습니다.')
+          throw new Error('등록된 리소스의 해시가 일치하지 않습니다.')
+        checkBytes(bytes, ref.uri)
         return bytes
       } catch (cause) {
         if (!missing(cause)) throw cause

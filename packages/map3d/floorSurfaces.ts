@@ -201,17 +201,27 @@ export const createFloorSurfaces = (
       const sin = Math.sin(radians)
       const positions = geometry.getAttribute('position')
       const uv = geometry.getAttribute('uv')
+      const reference = area.texture
+      const external =
+        reference && externalTextures.get(area.material + ':' + reference.hash)?.texture
+      /** 사용자 이미지의 원본 가로 세로 비율을 반복 패턴에 적용 */
+      const image = external && external.image
+      const aspect =
+        area.textureName && image instanceof HTMLImageElement && image.naturalWidth
+          ? image.naturalHeight / image.naturalWidth
+          : 1
       // 같은 방향과 간격을 쓰는 쇼룸 영역의 경계에서 무늬를 이어 주는 지도 원점 기준
       const patternX = showroomEpoxy ? origin.x : 0
       const patternY = showroomEpoxy ? origin.y : 0
       for (let i = 0; i < positions.count; i++) {
         const x = positions.getX(i) + patternX
         const y = positions.getY(i) + patternY
-        uv.setXY(i, (x * cos + y * sin) / area.repeatMm, (-x * sin + y * cos) / area.repeatMm)
+        uv.setXY(
+          i,
+          (x * cos + y * sin) / area.repeatMm,
+          (-x * sin + y * cos) / (area.repeatMm * aspect),
+        )
       }
-      const reference = area.texture
-      const external =
-        reference && externalTextures.get(area.material + ':' + reference.hash)?.texture
       let texture = external || textures.get(area.material)
       if (!texture) {
         texture = showroomEpoxy

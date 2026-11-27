@@ -164,10 +164,34 @@ const main = async () => {
       assert.ok((await fs.readdir(root)).every((name) => !name.endsWith('.tmp')))
       assert.equal(await fs.readFile(map, 'utf8'), 'Ver.25\\n')
 
-      assert.equal(await handlers.get('scene:export')(event, JSON.stringify(changed), opened.token), root)
+      /** 사용자 이미지의 임시 등록과 중복 저장 방지 및 파일명 복원 검증 */
+      const imageBytes = await fs.readFile(path.resolve(__dirname, '../packages/map3d/showroom-epoxy.webp'))
+      const imageBuffer = imageBytes.buffer.slice(imageBytes.byteOffset, imageBytes.byteOffset + imageBytes.byteLength)
+      const imageRef = await handlers.get('scene:stage-texture')(event, imageBuffer)
+      assert.deepEqual(await handlers.get('scene:stage-texture')(event, imageBuffer), imageRef)
+      const readImage = await handlers.get('scene:read-resource')(event, imageRef)
+      assert.deepEqual(Buffer.from(readImage), imageBytes)
+      await assert.rejects(() => handlers.get('scene:stage-texture')(event, new ArrayBuffer(12)), /이미지/)
+      assert.throws(() => handlers.get('scene:stage-texture')({ ...event, sender: {} }, imageBuffer), /허용/)
+      const custom = parseFacilitySceneFile(changedResult)
+      custom.floors[0] = { ...custom.floors[0], material: 'epoxy', texture: imageRef, textureName: '사용자 바닥.webp' }
+      const customSaved = await save(JSON.stringify(custom))
+      assert.equal(parseFacilitySceneFile(customSaved).floors[0].textureName, '사용자 바닥.webp')
+      const texturePath = path.join(root, imageRef.uri)
+      const textureStat = await fs.stat(texturePath)
+      custom.floors[0].rotation = 30
+      await save(JSON.stringify(custom))
+      assert.equal((await fs.stat(texturePath)).mtimeMs, textureStat.mtimeMs)
+      assert.equal((await fs.readdir(path.dirname(texturePath))).filter((name) => name === path.basename(texturePath)).length, 1)
+      const badName = structuredClone(custom)
+      badName.floors[0].textureName = 1
+      assert.throws(() => parseFacilityDocument(JSON.stringify({ ...badName, version: 2 })), /이미지 이름/)
+
+      assert.equal(await handlers.get('scene:export')(event, JSON.stringify(custom), opened.token), root)
       const output = await fs.readFile(path.join(root, 'map3d.json'), 'utf8')
       assert.equal(parseFacilityDocument(output).version, 2)
       assert.equal(JSON.parse(output).editorCatalog, undefined)
+      assert.equal(parseFacilityDocument(output).floors[0].textureName, '사용자 바닥.webp')
       await fs.rename(manifest, manifest + '.inactive')
       assert.equal((await read()).content, output)
     }

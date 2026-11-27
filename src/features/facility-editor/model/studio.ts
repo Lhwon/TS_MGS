@@ -533,7 +533,8 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
           return { status: 'completed', message: message.value }
         }
       } else {
-        if (checked.version === 2 || checked.assets.some(({ glb }) => glb?.uri))
+        /** 이미지 원본 없이 구성 파일만 내려받는 불완전한 저장 방지 */
+        if (checked.version === 2 || checked.assets.some(({ glb }) => glb?.uri) || checked.floors?.some(({ texture }) => texture))
           throw new Error('외부 리소스가 포함된 설계는 데스크톱 앱에서 저장해 주세요.')
         downloadJson(content, filename.value)
         message.value = '호환용 내장 형식의 설계 파일을 다운로드합니다.'
@@ -580,7 +581,8 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
           return { status: 'completed', message: message.value }
         }
       } else {
-        if (snapshot.version === 2 || snapshot.assets.some(({ glb }) => glb?.uri))
+        /** 외부 바닥 이미지가 누락되는 브라우저 운영 파일 추출 방지 */
+        if (snapshot.version === 2 || snapshot.assets.some(({ glb }) => glb?.uri) || snapshot.floors?.some(({ texture }) => texture))
           throw new Error('외부 리소스가 포함된 설계는 데스크톱 앱에서 추출해 주세요.')
         const { library, layout } = exportFacilityFiles(snapshot)
         const libraryJson = JSON.stringify(library, null, 2)

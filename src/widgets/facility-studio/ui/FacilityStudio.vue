@@ -66,6 +66,8 @@ const placementPort = ref('')
 const glbInput = ref<HTMLInputElement>()
 const glbImportOpen = ref(false)
 const glbFile = shallowRef<File>()
+/** 바닥 파일 등록에서 선택한 영역의 대상 식별자 관리 */
+const glbFloorTarget = ref('')
 const glbDraft = shallowRef<{
   file: File
   bytes: ArrayBuffer
@@ -878,6 +880,7 @@ const align = (kind: 'node' | 'port') => {
 
 /** 새 파일과 모델명을 지정하는 등록 팝업 초기화 */
 const openGlbImport = () => {
+  glbFloorTarget.value = ''
   glbFile.value = undefined
   glbName.value = ''
   glbImportError.value = ''
@@ -893,6 +896,11 @@ const handleGlbFile = (event: Event) => {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
+  selectGlbFile(file)
+}
+
+/** 파일 선택기와 바닥 등록에서 공통 GLB 검증 및 미리보기 적용 */
+const selectGlbFile = (file: File) => {
   const previousFileName = glbFile.value?.name.replace(/\.glb$/i, '')
   glbFile.value = undefined
   glbImportError.value = ''
@@ -901,7 +909,7 @@ const handleGlbFile = (event: Event) => {
     return
   }
   glbFile.value = file
-  const preset = legacyFacilityLight(file.name)
+  const preset = !glbFloorTarget.value && legacyFacilityLight(file.name)
   if (preset) {
     glbCategory.value = 'lighting'
     lightKind.value = preset.kind
@@ -909,6 +917,15 @@ const handleGlbFile = (event: Event) => {
   }
   if (!glbName.value.trim() || glbName.value === previousFileName)
     glbName.value = file.name.replace(/\.glb$/i, '')
+}
+
+/** 선택 바닥의 외곽 치수에 맞출 모델을 기존 등록 화면으로 연결 */
+const importFloorModel = (file: File) => {
+  if (!selectedFloor.value) return
+  openGlbImport()
+  glbFloorTarget.value = selectedFloor.value.id
+  glbCategory.value = 'interior'
+  selectGlbFile(file)
 }
 
 /** 선택한 GLB를 한 번만 읽고 같은 결과를 미리보기와 등록에 사용 */
@@ -972,24 +989,41 @@ const registerGlb = async () => {
           reader.onerror = () => reject(new Error('GLB 파일을 읽을 수 없습니다.'))
           reader.readAsDataURL(file)
         }) }
-    studio.setAsset(
-      {
-        id: crypto.randomUUID(),
-        name: glbName.value.trim(),
-        kind: 'equipment',
-        parts: [],
-        catalogCategory: glbCategory.value,
-        glb: { ...resource, size, sourceName: file.name },
-        ...(glbCategory.value === 'lighting' ? { light: lightSettings.value } : {}),
-      },
-      reference.value,
-    )
+    const asset: FacilityAsset = {
+      id: crypto.randomUUID(),
+      name: glbName.value.trim(),
+      kind: 'equipment',
+      parts: [],
+      catalogCategory: glbCategory.value,
+      glb: { ...resource, size, sourceName: file.name },
+      ...(glbCategory.value === 'lighting' ? { light: lightSettings.value } : {}),
+    }
+    if (glbFloorTarget.value) {
+      const area = floorAreas.value.find(({ id }) => id === glbFloorTarget.value)
+      if (!area) throw new Error('GLB를 배치할 바닥 영역을 다시 선택하세요.')
+      const minX = Math.min(...area.points.map(({ x }) => x))
+      const maxX = Math.max(...area.points.map(({ x }) => x))
+      const minY = Math.min(...area.points.map(({ y }) => y))
+      const maxY = Math.max(...area.points.map(({ y }) => y))
+      const instance: FacilityInstance = {
+        id: crypto.randomUUID(), assetId: asset.id, name: asset.name,
+        position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: 0 }, rotation: 0,
+        scale: { x: (maxX - minX) / size.x, y: (maxY - minY) / size.y, z: 1 },
+      }
+      studio.addPlacements(asset, [instance], reference.value)
+      floorId.value = ''
+      studio.selectedId = instance.id
+      tool.value = 'select'
+    } else studio.setAsset(asset, reference.value)
 
     error.value = ''
     catalogCategory.value = glbCategory.value
     glbImportOpen.value = false
     glbFile.value = undefined
-    studio.message = 'GLB 모델을 등록했습니다. 카탈로그에서 맵으로 끌어다 놓으세요.'
+    studio.message = glbFloorTarget.value
+      ? '바닥 영역의 외곽 크기에 맞춰 GLB를 배치했습니다. 위치와 두께를 속성에서 조정하세요.'
+      : 'GLB 모델을 등록했습니다. 카탈로그에서 맵으로 끌어다 놓으세요.'
+    glbFloorTarget.value = ''
   } catch (cause) {
     glbImportError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
@@ -2406,6 +2440,7 @@ onBeforeUnmount(() => {
             @order="moveFloor"
             @remove="removeFloor"
             @redraw="startFloor('polygon', floorId)"
+            @model-file="importFloorModel"
           />
             <div v-if="workspace === 'building' && canAttachSelection" class="d-flex flex-column ga-2 mb-3">
             <v-btn
@@ -2718,6 +2753,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="glb-import-fields d-flex flex-column ga-3">
+              <p v-if="glbFloorTarget" role="status">선택한 바닥 영역의 외곽 크기에 맞춰 배치합니다. 다각형 경계로 모델을 잘라내지는 않습니다.</p>
               <input
                 ref="glbInput"
                 type="file"
@@ -2760,7 +2796,7 @@ onBeforeUnmount(() => {
                   data-testid="glb-category"
                   density="compact"
                   hide-details
-                  :disabled="studio.busy"
+                  :disabled="studio.busy || !!glbFloorTarget"
                 />
                 <v-select
                   v-model="glbUnits"

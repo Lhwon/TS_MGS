@@ -85,5 +85,7 @@ contextBridge.exposeInMainWorld('desktop', {
   /** 설계에서 확인한 리소스 읽기와 신규 모델 등록 연결 */
   readSceneResource: (reference) => ipcRenderer.invoke('scene:read-resource', reference),
   stageSceneModel: (bytes) => ipcRenderer.invoke('scene:stage-model', bytes),
+  /** 바닥 이미지의 외부 리소스 등록 연결 */
+  stageSceneTexture: (bytes) => ipcRenderer.invoke('scene:stage-texture', bytes),
   setDirty,
 })

@@ -25,6 +25,8 @@ export interface FloorArea {
   repeatMm: number
   rotation: number
   texture?: SceneResource
+  /** 사용자 등록 이미지의 원본 표시 이름 정의 */
+  textureName?: string
 }
 
 export const MAX_FLOOR_AREAS = 128
@@ -103,6 +105,11 @@ export const parseFloorAreas = (
     ids.add(area.id)
     if (area.texture && !externalTextures)
       throw new Error('외부 텍스처를 지원하는 설계 버전이 필요합니다.')
+    if (
+      area.textureName !== undefined &&
+      (typeof area.textureName !== 'string' || area.textureName.length > 300)
+    )
+      throw new Error('바닥 이미지 이름은 300자 이하여야 합니다.')
     return {
       id: area.id,
       name: area.name.trim(),
@@ -112,6 +119,7 @@ export const parseFloorAreas = (
       repeatMm: area.repeatMm,
       rotation: area.rotation,
       ...(area.texture ? { texture: parseSceneResource(area.texture, true) } : {}),
+      ...(area.texture && area.textureName ? { textureName: area.textureName } : {}),
     }
   })
 }

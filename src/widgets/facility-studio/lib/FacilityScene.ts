@@ -303,6 +303,8 @@ export const createFacilityScene = (
     }[]
   >()
   const glbCache = new GlbModelCache()
+  /** 연습 장면 전환 중 원래 설계의 모델 캐시 보존 */
+  let retainedAssets: FacilityAsset[] = []
   let documentGeneration = 0
   let facilityDocument: FacilityDocument | undefined
   let requestedDocument: FacilityDocument | undefined
@@ -801,7 +803,7 @@ export const createFacilityScene = (
     setBuildingRoles(document)
     previewed.clear()
     meshes = [...batches.values()].flatMap((batch) => batch.meshes)
-    if (libraryChanged) glbCache.retain(mountAsset ? [...document.assets, mountAsset] : document.assets)
+    if (libraryChanged) glbCache.retain([...document.assets, ...retainedAssets, ...(mountAsset ? [mountAsset] : [])])
     floorSurfaces.setFixtureLighting(fixtures.group)
     siteLightingDirty = true
     updateLightingMode()
@@ -1433,7 +1435,7 @@ export const createFacilityScene = (
     mountGhost.clear()
     mountGhost.visible = mountOutline.visible = false
     const activeAssets = requestedDocument?.assets ?? facilityDocument?.assets ?? []
-    glbCache.retain(asset ? [...activeAssets, asset] : activeAssets)
+    glbCache.retain([...activeAssets, ...retainedAssets, ...(asset ? [asset] : [])])
     if (!asset) {
       requestRender()
       return
@@ -1974,6 +1976,22 @@ export const createFacilityScene = (
     setTool: setTool,
     fit: fit,
     focusSelected,
+    /** 장면 전환 동안 유지할 모델 원본의 캐시 참조 설정 */
+    retainAssets: (assets: FacilityAsset[]) => {
+      retainedAssets = assets
+      glbCache.retain([...(facilityDocument?.assets ?? []), ...assets, ...(mountAsset ? [mountAsset] : [])])
+    },
+    /** 연습 시작 전 카메라와 회전 중심의 독립 스냅샷 반환 */
+    captureView: () => ({ position: camera.position.clone(), target: controls.target.clone(), zoom: camera.zoom }),
+    /** 장면을 재생성하지 않고 연습 이전 카메라 위치 복원 */
+    restoreView: (view: { position: THREE.Vector3; target: THREE.Vector3; zoom: number }) => {
+      camera.position.copy(view.position)
+      controls.target.copy(view.target)
+      camera.zoom = view.zoom
+      camera.updateProjectionMatrix()
+      controls.update()
+      requestRender()
+    },
     dispose: dispose,
   }
 }

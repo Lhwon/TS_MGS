@@ -14,6 +14,7 @@ import { createModelThumbnails } from '@/widgets/facility-studio/lib/modelThumbn
 const category = defineModel<NonNullable<FacilityAsset['catalogCategory']>>('category', { required: true })
 
 const props = defineProps<{
+  practice?: boolean
   visible: boolean
   assets: FacilityAsset[]
   registeredIds: ReadonlySet<string>
@@ -49,7 +50,8 @@ const sizes = [
 ]
 
 const cards = computed(() => {
-  const query = search.value.trim().toLowerCase()
+  /** 기존 검색 조건을 보존하면서 연습 모델의 카드 노출 보장 */
+  const query = props.practice ? '' : search.value.trim().toLowerCase()
 
   return props.assets
     .filter((asset) => {
@@ -75,7 +77,7 @@ const cards = computed(() => {
         label: tier === 'small' ? '소' : tier === 'medium' ? '중' : '대',
       }
     })
-    .filter((card) => !size.value || card.tier === size.value)
+    .filter((card) => props.practice || !size.value || card.tier === size.value)
 })
 
 /** 관리 모드를 전환하고 카탈로그 카드의 이전 삭제 선택을 초기화 */

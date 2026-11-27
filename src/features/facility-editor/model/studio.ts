@@ -680,6 +680,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
 
   /** 현재 설비 문서와 저장 기준 및 편집 이력의 스냅샷 생성 */
   const captureSession = () => ({
+    copied,
     document: document.value,
     saved: saved.value,
     selectedIds: [...selectedIds.value],
@@ -694,7 +695,7 @@ export const useFacilityEditor = defineStore('facility-editor', () => {
    * @param snapshot 이전 설비 편집 세션
    */
   const restoreSession = (snapshot: ReturnType<typeof captureSession>) => {
-    copied = undefined
+    copied = snapshot.copied
     document.value = snapshot.document
     saved.value = snapshot.saved
     selectedIds.value = snapshot.selectedIds

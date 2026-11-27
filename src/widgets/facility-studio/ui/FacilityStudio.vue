@@ -36,6 +36,7 @@ import {
   wallMountFrame,
   wallOpeningPose,
   wallWorldPoint,
+  emptyFacilityDocument,
 } from '@/entities/facility/index.ts'
 import type { FacilityAsset, FacilityCutawayRole, FacilityInstance, FacilityLight, FloorArea, FloorMaterial, FloorPoint, Point3, WallDoor } from '@/entities/facility/index.ts'
 import { createFacilityScene, type WallMountPreview } from '@/widgets/facility-studio/lib/FacilityScene.ts'
@@ -51,6 +52,8 @@ import WallDoorEditor from '@/widgets/facility-studio/ui/WallDoorEditor.vue'
 import WallElevation from '@/widgets/facility-studio/ui/WallElevation.vue'
 import CeilingPlan from '@/widgets/facility-studio/ui/CeilingPlan.vue'
 import SceneExplorerBranch, { type SceneExplorerEntry } from '@/widgets/facility-studio/ui/SceneExplorerBranch.vue'
+import SceneTutorial from '@/widgets/facility-studio/ui/SceneTutorial.vue'
+import { sceneTutorials, tutorialAssetId, type TutorialScenario, type TutorialState } from '@/widgets/facility-studio/lib/sceneTutorial.ts'
 
 const emit = defineEmits<{ 
   draftDirty: [value: boolean]; 
@@ -116,8 +119,12 @@ const studio = useFacilityEditor(),
 
 const host = ref<HTMLElement>()
 /** 편집 모드와 독립적으로 리본에 표시할 작업 메뉴 정의 */
-const menus = ['File', 'View', 'Facility', 'Building', 'Lighting', 'Tools'] as const
+const menus = ['File', 'View', 'Facility', 'Building', 'Lighting', 'Tools', 'Help'] as const
 const menu = ref<(typeof menus)[number]>('Facility')
+/** 연습 상태와 시나리오 선택 화면의 표시 관리 */
+const tutorialChooser = ref(false)
+const tutorial = shallowRef<TutorialScenario>()
+const tutorialRestoring = ref(false)
 
 /** 작업 패널과 탐색 목록의 크기 제한 정의 */
 const sizeLimits = {
@@ -161,7 +168,7 @@ const limitPanelSize = (key: PanelSize, value: number) =>
 // 패널 크기와 열림 상태를 로컬 저장소에 반영
 watch(() => ({ ...panelPreferences }), (value) => {
   try {
-    localStorage.setItem(panelStorageKey, JSON.stringify(value))
+    if (!tutorial.value) localStorage.setItem(panelStorageKey, JSON.stringify(value))
   } catch { 
     /* 저장 공간을 사용할 수 없는 경우 현재 화면 설정 유지 */ 
   }
@@ -475,7 +482,7 @@ const startSiteTool = (mode: 'door' | 'window' | 'measure') => {
     return
   }
   attempt(() => {
-    if (map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
+    if (!tutorial.value && map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
     if (mode === 'measure') measurement.value = []
     tool.value = mode
   })
@@ -618,7 +625,7 @@ const applyModel = (asset: FacilityAsset) => {
 /** 바닥 지점 입력을 시작하고 기존 경계를 다시 그리는 경우 수정 대상을 고정 */
 const startFloor = (shape: 'rectangle' | 'polygon', replaceId?: string) => {
   attempt(() => {
-    if (map.document.units !== 'mm') throw new Error('바닥을 배치하기 전에 2D 맵 축척을 확정하세요.')
+    if (!tutorial.value && map.document.units !== 'mm') throw new Error('바닥을 배치하기 전에 2D 맵 축척을 확정하세요.')
     studio.selectedId = null
     floorId.value = replaceId ?? ''
     floorDraft.value = { shape, points: [], replaceId }
@@ -716,7 +723,7 @@ const addFloorBoundaryPoint = (draft: NonNullable<typeof floorDraft.value>, poin
 /** 기준 도면을 위에서 보며 벽의 중심선을 입력하는 전용 도구 시작 */
 const startWall = () => {
   attempt(() => {
-    if (map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
+    if (!tutorial.value && map.document.units !== 'mm') throw new Error('먼저 2D 맵의 실측 축척을 설정하세요.')
     catalogOpen.value = false
     studio.selectedId = null
     floorId.value = ''
@@ -1148,6 +1155,8 @@ watch([() => studio.selectedIds, floorId, focusedOpening, () => studio.document]
 
 /** 장면 탐색 항목을 기존 바닥과 설비 또는 개구부 선택에 연결 */
 const selectExplorerItem = (item: SceneExplorerEntry, toggle: boolean) => {
+  if (tutorial.value && item.kind === 'instance' && item.id === tutorialInstance.value?.id)
+    tutorialExplorerSelected.value = true
   if (item.kind === 'floor') selectFloor(item.id)
   else if (item.kind === 'opening' && item.parentId) showOpeningEditor(item.parentId, item.id)
   else if (item.kind === 'instance') selectInstances([item.id], toggle ? 'toggle' : 'replace')
@@ -1546,6 +1555,7 @@ const openCatalog = async (category?: typeof catalogCategory.value) => {
   if (category) catalogCategory.value = category
   else if (workspace.value === 'building') catalogCategory.value = buildingView.value === 'ceiling' ? 'lighting' : 'interior'
   catalogOpen.value = true
+  if (tutorial.value) return
   if (defaultCatalog.value || catalogLoading.value) return
   catalogLoading.value = true
   try {
@@ -1687,13 +1697,149 @@ const hasContext = computed(() => sitePreview.value || ['Facility', 'Building', 
   ['wall', 'floor', 'ceiling', 'door', 'window', 'measure', 'mount'].includes(tool.value))
 const contextTitle = computed(() => {
   if (sitePreview.value) return '현장 미리보기'
-  return { Facility: '설비 배치 설정', Building: '건물 편집 설정', Lighting: '조명 설정', View: '화면 표시 설정', File: '현재 작업 설정', Tools: '현재 작업 설정' }[menu.value]
+  return { Facility: '설비 배치 설정', Building: '건물 편집 설정', Lighting: '조명 설정', View: '화면 표시 설정', File: '현재 작업 설정', Tools: '현재 작업 설정', Help: '사용 도움말' }[menu.value]
 })
 const contextOpen = computed(() => hasContext.value && panelPreferences.contextOpen)
 const inspectorOpen = computed(() => !sitePreview.value && (catalogOpen.value || panelPreferences.inspectorOpen))
 
 /** 장면에서 이미 지원하는 지도 객체 표시 항목 정의 */
 const mapVisibility = [['nodes', 'Node'], ['edges', 'Path'], ['ports', 'Port']] as const
+
+/** 원본 이차원 문서와 분리한 연습용 삼차원 바닥 지도 구성 */
+const tutorialMap = computed(() => tutorial.value
+  ? { ...map.document, units: 'mm' as const, nodes: [], edges: [], ports: [], shapes: [], layout: undefined }
+  : map.document)
+const tutorialLayers = computed(() => tutorial.value
+  ? { ...DEFAULT_LAYERS, nodes: false, edges: false, ports: false, grid: true }
+  : props.layers ?? DEFAULT_LAYERS)
+const tutorialExplorerSelected = ref(false)
+const tutorialPlacement = shallowRef<FacilityInstance>()
+const tutorialInstance = computed(() => tutorial.value
+  ? studio.document.instances.find(({ assetId }) => assetId === tutorialAssetId) : undefined)
+let restoreTutorialSession: ((restoreView: boolean) => Promise<void>) | undefined
+const tutorialStarting = ref(false)
+
+/** 배치 직후 좌표를 한 번 기록하여 이동과 실행 취소 결과 대조 */
+watch(tutorialInstance, (instance) => {
+  if (instance && !tutorialPlacement.value) tutorialPlacement.value = instance
+}, { flush: 'sync' })
+
+/** 연습 중에만 기존 선택 및 설계 상태를 관찰하는 완료 조건 구성 */
+const tutorialState = computed<TutorialState>(() => {
+  const instance = tutorialInstance.value
+  const initialX = tutorialPlacement.value?.position.x ?? 0
+  return {
+    menu: menu.value, catalog: catalogOpen.value, tool: tool.value, assetId: studio.selectedAssetId,
+    instanceId: instance?.id ?? '', selectedFromExplorer: tutorialExplorerSelected.value,
+    name: pose.name, storedName: instance?.name ?? '', x: Number(pose.x), storedX: instance?.position.x ?? 0,
+    initialX, targetX: Math.round(initialX + 1000), floorCount: floorAreas.value.length,
+    floorMaterial: floorAreas.value[0]?.material ?? '', walls: tutorial.value ? structures.value.filter(({ role }) => role === 'wall').length : 0,
+    ceilings: tutorial.value ? structures.value.filter(({ role }) => role === 'ceiling').length : 0,
+    ceilingVisible: showCeilingInStructure.value,
+  }
+})
+
+/** 연습 종료 시 원래 설계와 선택 및 표시 상태 복원 */
+const finishTutorial = async (restoreView = true) => {
+  const restore = restoreTutorialSession
+  restoreTutorialSession = undefined
+  if (!restore) return
+  tutorialRestoring.value = true
+  try { await restore(restoreView) }
+  finally { tutorialRestoring.value = false }
+}
+
+/** 원래 설계를 보존하고 외부 파일을 변경하지 않는 연습 장면 초기화 */
+const startTutorial = async (scenario: TutorialScenario) => {
+  if (studio.busy || tutorial.value || tutorialRestoring.value || floorDraft.value || wallStart.value || ceilingStart.value) return
+  const session = studio.captureSession()
+  const camera = scene?.captureView()
+  const previous = {
+    menu: menu.value, workspace: workspace.value, buildingView: buildingView.value, tool: tool.value,
+    floorId: floorId.value, wallHostId: wallHostId.value, ceilingHostId: ceilingHostId.value,
+    catalogOpen: catalogOpen.value, catalogCategory: catalogCategory.value, sitePreview: sitePreview.value,
+    ceilingHeight: ceilingHeight.value, wallSize: { ...wallSize }, floorMaterial: floorMaterial.value,
+    ceilingVisible: showCeilingInStructure.value, buildingVisible: showBuildingInEquipment.value,
+    snap: snapStep.value, error: error.value, panels: { ...panelPreferences }, pose: { ...pose },
+  }
+  restoreTutorialSession = async (restoreView) => {
+    tutorial.value = undefined
+    tutorialStarting.value = false
+    floorDraft.value = undefined
+    wallStart.value = undefined
+    ceilingStart.value = undefined
+    cancelWallMount()
+    if (sitePreview.value) toggleSitePreview()
+    studio.restoreSession(session)
+    emit('draftDirty', false)
+    menu.value = previous.menu
+    workspace.value = previous.workspace
+    buildingView.value = previous.buildingView
+    tool.value = previous.tool
+    floorId.value = previous.floorId
+    wallHostId.value = previous.wallHostId
+    ceilingHostId.value = previous.ceilingHostId
+    catalogOpen.value = previous.catalogOpen
+    catalogCategory.value = previous.catalogCategory
+    ceilingHeight.value = previous.ceilingHeight
+    floorMaterial.value = previous.floorMaterial
+    showCeilingInStructure.value = previous.ceilingVisible
+    showBuildingInEquipment.value = previous.buildingVisible
+    snapStep.value = previous.snap
+    error.value = previous.error
+    Object.assign(wallSize, previous.wallSize)
+    Object.assign(panelPreferences, previous.panels)
+    tutorialPlacement.value = undefined
+    tutorialExplorerSelected.value = false
+    if (!restoreView) return
+    await nextTick()
+    Object.assign(pose, previous.pose)
+    await scene?.setDocument(session.document)
+    scene?.retainAssets([])
+    if (previous.sitePreview) toggleSitePreview()
+    if (camera) scene?.restoreView(camera)
+  }
+  tutorialStarting.value = true
+  tutorial.value = scenario
+  tutorialChooser.value = false
+  tutorialPlacement.value = undefined
+  tutorialExplorerSelected.value = false
+  try {
+    /** 연습 문서 전환 중에도 원본 미저장 설계의 종료 확인 유지 */
+    emit('draftDirty', studio.dirty)
+    error.value = ''
+    scene?.retainAssets(session.document.assets)
+    if (sitePreview.value) toggleSitePreview()
+    catalogOpen.value = false
+    menu.value = 'Help'
+    workspace.value = 'equipment'
+    buildingView.value = 'structure'
+    tool.value = 'select'
+    floorId.value = wallHostId.value = ceilingHostId.value = ''
+    catalogCategory.value = 'equipment'
+    showCeilingInStructure.value = false
+    showBuildingInEquipment.value = false
+    snapStep.value = defaultTransformSnap
+    ceilingHeight.value = 3000
+    floorMaterial.value = 'concrete'
+    Object.assign(wallSize, { thickness: 150, height: 2600 })
+    Object.assign(panelPreferences, { contextOpen: true, inspectorOpen: true, explorer: 220 })
+    const practice = emptyFacilityDocument()
+    practice.assets = [{
+      id: tutorialAssetId, name: '연습용 설비', kind: 'equipment', catalogCategory: 'equipment',
+      parts: [{ id: 'body', name: '본체', shape: 'box', position: { x: 0, y: 0, z: 400 }, size: { x: 1000, y: 600, z: 800 }, rotation: 0, color: '#e49134' }],
+    }]
+    studio.loadDocument(practice, '튜토리얼 연습')
+    await nextTick()
+    scene?.setMap(tutorialMap.value, map.theme, tutorialLayers.value)
+    await scene?.setDocument(practice)
+    scene?.fit(true)
+    tutorialStarting.value = false
+  } catch (cause) {
+    await finishTutorial()
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
 
 onMounted(() => {
   try {
@@ -1748,8 +1894,8 @@ watch(
 )
 
 watch(
-  () => [map.document, map.theme, props.layers],
-  () => attempt(() => scene?.setMap(map.document, map.theme, props.layers ?? DEFAULT_LAYERS)),
+  () => [tutorialMap.value, map.theme, tutorialLayers.value],
+  () => attempt(() => scene?.setMap(tutorialMap.value, map.theme, tutorialLayers.value)),
   { deep: true },
 )
 
@@ -1980,6 +2126,7 @@ const unregisterCommands = registerAppCommands(() => {
   return commands
 })
 onBeforeUnmount(() => {
+  void finishTutorial(false)
   unregisterCommands()
   glbFile.value = undefined
   scene?.dispose()
@@ -1995,7 +2142,7 @@ onBeforeUnmount(() => {
     <!-- 편집 상태와 독립적인 상단 메뉴 및 리본 명령 구성 -->
     <header class="facility-menu">
       <VTabs v-model="menu" class="ribbon-tabs" aria-label="3D 작업 메뉴" height="32" show-arrows="never" slider-transition="fade" slider-transition-duration="140">
-        <VTab v-for="item in menus" :key="item" :value="item" aria-controls="facility-ribbon" :ripple="false">
+        <VTab v-for="item in menus" :key="item" :value="item" :data-scene-menu="item" aria-controls="facility-ribbon" :ripple="false">
           {{ item }}
         </VTab>
       </VTabs>
@@ -2003,6 +2150,12 @@ onBeforeUnmount(() => {
     </header>
     <div class="facility-ribbon">
       <div id="facility-ribbon" class="facility-command-scroll" role="tabpanel" :aria-label="menu + ' 명령'" tabindex="0">
+        <div v-if="menu === 'Help'" class="design-ribbon-commands" role="group" aria-label="튜토리얼">
+          <v-btn data-testid="scene-tutorial" :disabled="studio.busy || tutorialRestoring || !!floorDraft || !!wallStart || !!ceilingStart" @click="tutorialChooser = true">
+            <AppIcon name="help" :size="20" /> 튜토리얼
+          </v-btn>
+          <span class="text-caption">클릭과 배치를 따라 하며 배우는 3D 사용법</span>
+        </div>
         <slot v-if="menu === 'File'" name="file-actions" />
         <div v-if="menu === 'File'" class="design-ribbon-commands facility-file-scene" role="group" aria-label="설계 프로젝트 파일 작업">
           <v-btn data-testid="scene-open" :disabled="studio.busy" @click="studio.open">
@@ -2404,7 +2557,8 @@ onBeforeUnmount(() => {
           v-show="catalogOpen && !sitePreview"
           v-model:category="catalogCategory"
           :visible="catalogOpen && !sitePreview"
-          :assets="catalogAssets"
+          :assets="tutorial ? studio.document.assets : catalogAssets"
+          :practice="!!tutorial"
           :registered-ids="registeredCatalogIds"
           :placed-ids="placedCatalogIds"
           :busy="studio.busy"
@@ -2500,6 +2654,7 @@ onBeforeUnmount(() => {
               이름
               <v-text-field
                 v-model="pose.name"
+                data-testid="instance-name"
                 maxlength="300"
                 required
               />
@@ -2716,6 +2871,21 @@ onBeforeUnmount(() => {
       @apply="applyDrawingLayout"
       @remove="attempt(() => map.setLayout())"
     />
+    <!-- 원래 설계 보존 범위와 시나리오별 실습 내용 안내 -->
+    <v-dialog v-model="tutorialChooser" max-width="620">
+      <v-card title="3D 사용법 튜토리얼" data-testid="tutorial-chooser" class="tutorial-chooser">
+        <v-card-text class="tutorial-chooser-content">
+          <p class="tutorial-chooser-intro">연습할 시나리오를 선택하세요. 강조된 위치를 클릭하고 직접 배치하며 사용법을 익힐 수 있습니다.</p>
+          <v-alert class="tutorial-chooser-notice" type="info" variant="tonal" density="compact">별도의 연습 장면에서 진행합니다. 종료하면 미저장 변경과 실행 취소 이력, 선택 상태 및 카메라를 복원하며 실제 프로젝트 파일은 변경하지 않습니다.</v-alert>
+          <v-btn v-for="scenario in sceneTutorials" :key="scenario.id" :data-testid="`tutorial-start-${scenario.id}`" class="tutorial-scenario" :disabled="tutorialStarting" @click="startTutorial(scenario)">
+            <span class="tutorial-scenario-copy"><strong>{{ scenario.title }}</strong><span>{{ scenario.description }}</span></span>
+            <span class="tutorial-scenario-meta"><span>{{ scenario.steps.length }}단계</span><AppIcon name="arrow" :size="18" /></span>
+          </v-btn>
+        </v-card-text>
+        <v-card-actions><v-spacer /><v-btn text="닫기" @click="tutorialChooser = false" /></v-card-actions>
+      </v-card>
+    </v-dialog>
+    <SceneTutorial v-if="tutorial && !tutorialStarting" :scenario="tutorial" :state="tutorialState" @close="finishTutorial()" @complete="finishTutorial()" />
     <v-dialog v-model="glbImportOpen" :persistent="studio.busy" max-width="820">
       <v-card title="GLB 모델 등록" data-testid="glb-import-dialog" class="glb-import-card">
         <form @submit.prevent="registerGlb">
@@ -3006,6 +3176,25 @@ strong {
   scrollbar-width: thin;
 }
 .facility-file-scene { padding-inline-start: 10px; margin-inline-start: 10px; border-inline-start: 1px solid var(--border); }
+/** 튜토리얼 선택 창의 공통 시작선과 시나리오 설명 간격 구성 */
+.tutorial-chooser :deep(.v-card-item) { padding: 22px 24px 14px; }
+.tutorial-chooser :deep(.v-card-title) { padding: 0; font-size: 18px; font-weight: 600; }
+.tutorial-chooser-content { display: flex; flex-direction: column; gap: 14px; padding: 0 24px 24px; }
+.tutorial-chooser-intro { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+.tutorial-chooser-notice { font-size: 12px; line-height: 1.65; }
+.tutorial-chooser-notice :deep(.v-alert__prepend) { align-self: start; padding-block-start: 2px; }
+.tutorial-scenario { width: 100%; height: auto; min-height: 86px; padding: 14px 16px; text-align: start; }
+.tutorial-scenario :deep(.v-btn__content) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; justify-content: stretch; gap: 16px; }
+.tutorial-scenario-copy { display: grid; min-width: 0; gap: 6px; white-space: normal; }
+.tutorial-scenario-copy strong { font-size: 14px; line-height: 1.5; }
+.tutorial-scenario-copy > span { color: var(--text-secondary); font-size: 12px; line-height: 1.6; word-break: keep-all; overflow-wrap: anywhere; }
+.tutorial-scenario-meta { display: flex; align-items: center; gap: 8px; color: var(--accent); font-size: 12px; white-space: nowrap; }
+@media (max-width: 600px) {
+  .tutorial-chooser :deep(.v-card-item) { padding: 18px 16px 12px; }
+  .tutorial-chooser-content { padding: 0 16px 16px; }
+  .tutorial-scenario { padding: 12px; }
+  .tutorial-scenario :deep(.v-btn__content) { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}
 .facility-project-info {
   display: grid;
   flex: 0 1 228px;

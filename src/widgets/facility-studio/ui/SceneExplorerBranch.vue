@@ -28,6 +28,7 @@ const emit = defineEmits<{ select: [item: SceneExplorerEntry, toggle: boolean] }
     <summary>
       <template v-if="item.kind === 'group'">{{ item.name }} <small>{{ item.count ?? item.children.length }}</small></template>
       <button v-else type="button" class="facility-row scene-parent"
+        :data-scene-id="item.id"
         :aria-pressed="item.selected ?? false"
         @click.stop.prevent="emit('select', item, $event.shiftKey)">
         <strong>{{ item.name }}</strong>
@@ -40,6 +41,7 @@ const emit = defineEmits<{ select: [item: SceneExplorerEntry, toggle: boolean] }
     </div>
   </details>
   <button v-else type="button" class="facility-row" :aria-pressed="item.selected ?? false"
+    :data-scene-id="item.id"
     :disabled="item.disabled"
     @click="emit('select', item, $event.shiftKey)">
     <strong>{{ item.name }}</strong>

@@ -52,8 +52,7 @@
   --control-glint: rgb(255 255 255 / 58%);
   --control-drop: rgb(18 40 60 / 16%);
   --control-recess: rgb(18 40 60 / 14%);
-  --control-raised-shadow:
-    inset 0 1px 0 var(--control-glint), 0 2px 4px var(--control-drop);
+  --control-raised-shadow: inset 0 1px 0 var(--control-glint), 0 2px 4px var(--control-drop);
   --control-pressed-shadow:
     inset 0 2px 4px var(--control-recess), inset 0 -1px 0 var(--control-glint);
   --field-face: color-mix(in srgb, var(--input-bg) 90%, var(--surface-muted));
@@ -105,7 +104,9 @@ $disabled-buttons: ':is(:disabled, .v-btn--disabled, [aria-disabled="true"])';
     color-mix(in srgb, var(--button-tint), white var(--button-sheen)),
     color-mix(in srgb, var(--button-tint), black var(--button-shade))
   );
-  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-raised-shadow);
+  box-shadow:
+    inset 0 0 0 var(--button-stroke) var(--button-edge),
+    var(--control-raised-shadow);
   transition:
     background-color var(--control-duration) ease,
     border-color var(--control-duration) ease,
@@ -142,14 +143,18 @@ $disabled-buttons: ':is(:disabled, .v-btn--disabled, [aria-disabled="true"])';
   --button-sheen: 0%;
   --button-shade: 0%;
   color: var(--accent);
-  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-pressed-shadow);
+  box-shadow:
+    inset 0 0 0 var(--button-stroke) var(--button-edge),
+    var(--control-pressed-shadow);
 }
 
 :root #{$buttons}:not(#{$disabled-buttons}):active {
   --button-tint: color-mix(in srgb, var(--button-face), black 9%);
   --button-sheen: 0%;
   --button-shade: 0%;
-  box-shadow: inset 0 0 0 var(--button-stroke) var(--button-edge), var(--control-pressed-shadow);
+  box-shadow:
+    inset 0 0 0 var(--button-stroke) var(--button-edge),
+    var(--control-pressed-shadow);
 }
 
 :root #{$buttons}#{$disabled-buttons} {
@@ -200,7 +205,9 @@ $disabled-buttons: ':is(:disabled, .v-btn--disabled, [aria-disabled="true"])';
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
-  transition: background-color var(--control-duration) ease, color var(--control-duration) ease;
+  transition:
+    background-color var(--control-duration) ease,
+    color var(--control-duration) ease;
 }
 
 .ribbon-tabs .v-tab:hover {
@@ -220,27 +227,49 @@ $disabled-buttons: ':is(:disabled, .v-btn--disabled, [aria-disabled="true"])';
 }
 
 .design-ribbon-commands .v-btn {
-  width: 80px;
-  min-width: 80px;
+  flex: 0 0 96px;
+  width: 96px;
+  min-width: 96px;
   height: 68px;
-  padding: 4px 7px;
+  padding: 5px 6px;
   font-size: 12px;
-  line-height: 1.22;
+  line-height: 16px;
 }
 
-.design-ribbon-commands .v-btn__content {
-  flex-direction: column;
+/** 라벨 길이에 영향받지 않는 아이콘 행과 두 줄 설명 영역 정렬 */
+.design-ribbon-commands .v-btn .v-btn__content {
+  display: grid;
+  grid-template-rows: 20px 32px;
+  align-content: center;
+  align-items: start;
+  justify-content: stretch;
+  justify-items: center;
+  gap: 4px;
+  height: 100%;
+  min-width: 0;
   text-align: center;
   word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .design-ribbon-commands .v-btn__content svg {
-  flex-shrink: 0;
+  align-self: center;
   color: var(--accent);
 }
 
+/** 리본 보조 설명과 버튼 묶음의 수직 중앙 정렬 */
+.design-ribbon-commands > .text-caption {
+  align-self: center;
+  max-width: 28ch;
+  padding-inline: 8px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
 .design-ribbon-commands .v-btn--disabled .v-btn__content svg,
-.design-ribbon-commands .facility-primary:not([aria-pressed="true"]) .v-btn__content svg {
+.design-ribbon-commands .facility-primary:not([aria-pressed='true']) .v-btn__content svg {
   color: inherit;
 }
 
@@ -273,6 +302,23 @@ input[type='checkbox'] {
 
 .v-dialog > .v-overlay__content > .v-card {
   box-shadow: var(--shadow);
+}
+
+/** 대화상자 제목과 본문 및 실행 버튼의 공통 간격과 줄바꿈 적용 */
+.v-dialog .v-card-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.v-dialog .v-card-actions {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 56px;
+  padding: 12px 24px;
+  border-block-start: 1px solid var(--border);
 }
 
 .v-btn .v-btn__content {
@@ -345,7 +391,11 @@ $native-fields: ':is(input:not([type]), input:is([type="text"], [type="search"],
 /**
  * 읽기 전용과 비활성 및 오류 필드의 상태 표현 적용
  */
-:root :is(.v-field:has(:is(input, textarea)[readonly]), #{$native-fields}:is([readonly], [aria-readonly='true'])) {
+:root
+  :is(
+    .v-field:has(:is(input, textarea)[readonly]),
+    #{$native-fields}:is([readonly], [aria-readonly='true'])
+  ) {
   --field-state-face: var(--field-readonly);
   --field-inset: inset 0 1px 2px var(--control-recess);
 }
@@ -357,13 +407,28 @@ $native-fields: ':is(input:not([type]), input:is([type="text"], [type="search"],
   cursor: not-allowed;
 }
 
-:root :is(.v-input--error .v-field, .v-field--error, #{$native-fields}:is([aria-invalid='true'], :user-invalid)) {
+:root
+  :is(
+    .v-input--error .v-field,
+    .v-field--error,
+    #{$native-fields}:is([aria-invalid='true'], :user-invalid)
+  ) {
   --field-border: var(--app-danger);
 }
 
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+/** 자동 초점 컨테이너의 전체 윤곽을 제거하고 조작 요소의 포커스 유지 */
+.v-dialog > .v-overlay__content:focus-visible,
+.v-dialog .v-card[tabindex='-1']:focus-visible {
+  outline: none;
+}
+
+.v-btn:focus-visible {
+  outline-offset: -3px;
 }
 
 /**

@@ -914,6 +914,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped lang="scss">
+/** 좁은 패널에서도 문장 단위의 줄바꿈과 상단 실행 버튼 폭 유지 */
+.model-designer p,
+.model-designer small {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.model-designer header > div { min-width: 0; }
+.model-designer header > .v-btn { flex-shrink: 0; }
+
 .model-designer {
   width: min(1480px, calc(100vw - 40px));
   height: min(920px, calc(100vh - 40px));

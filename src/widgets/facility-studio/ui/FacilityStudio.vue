@@ -3330,11 +3330,11 @@ select { padding: 5px 7px; }
   gap: 5px;
   font-size: 11px;
 }
-.facility-form input:not([type='range']) {
+.facility-form input:not([type='range']):not(:where(.v-field *)) {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   padding: 7px;
   background: var(--surface);
   color: var(--text);
